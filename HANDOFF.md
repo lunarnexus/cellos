@@ -1,57 +1,212 @@
 # CelloS — Session Handoff
+This document hands essential context from one coding-agent session to the next. Preserve only the information needed to resume work: current decisions, project status, and the most recent progress checkpoint. Broader product vision belongs in `docs/`.
 
-## What Was Done
-
-1. **Renamed project** from "Cello" to "CelloS" (all docs updated)
-2. **Created GitHub repo**: https://github.com/lunarnexus/cellos
-3. **Pushed initial docs** to `main` branch:
-   - `README.md` (project overview)
-   - `CelloS.md` (index)
-   - `docs/charter.md` (charter)
-   - `docs/strategy.md` (strategy/vision)
-   - `docs/tech.md` (tech stack/architecture)
-   - `docs/execution.md` (execution plan)
-   - `pyproject.toml` (package config)
-   - `cellos/__init__.py` (package init)
-4. **Local repo** at `~/cellos/`, tracking `origin/main`
 
 ## Current State
 
-- **Phase 0: Foundation** — Ready to start
-- **Next task**: Implement Task + Plan models (the data foundation)
-- **GitHub token**: Added to `~/.hermes/.env` as `GITHUB_TOKEN` — NOT loaded in this session, needs to be read via `env | grep GITHUB_TOKEN` in the next session
-- **Working directory**: `~/cellos/`
+- **Repository**: https://github.com/lunarnexus/cellos
+- **Working directory**: `/Users/james/Scripts/CelloS/cellos`
+- **Python**: 3.11+
+- **Phase**: MVP foundation / internal engine
 
-## What Needs to Be Done Next
+## Most Recent Progress
 
-### Phase 0: Core Engine
+- Removed `aiohttp`; `httpx` is the async HTTP client.
+- Changed MVP PM choice from Linear to Trello.
+- Removed Scrum from the MVP handoff; MVP workflow is Trello-style Kanban.
+- Added parallel ready-task spawning to MVP scope.
+- Named agent roles:
+  - Conductor → Plan / Coordinate
+  - Composer → Design
+  - Cello → Build
+  - Critic → Verify
+- Created `cellos/models.py` with core Pydantic domain models.
+- Created `cellos/db.py` with async SQLite persistence and a ready-task query.
+- Created `cellos/acp.py` as a generic ACP JSON-RPC client.
+- Created `cellos/connectors/opencode.py` for OpenCode-specific ACP behavior.
+- Created `cellos/orchestrator.py` for parallel ready-task execution.
+- Created `cellos/cli.py` with the first usable local CLI loop.
+- Verified a real OpenCode ACP task end-to-end: `task-fba0ea22: done - CELLOS_ACP_OK`.
+- `cellos status` now shows a `Response` column populated from saved task results.
 
-1. **Implement `cellos/task.py`** — Task model (status, dependencies, agent type, specs, results)
-2. **Implement `cellos/plan.py`** — Plan model (goals, directives, approval gates, phases)
-3. **Implement `cellos/agent.py`** — Base Agent class (model routing, tool loading, skill loading)
-4. **Implement `cellos/conductor.py`** — Conductor agent (plan generation)
-5. **Implement `cellos/architect.py`** — Architect agent (spec generation)
-6. **Implement `cellos/engineer.py`** — Engineer agent (task execution)
-7. **Implement `cellos/pm.py`** — PM Heartbeat (monitor/escalate)
-8. **Implement `cellos/escalation.py`** — Escalation chain logic
-9. **Implement `cellos/loop_detector.py`** — Retry loop prevention
-10. **Implement `cellos/config.py`** — Config loading (pydantic-settings)
-11. **Implement `cellos/cli.py`** — CLI entry (click)
-12. **Write tests**
+## Tech Stack
 
-### Important Notes
-
-- Working style: docs before code, one file at a time, human review between phases
-- Small chunks for small models (7-13B)
-- CelloS is the OS, agents are the apps — don't reinvent agent memory/personality
-- All tokens/passwords must be accessed via environment variables, NEVER read `.env` directly
-- GitHub PAT is in `~/.hermes/.env` as `GITHUB_TOKEN`
-- Phase 0 directory structure is defined in `docs/execution.md`
-
-### Quick Start for Next Session
-
-```bash
-cd ~/cellos
-# Verify token: env | grep GITHUB_TOKEN
-# Start with: docs/execution.md → Phase 0 tasks 1-4
 ```
+aiosqlite>=0.20
+httpx>=0.27
+rich>=13.0
+pydantic>=2.0
+pydantic-settings>=2.0
+click>=8.0
+```
+
+- **Async**: yes (asyncio throughout)
+- **Config/Schema**: JSON + pydantic
+- **State**: SQLite (aiosqlite), CelloS is source of truth
+
+## PM Tool Decision: Trello (final choice)
+
+### Why Trello
+- Simple Kanban model
+- Very familiar/popular workflow
+- Low setup overhead
+- Good fit for personal MVP planning
+- Cards/lists are enough for the first orchestration loop
+
+### Tradeoffs
+- No native task dependencies
+- No built-in approval workflow
+- Checklists are not independent task cards
+- Advanced hierarchy will live inside CelloS, not Trello
+
+### Alternatives Considered
+| Tool | Verdict |
+|------|---------|
+| Plane | Best self-hosted, but maintenance overhead |
+| Jira | Too complex, enterprise-focused |
+| ClickUp | Overwhelming, inconsistent API |
+| Linear | Strong structured PM tool, but more than the MVP needs |
+
+## MVP Workflow
+
+### Trello Kanban Lifecycle
+```
+Backlog ──► To Do ──► In Progress ──► Done
+    │          │           │              │
+ You add   Priority    CelloS          Results
+ ideas     work        works
+```
+
+## ACP Protocol
+
+CelloS communicates with worker agents via **Agent Client Protocol (ACP)** — JSON-RPC 2.0 over stdio.
+
+**Spec:** https://agentclientprotocol.com
+
+**Key reference:** `docs/acp-guide.md`
+
+Implementation note: `cellos/acp.py` stays generic. Agent-specific behavior belongs in connector modules such as `cellos/connectors/opencode.py`.
+
+Response extraction uses ACP `agent_message_chunk` updates and ignores `agent_thought_chunk` reasoning updates.
+
+### How It Works
+```
+CelloS                          Worker Agent
+   │                                  │
+   │──── initialize ─────────────────►│  (once at spawn)
+   │◄──── capabilities ───────────────│
+   │                                  │
+   │──── session/new ─────────────────►│
+   │◄──── sessionId ──────────────────│
+   │                                  │
+   │──── session/prompt ─────────────►│  (send task)
+   │◄──── session/update ────────────│  (streaming response)
+   │◄──── session/prompt result ────│
+   │                                  │
+```
+
+### Profile Loading (at spawn time, not via protocol)
+- Hermes: `hermes -p <profile> acp`
+- OpenClaw: `openclaw acp --agent <agentId>`
+- OpenCode: `opencode acp`
+
+One process per agent. CelloS spawns multiple workers in parallel.
+
+## Agent Architecture
+
+**Paperclip pattern:**
+- CelloS is control plane only
+- Workers manage their own memory/prompts
+- CelloS maps roles → agent profiles → spawn commands
+- Adapters handle agent-type differences
+
+```
+CelloS (Orchestrator)
+├── spawn worker 1: hermes -p composer acp
+├── spawn worker 2: OpenCode via `opencode acp`
+│
+├── send task to worker 1
+├── send task to worker 2
+│
+└── collect results
+```
+
+## MVP Scope
+
+### What's In
+1. aiosqlite for data storage
+2. Trello as PM tool
+3. OpenCode as default agent
+4. ACP client to spawn agents
+5. Simple conductor (analyze task → plan)
+6. Orchestrator loop with parallel task spawning
+
+### What's Out (for now)
+- PM heartbeat monitoring
+- Cost tracking
+- Escalation/loop detection
+- Approval gates (auto-approve MVP)
+
+### Build Order
+1. `models.py` — Core Pydantic domain models (**done**)
+2. `db.py` — SQLite schema + CRUD (**done**)
+3. `agents.py` — Shared backend protocol and prompt builder (**done**)
+4. `acp.py` — Generic ACP client (**done**)
+5. `connectors/opencode.py` — OpenCode ACP connector (**done**)
+6. `orchestrator.py` — Main loop with parallel ready-task spawning (**done**)
+7. `cli.py` — Entry points and progress display (**done**)
+8. `pm/trello.py` — Trello adapter after internal loop works
+
+## Agent Hierarchy
+
+- Conductor → Plan / Coordinate
+- Composer → Design
+- Cello → Build
+- Critic → Verify
+
+All executed via ACP (spawn worker subprocess).
+
+## Worker Spawn Commands
+
+**OpenCode (default):**
+```bash
+opencode acp
+```
+
+**Hermes:**
+```bash
+hermes -p <profile-name> acp
+```
+
+**OpenClaw:**
+```bash
+openclaw acp --agent <agentId>
+```
+
+## Next (updated)
+
+**Immediate: Core Engine MVP**
+
+1. Create richer local test tasks that exercise real file edits and verification.
+2. Improve CLI task display/edit/retry ergonomics as needed from testing.
+3. Add task decomposition flow: Conductor creates child tasks, workers execute ready tasks.
+4. Add Trello adapter after the internal task loop is solid.
+
+**Then:**
+- Additional PM adapters (Notion, Jira, etc.)
+- Cost tracking
+- Escalation
+
+## Notes
+
+- Docs before code
+- One file at a time
+- Workers own their memory (no vector DB)
+- PM tool is just interface layer — CelloS manages complexity internally
+- Verification checkpoint: `pytest tests/test_acp.py tests/test_agents.py tests/test_orchestrator.py tests/test_cli.py` passes.
+
+## Relevant Docs
+
+- `docs/acp-guide.md` — ACP protocol implementation guide
+- `docs/tech.md` — Architecture overview
+- `docs/strategy.md` — Product vision

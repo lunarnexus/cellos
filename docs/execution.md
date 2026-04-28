@@ -54,14 +54,19 @@ cellos/
 
 ### Phase 1: PM Adapters (Week 3-4)
 
-**Goal:** CelloS can read tasks from Trello/Teams and push plans back.
+**Goal:** CelloS can read tasks from Trello/Teams/Notion/Jira/Azure DevOps/OpenProject/Asana and push plans back.
 
 **Tasks:**
 1.  Implement Trello adapter — read cards, create new lists (for plans), create cards (for subtasks).
 2.  Implement MS Teams adapter — send "Plan for Review" Adaptive Cards, listen for click events.
-3.  Implement approval logic — when user moves a card or clicks "Approve" in Teams, signal the engine.
-4.  Implement task push — when a plan is generated, create a new Trello list or Teams thread with the plan details.
-5.  Implement "Edit Plan" flow — user edits a card in Trello, CelloS updates the plan and regenerates subtasks.
+3.  Implement Notion adapter — create database entries, sync task status.
+4.  Implement Jira adapter — create issues, update status, transitions.
+5.  Implement Azure DevOps adapter — work items, approvals.
+6.  Implement OpenProject adapter — tasks, boards.
+7.  Implement Asana adapter — projects, tasks, sections.
+8.  Implement approval logic — when user moves a card or clicks "Approve" in any tool, signal the engine.
+9.  Implement task push — when a plan is generated, create items in the selected PM tool.
+10. Implement "Edit Plan" flow — user edits a task in any PM tool, CelloS updates the plan and regenerates subtasks.
 
 ### Phase 2: ACP Integration & Skill System (Week 5-6)
 
@@ -81,9 +86,9 @@ cellos/
 **Tasks:**
 1.  Implement hung task detection — timeout-based + anomaly detection
 2.  Implement task respawn logic — kill and retry with reformulated specs
-3.  Implement escalation UI — show escalated issues prominently in Trello/Teams
+3.  Implement escalation UI — show escalated issues prominently in all PM tools
 4.  Implement project export — save project state for later resumption
-5.  Implement "Project Memory" — concise summary of what happened, what was learned (for context reuse)
+5.  ~~Implement "Project Memory"~~ — REMOVED: Workers own their own memory. CelloS only tracks project state.
 6.  Implement multi-project support — run multiple CelloS in parallel
 7.  Implement **Budget Prediction** — Conductor estimates total cost before execution
 8.  Implement **Cost Tracking** — Aggregate token usage from workers into a project "bill"
@@ -110,7 +115,7 @@ cellos/
 2.  **Phase 0 scaffold** — Use Opencode to create the initial project structure
 3.  **Implement Task + Plan models** — These are the data foundation
 4.  **Implement the Conductor** — The most critical piece. Test it thoroughly.
-5.  **Build the Trello adapter** — Get the first PM integration working early
+5.  **Build the PM adapters** — Get at least one integration working early (Trello or Jira are good starting points)
 6.  **Iterate** — Each phase builds on the last. Don't rush.
 
 ### Recommended Development Approach

@@ -3,7 +3,7 @@
 ## 1. Project Overview
 *   **Project Name:** CelloS
 *   **Vision:** *"The power of an orchestra is not in any single instrument, but in how they work together."*
-*   **Mission:** To provide a reliable, hierarchical AI orchestration layer that manages multi-agent projects through existing project management tools (Trello, Teams, Notion), optimizing for cost, reliability, and human oversight.
+*   **Mission:** To provide a reliable, hierarchical AI orchestration layer that manages multi-agent projects through existing project management tools (Trello, Teams, Notion, Jira, Azure DevOps, OpenProject, Asana), optimizing for cost, reliability, and human oversight.
 
 ## 2. Problem Statement
 Current AI orchestration solutions (CrewAI, LangGraph, AutoGen) suffer from:
@@ -19,7 +19,7 @@ CelloS is the **OS** for AI agents. It is a lightweight orchestration engine tha
 *   Uses a **Conductor** (smart LLM) to plan projects from vague requests.
 *   Decomposes plans into hierarchical tasks (Architects → Engineers).
 *   Routes tasks to existing agents (Hermes, Opencode, Codex) via an **ACP Bridge**.
-*   Syncs status to **Trello/Teams/Notion** for human oversight.
+*   Syncs status to **Trello/Teams/Notion/Jira/Azure DevOps/OpenProject/Asana** for human oversight.
 *   Tracks costs and learns lessons for continuous improvement.
 
 ## 4. Scope
@@ -27,7 +27,7 @@ CelloS is the **OS** for AI agents. It is a lightweight orchestration engine tha
 ### In Scope (MVP)
 *   **Core Engine:** Task/Plan models, Conductor logic, Escalation/Loop detection.
 *   **ACP Bridge:** Integration with Hermes and Opencode.
-*   **PM Adapters:** Trello and MS Teams integration (read/write/approval).
+*   **PM Adapters:** Trello, MS Teams, Notion, Jira, Azure DevOps, OpenProject, Asana integration (read/write/approval).
 *   **Cost Tracking:** Real-time token aggregation and budget alerts.
 *   **CLI:** `cellos init`, `cellos run`, `cellos status`.
 
@@ -53,14 +53,14 @@ CelloS is the **OS** for AI agents. It is a lightweight orchestration engine tha
 
 ## 7. Timeline & Milestones (10 Weeks)
 *   **Phase 0 (Week 1-2):** Core Engine (Conductor, Task/Plan models).
-*   **Phase 1 (Week 3-4):** PM Adapters (Trello/Teams).
+*   **Phase 1 (Week 3-4):** PM Adapters (Trello/Teams/Notion/Jira/Azure DevOps/OpenProject/Asana).
 *   **Phase 2 (Week 5-6):** ACP Integration & Skills.
 *   **Phase 3 (Week 7-8):** Reliability & Scale (Escalation, Cost, Lessons).
 *   **Phase 4 (Week 9-10):** Polish & Distribution (CLI, Docs, PyPI).
 
 ## 8. Key Risks & Mitigations
 *   **Risk:** Conductor prompt instability (hallucinates invalid plans).
-    *   *Mitigation:* Strict JSON/YAML schema validation; iterative prompt tuning; fallback to manual plan editing.
+    *   *Mitigation:* Strict JSON schema validation; iterative prompt tuning; fallback to manual plan editing.
 *   **Risk:** ACP protocol complexity.
     *   *Mitigation:* Start with a simple JSON-over-stdin/stdout protocol; expand later.
 *   **Risk:** LLM costs spiraling.

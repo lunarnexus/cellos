@@ -1,4 +1,4 @@
-# CELLO — Strategy & Vision
+# CelloS — Strategy & Vision
 
 > "The power of an orchestra is not in any single instrument, but in how they work together."
 
@@ -68,7 +68,7 @@
 1.  **Hierarchical task decomposition** — Nobody does the Conductor → Architects → Engineers model well. CrewAI is flat. LangGraph requires code graphs.
 2.  **Small-model optimization** — The industry assumes GPT-4/Claude for everything. Your insight (break tasks down so 9B models work) is underexplored. Most frameworks just throw bigger models at problems.
 3.  **Human approval gates** — AutoGen and CrewAI have minimal human oversight. LangGraph has no UI. CelloS's plan-approve-execute flow is a real differentiator.
-4.  **Project management integration** — Kanban boards, Trello sync, heartbeat monitoring. Nobody does this. It's the "corporate PM meets AI" angle.
+4.  **Project management integration** — Kanban boards, Trello sync, Jira, Azure DevOps, OpenProject, Asana, heartbeat monitoring. Nobody does this. It's the "corporate PM meets AI" angle.
 5.  **Escalation chains** — Agents that can fail up the hierarchy rather than looping forever. This is basically how real teams work.
 6.  **Model-per-agent specialization** — Let the Conductor use Claude Opus, engineers use Qwen 9B, researchers use cheaper models. Nobody does this well.
 7.  **Reliability over autonomy** — The market is obsessed with "fully autonomous." The real value is "reliable with human oversight." Think industrial automation, not science fiction.
@@ -113,7 +113,7 @@ When a task fails, the higher-tier agent evaluates the failure and chooses exact
 4.  **Escalate (Human intervention):** "This is a loop, a blocker, or requires judgment I don't have. The user needs to decide."
 
 **Success Path:**
-*   If the task succeeds, the PM Heartbeat updates the PM tool (Trello card to "Done", Teams card to "Approved").
+*   If the task succeeds, the PM Heartbeat updates the PM tool (Trello card to "Done", Teams card to "Approved", Jira issue to "Done", Azure DevOps to "Closed", and other integrated tools)
 
 **The Loop Detection Mechanism:**
 *   Every task has a `resolution_history` array. If the same task is re-assigned more than N times (default 3) without success, it is automatically flagged as a **Loop** and escalated to the user. This prevents infinite retry cycles.
@@ -124,7 +124,7 @@ At the end of a project (or major phase), CelloS initiates a **Review Phase**.
 *   **Who:** The Conductor (or a dedicated "Reviewer" agent).
 *   **What:** "What went well? What went wrong? What should we do differently next time?"
 *   **How:** The Conductor analyzes the `resolution_history`, task results, and user feedback to generate a structured **Post-Mortem**.
-*   **Storage:** Lessons are stored in **Project Memory** (Vector DB) tagged by topic (e.g., "python-environment", "api-integration").
+*   **Storage:** Lessons are stored in **Project Memory** (SQLite) as structured text tagged by topic (e.g., "python-environment", "api-integration"). No vectorization.
 *   **Usage:** In future projects, the Conductor loads relevant lessons *before* planning. "Last time we built a FastAPI app, the database setup failed twice. This time, ensure the database driver is installed *before* the app structure."
 
 **This is how CelloS gets smarter over time.**
@@ -138,7 +138,7 @@ At the end of a project (or major phase), CelloS initiates a **Review Phase**.
 | **Agent Memory / SOUL.md** | **Hermes / OpenClaw** | Don't reinvent it. The workers already have this. CelloS just tells them "You are a Python engineer." |
 | **Tool Use (coding, browsing)** | **Hermes / Codex** | CelloS doesn't need to know how to write code. It just assigns the task. |
 | **ACP Protocol** | **CelloS** | CelloS needs to implement the ACP bridge to talk to the workers. |
-| **Project Memory** | **CelloS** | CelloS needs a lightweight database for *project state* (plans, tasks, status, logs). This is not "agent memory"; it's "project history." |
+| **Project Memory** | **CelloS** | CelloS stores project state (plans, tasks, status, lessons as text). Not vectorized. Workers own their own memory. |
 | **Orchestration Logic** | **CelloS** | This is the core. The hierarchy, the approval gates, the escalation chains. |
 | **PM / Kanban** | **CelloS** | The visual layer for the user to see the project status. |
 
@@ -146,14 +146,20 @@ At the end of a project (or major phase), CelloS initiates a **Review Phase**.
 
 Your methodology maps directly to proven enterprise project management patterns:
 
-- **Conductor = Project Manager / Product Owner** — Defines vision, creates high-level plan, gets stakeholder approval. This is PMBOK's "Define Project" phase.
-- **Architects = Technical Leads** — Translate business goals into technical architecture. This is the "Architecture Design" phase in any SDLC.
-- **Engineers = Developers** — Execute on detailed specs. This is "Implementation."
-- **Test Engineers = QA** — Verify deliverables. This is "Testing/QA."
+- **Conductor = Plan** — Defines vision, creates high-level plan, gets stakeholder approval. This is PMBOK's "Define Project" phase.
+- **Architect = Design** — Translate business goals into technical architecture. This is the "Architecture Design" phase in any SDLC.
+- **Engineer = Build** — Execute on detailed specs. This is "Implementation."
+- **Tester = Verify** — Verify deliverables. This is "Testing/QA."
 - **Approval Gates = Change Control Board** — User approves each phase before proceeding. This is standard enterprise governance.
 - **Escalation Chain = Incident Management** — Issues propagate up when lower levels can't resolve. This is ITIL's incident escalation model.
 - **Heartbeat Monitoring = Stand-up Meetings** — Periodic status checks. This is Agile's daily stand-up concept.
 - **Dependency System = Critical Path Method** — Tasks have prerequisites. This is standard project management.
+
+### SDLC Workflow
+
+```
+Plan → Design → Build → Verify → (Loop back to Design/Build/Verify if needed)
+```
 
 ### Your Methodology — Refined
 
@@ -191,10 +197,10 @@ Your methodology maps directly to proven enterprise project management patterns:
                     ┌─────────▼───────────┐
                     │   ENGINEER AGENTS   │
                     │   (Small models)    │
-                    │  - Python Eng       │
-                    │  - JS Eng           │
-                    │  - DB Eng           │
-                    │  - etc.             │
+│  - Python Eng       │
+                     │  - JS Eng           │
+                     │  - DB Eng          │
+                     │  - DevOps Eng      │
                     └─────────┬───────────┘
                               │
                     ┌─────────▼───────────┐
@@ -258,7 +264,7 @@ These are the non-negotiable rules that govern every design decision in CelloS:
 
 1.  **Hierarchical orchestration** — Conductor → Architects → Engineers. Not flat like CrewAI, not code-graph like LangGraph.
 2.  **Smart Conductor** — The planner uses the best model available (Claude Opus/GPT-4.5). It does the heavy lifting of decomposition so smaller models can succeed.
-3.  **PM-First Interface** — CelloS lives inside Trello, Teams, or Notion. No custom UI to maintain. The user stays in their workflow.
+3.  **PM-First Interface** — CelloS lives inside Trello, Teams, Notion, Jira, Azure DevOps, OpenProject, or Asana. No custom UI to maintain. The user stays in their workflow.
 4.  **Human-in-the-loop by default** — Approval gates at every phase. Auto-approve for power users.
 5.  **ACP agnostic** — Don't reinvent the agent. Use Hermes, Opencode, Codex for the actual work. CelloS is the glue.
 6.  **Model tiering** — Right-size the model to the task. Save money, reduce latency.
