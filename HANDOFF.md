@@ -77,6 +77,15 @@ Backlog ──► To Do ──► In Progress ──► Done
  ideas     work        works
 ```
 
+### Scheduler Heartbeat
+
+`cellos run` is one scheduler heartbeat, not a forever loop. Each invocation finds ready unblocked tasks, runs one bounded batch, saves results, and exits. This keeps production supervision simple: cron, launchd, systemd, or a future PM webhook can call `cellos run` repeatedly.
+
+- Default concurrency: `cellos run --concurrent-tasks 4`
+- Timeout meaning: worker execution timeout for that task attempt, defaulting to `300` seconds. Per-task `--timeout` can still override it for longer jobs.
+- Passive status: `cellos status` reads known state from SQLite only.
+- Active status hook: `cellos status --check-tasks` is the planned entry point for probing in-progress workers. With the current one-process-per-task backend, active checks report that probing is not available yet.
+
 ## ACP Protocol
 
 CelloS communicates with worker agents via **Agent Client Protocol (ACP)** — JSON-RPC 2.0 over stdio.
@@ -197,12 +206,28 @@ openclaw acp --agent <agentId>
 - Cost tracking
 - Escalation
 
+## Real Integration Test Recipe
+
+Run from `/Users/james/Scripts/CelloS/cellos` without Codex sandboxing:
+
+```bash
+cellos reset-db --yes
+cellos add-task "Create tmp test note" --description "Create tmp/cellos-real-test.txt containing exactly CELLOS_FILE_EDIT_OK. Keep the change minimal." --type build --role cello
+cellos add-task "Verify tmp test note" --description "Verify tmp/cellos-real-test.txt exists and contains exactly CELLOS_FILE_EDIT_OK. Report only the result." --type test --role critic --depends-on <build-task-id>
+cellos run
+cellos run
+cellos status
+```
+
+Expected result: the first run creates `tmp/cellos-real-test.txt`, the second run verifies it, and both tasks end as `done`.
+
 ## Notes
 
 - Docs before code
 - One file at a time
 - Workers own their memory (no vector DB)
 - PM tool is just interface layer — CelloS manages complexity internally
+- Real CelloS/OpenCode integration tests should run from `/Users/james/Scripts/CelloS/cellos` without Codex sandboxing. Sandboxed runs caused OpenCode local state/log DB failures such as `PRAGMA wal_checkpoint(PASSIVE)`, while the same tasks succeeded outside the sandbox.
 - Verification checkpoint: `pytest tests/test_acp.py tests/test_agents.py tests/test_orchestrator.py tests/test_cli.py` passes.
 
 ## Relevant Docs
