@@ -110,7 +110,7 @@ def retry(task_id: str, db_path: Path) -> None:
 @click.option("--timeout", type=int, default=300)
 @click.option("--concurrent-tasks", type=int, default=4, show_default=True)
 def run(db_path: Path, cwd: Path, timeout: int | None, concurrent_tasks: int) -> None:
-    """Run one scheduler heartbeat of ready tasks, then stop."""
+    """Run one scheduler heartbeat of ready tasks."""
     results = asyncio.run(_run(db_path, cwd, timeout, concurrent_tasks))
     if not results:
         console.print("No ready tasks to run.")
