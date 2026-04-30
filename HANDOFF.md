@@ -194,12 +194,12 @@ openclaw acp --agent <agentId>
 
 ## Next (updated)
 
-**Immediate: Core Engine MVP**
+**Immediate: Trello Integration & UI**
 
-1. Create richer local test tasks that exercise real file edits and verification.
-2. Improve CLI task display/edit/retry ergonomics as needed from testing.
-3. Add task decomposition flow: Conductor creates child tasks, workers execute ready tasks.
-4. Add Trello adapter after the internal task loop is solid.
+1. Build `pm/trello.py` adapter for Trello Kanban sync.
+2. Improve CLI UI/UX: better task display, interactive editing, and status formatting.
+3. Create richer local test tasks that exercise real file edits and verification.
+4. Add task decomposition flow: Conductor creates child tasks, workers execute ready tasks.
 
 **Then:**
 - Additional PM adapters (Notion, Jira, etc.)
@@ -229,6 +229,7 @@ Expected result: the first run creates `tmp/cellos-real-test.txt`, the second ru
 - PM tool is just interface layer — CelloS manages complexity internally
 - Real CelloS/OpenCode integration tests should run from `/Users/james/Scripts/CelloS/cellos` without Codex sandboxing. Sandboxed runs caused OpenCode local state/log DB failures such as `PRAGMA wal_checkpoint(PASSIVE)`, while the same tasks succeeded outside the sandbox.
 - Verification checkpoint: `pytest tests/test_acp.py tests/test_agents.py tests/test_orchestrator.py tests/test_cli.py` passes.
+- **Multi-agent development**: This project is actively worked on by multiple AI agents (Codex and Hermes). To avoid conflicts, split work by file/module ownership. Use `HANDOFF.md` to sync state between sessions/agents. Recommended split: one agent owns `pm/` + Trello integration + testing, the other owns `cli.py` + UI improvements + task decomposition.
 
 ## Relevant Docs
 
