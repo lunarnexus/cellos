@@ -1,6 +1,7 @@
 """Async SQLite persistence for CelloS."""
 
 import json
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -126,6 +127,14 @@ class CellosDatabase:
                 "SELECT payload FROM tasks WHERE status = ? ORDER BY created_at",
                 (status.value,),
             )
+        rows = await cursor.fetchall()
+        return [Task.model_validate_json(row["payload"]) for row in rows]
+
+    async def list_tasks_updated_since(self, cutoff: datetime) -> list[Task]:
+        cursor = await self.conn.execute(
+            "SELECT payload FROM tasks WHERE updated_at >= ? ORDER BY updated_at",
+            (cutoff.isoformat(),),
+        )
         rows = await cursor.fetchall()
         return [Task.model_validate_json(row["payload"]) for row in rows]
 
