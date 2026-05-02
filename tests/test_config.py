@@ -8,8 +8,8 @@ def test_ensure_config_copies_example_when_missing(tmp_path):
     config = tmp_path / ".cellos" / "config.json"
     example.write_text(
         '{"scheduler": {"concurrent_tasks": 2, "worker_timeout_seconds": 60}, '
-        '"worker": {"backend": "acp", "command": ["python3", "tests/fakes/acp_server.py"], '
-        '"debug_log_path": ".cellos/acp-debug.log"}}'
+        '"worker": {"backend": "acp", "command": ["python3", "-m", "cellos.connectors.fake_acp"], '
+        '"debug_log_path": ".cellos/logs/acp-debug.log"}}'
     )
 
     written = ensure_config(config, example)
@@ -26,14 +26,14 @@ def test_ensure_config_does_not_overwrite_existing_without_flag(tmp_path):
     config = tmp_path / ".cellos" / "config.json"
     example.write_text(
         '{"scheduler": {"concurrent_tasks": 2, "worker_timeout_seconds": 60}, '
-        '"worker": {"backend": "acp", "command": ["python3", "tests/fakes/acp_server.py"], '
-        '"debug_log_path": ".cellos/acp-debug.log"}}'
+        '"worker": {"backend": "acp", "command": ["python3", "-m", "cellos.connectors.fake_acp"], '
+        '"debug_log_path": ".cellos/logs/acp-debug.log"}}'
     )
     config.parent.mkdir()
     config.write_text(
         '{"scheduler": {"concurrent_tasks": 7, "worker_timeout_seconds": 90}, '
-        '"worker": {"backend": "acp", "command": ["python3", "tests/fakes/acp_server.py"], '
-        '"debug_log_path": ".cellos/acp-debug.log"}}'
+        '"worker": {"backend": "acp", "command": ["python3", "-m", "cellos.connectors.fake_acp"], '
+        '"debug_log_path": ".cellos/logs/acp-debug.log"}}'
     )
 
     ensure_config(config, example)
@@ -47,14 +47,14 @@ def test_ensure_config_overwrites_existing_with_flag(tmp_path):
     config = tmp_path / ".cellos" / "config.json"
     example.write_text(
         '{"scheduler": {"concurrent_tasks": 2, "worker_timeout_seconds": 60}, '
-        '"worker": {"backend": "acp", "command": ["python3", "tests/fakes/acp_server.py"], '
-        '"debug_log_path": ".cellos/acp-debug.log"}}'
+        '"worker": {"backend": "acp", "command": ["python3", "-m", "cellos.connectors.fake_acp"], '
+        '"debug_log_path": ".cellos/logs/acp-debug.log"}}'
     )
     config.parent.mkdir()
     config.write_text(
         '{"scheduler": {"concurrent_tasks": 7, "worker_timeout_seconds": 90}, '
-        '"worker": {"backend": "acp", "command": ["python3", "tests/fakes/acp_server.py"], '
-        '"debug_log_path": ".cellos/acp-debug.log"}}'
+        '"worker": {"backend": "acp", "command": ["python3", "-m", "cellos.connectors.fake_acp"], '
+        '"debug_log_path": ".cellos/logs/acp-debug.log"}}'
     )
 
     ensure_config(config, example, overwrite=True)

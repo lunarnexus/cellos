@@ -1,18 +1,26 @@
 import json
 import sqlite3
-import sys
 import time
 from pathlib import Path
 
 from click.testing import CliRunner
 
-from cellos.cli import main
+from cellos.cli import DEFAULT_DB_PATH, DEFAULT_WORKDIR, _resolve_db_path, _resolve_workdir, main
 
 
-def wait_for_status(runner: CliRunner, db_path: Path, config_path: Path, expected: str):
+def wait_for_status(
+    runner: CliRunner,
+    db_path: Path,
+    config_path: Path,
+    expected: str,
+    workdir: Path | None = None,
+):
     result = None
     for _ in range(30):
-        result = runner.invoke(main, ["status", "--db", str(db_path), "--config", str(config_path)])
+        command = ["status", "--db", str(db_path), "--config", str(config_path)]
+        if workdir is not None:
+            command.extend(["--workdir", str(workdir)])
+        result = runner.invoke(main, command)
         if expected in result.output:
             return result
         time.sleep(0.1)
@@ -37,6 +45,38 @@ def test_init_creates_database(tmp_path):
     assert config_path.exists()
 
 
+def test_init_creates_database_in_workdir(tmp_path):
+    workdir = tmp_path / "project"
+    config_path = tmp_path / ".cellos" / "config.json"
+    runner = CliRunner()
+
+    result = runner.invoke(main, ["init", "--workdir", str(workdir), "--config", str(config_path)])
+
+    assert result.exit_code == 0
+    assert (workdir / ".cellos" / "cellos.sqlite").exists()
+
+
+def test_resolve_workdir_prefers_current_directory_with_database(tmp_path, monkeypatch):
+    workdir = tmp_path / "project"
+    (workdir / ".cellos").mkdir(parents=True)
+    (workdir / DEFAULT_DB_PATH).touch()
+    monkeypatch.chdir(workdir)
+
+    assert _resolve_workdir(None) == workdir.resolve()
+
+
+def test_resolve_workdir_falls_back_to_home(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+
+    assert _resolve_workdir(None) == DEFAULT_WORKDIR.resolve()
+
+
+def test_resolve_db_path_uses_workdir_default(tmp_path):
+    workdir = tmp_path / "project"
+
+    assert _resolve_db_path(None, workdir) == workdir / ".cellos" / "cellos.sqlite"
+
+
 def test_init_hard_reset_overwrites_database_and_config(tmp_path):
     db_path = tmp_path / "cellos.sqlite"
     config_path = tmp_path / ".cellos" / "config.json"
@@ -45,8 +85,8 @@ def test_init_hard_reset_overwrites_database_and_config(tmp_path):
     runner.invoke(main, ["init", "--db", str(db_path), "--config", str(config_path)])
     config_path.write_text(
         '{"scheduler": {"concurrent_tasks": 99, "worker_timeout_seconds": 99}, '
-        '"worker": {"backend": "acp", "command": ["python3", "tests/fakes/acp_server.py"], '
-        '"debug_log_path": ".cellos/acp-debug.log"}}'
+        '"worker": {"backend": "acp", "command": ["python3", "-m", "cellos.connectors.fake_acp"], '
+        '"debug_log_path": ".cellos/logs/acp-debug.log"}}'
     )
 
     result = runner.invoke(main, ["init", "--hard-reset", "--db", str(db_path), "--config", str(config_path)])
@@ -205,7 +245,6 @@ def test_events_shows_task_history(tmp_path):
 def test_run_schedules_approved_task_with_fake_acp(tmp_path):
     db_path = tmp_path / "cellos.sqlite"
     config_path = tmp_path / ".cellos" / "config.json"
-    fake_server = Path(__file__).parent / "fakes" / "acp_server.py"
     runner = CliRunner()
 
     config_path.parent.mkdir()
@@ -215,7 +254,7 @@ def test_run_schedules_approved_task_with_fake_acp(tmp_path):
                 "scheduler": {"concurrent_tasks": 4, "worker_timeout_seconds": 30},
                 "worker": {
                     "backend": "acp",
-                    "command": [sys.executable, str(fake_server)],
+                    "command": ["python3", "-m", "cellos.connectors.fake_acp"],
                     "debug_log_path": str(tmp_path / "acp-debug.log"),
                 },
             }
@@ -258,3 +297,5 @@ def test_run_help_shows_concurrent_tasks_option():
 
     assert result.exit_code == 0
     assert "--concurrent-tasks" in result.output
+    assert "--workdir" in result.output
+    assert "--cwd" not in result.output

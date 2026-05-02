@@ -19,6 +19,7 @@ from cellos.models import AgentRole, Task, TaskResult, TaskStatus, TaskType
 
 
 DEFAULT_DB_PATH = Path(".cellos") / "cellos.sqlite"
+DEFAULT_WORKDIR = Path.home()
 console = Console()
 T = TypeVar("T")
 
@@ -27,7 +28,7 @@ T = TypeVar("T")
 class CellosApp:
     config: CellosConfig
     db: CellosDatabase
-    cwd: Path
+    workdir: Path
 
 
 @dataclass
@@ -43,16 +44,19 @@ def main() -> None:
 
 
 @main.command()
-@click.option("--db", "db_path", type=click.Path(path_type=Path), default=DEFAULT_DB_PATH)
+@click.option("--workdir", type=click.Path(path_type=Path), default=None)
+@click.option("--db", "db_path", type=click.Path(path_type=Path), default=None)
 @click.option("--config", "config_path", type=click.Path(path_type=Path), default=DEFAULT_CONFIG_PATH)
 @click.option("--hard-reset", is_flag=True, help="Reset local DB and overwrite config from defaults.")
-def init(db_path: Path, config_path: Path, hard_reset: bool) -> None:
+def init(workdir: Path | None, db_path: Path | None, config_path: Path, hard_reset: bool) -> None:
     """Initialize local CelloS state."""
-    if hard_reset and db_path.exists():
-        db_path.unlink()
+    resolved_workdir = _resolve_workdir(workdir)
+    resolved_db_path = _resolve_db_path(db_path, resolved_workdir)
+    if hard_reset and resolved_db_path.exists():
+        resolved_db_path.unlink()
     copied_config = ensure_config(config_path, overwrite=hard_reset)
-    asyncio.run(_init(db_path))
-    console.print(f"Initialized database at [bold]{db_path}[/bold]")
+    asyncio.run(_init(resolved_db_path))
+    console.print(f"Initialized database at [bold]{resolved_db_path}[/bold]")
     console.print(f"Initialized config at [bold]{copied_config}[/bold]")
 
 
@@ -66,7 +70,8 @@ def init(db_path: Path, config_path: Path, hard_reset: bool) -> None:
 @click.option("--depends-on", multiple=True, help="Task ID this task depends on. May be repeated.")
 @click.option("--parent", "parent_id", default=None, help="Parent task ID.")
 @click.option("--timeout", type=int, default=None, help="Per-task worker timeout in seconds.")
-@click.option("--db", "db_path", type=click.Path(path_type=Path), default=DEFAULT_DB_PATH)
+@click.option("--workdir", type=click.Path(path_type=Path), default=None)
+@click.option("--db", "db_path", type=click.Path(path_type=Path), default=None)
 @click.option("--config", "config_path", type=click.Path(path_type=Path), default=DEFAULT_CONFIG_PATH)
 def add_task(
     title: str,
@@ -78,7 +83,8 @@ def add_task(
     depends_on: tuple[str, ...],
     parent_id: str | None,
     timeout: int | None,
-    db_path: Path,
+    workdir: Path | None,
+    db_path: Path | None,
     config_path: Path,
 ) -> None:
     """Add a task to the local CelloS database."""
@@ -94,36 +100,38 @@ def add_task(
         dependencies=list(depends_on),
         timeout_seconds=timeout,
     )
-    _run_cli(_add_task(db_path, config_path, task))
+    _run_cli(_add_task(db_path, config_path, workdir, task))
     console.print(f"Added [bold]{task.id}[/bold]: {task.title}")
 
 
 @main.command()
-@click.option("--db", "db_path", type=click.Path(path_type=Path), default=DEFAULT_DB_PATH)
+@click.option("--workdir", type=click.Path(path_type=Path), default=None)
+@click.option("--db", "db_path", type=click.Path(path_type=Path), default=None)
 @click.option("--config", "config_path", type=click.Path(path_type=Path), default=DEFAULT_CONFIG_PATH)
-def status(db_path: Path, config_path: Path) -> None:
+def status(workdir: Path | None, db_path: Path | None, config_path: Path) -> None:
     """Show current task status."""
-    _run_cli(_status(db_path, config_path))
+    _run_cli(_status(db_path, config_path, workdir))
 
 
 @main.command()
 @click.argument("task_id", required=False)
 @click.option("--limit", type=int, default=50, show_default=True)
-@click.option("--db", "db_path", type=click.Path(path_type=Path), default=DEFAULT_DB_PATH)
+@click.option("--workdir", type=click.Path(path_type=Path), default=None)
+@click.option("--db", "db_path", type=click.Path(path_type=Path), default=None)
 @click.option("--config", "config_path", type=click.Path(path_type=Path), default=DEFAULT_CONFIG_PATH)
-def events(task_id: str | None, limit: int, db_path: Path, config_path: Path) -> None:
+def events(task_id: str | None, limit: int, workdir: Path | None, db_path: Path | None, config_path: Path) -> None:
     """Show stored task events."""
-    _run_cli(_events(db_path, config_path, task_id, limit))
+    _run_cli(_events(db_path, config_path, workdir, task_id, limit))
 
 
 @main.command()
-@click.option("--db", "db_path", type=click.Path(path_type=Path), default=DEFAULT_DB_PATH)
-@click.option("--cwd", type=click.Path(path_type=Path), default=Path.cwd())
+@click.option("--workdir", type=click.Path(path_type=Path), default=None)
+@click.option("--db", "db_path", type=click.Path(path_type=Path), default=None)
 @click.option("--config", "config_path", type=click.Path(path_type=Path), default=DEFAULT_CONFIG_PATH)
 @click.option("--concurrent-tasks", type=int, default=None)
-def run(db_path: Path, cwd: Path, config_path: Path, concurrent_tasks: int | None) -> None:
+def run(workdir: Path | None, db_path: Path | None, config_path: Path, concurrent_tasks: int | None) -> None:
     """Run one local CelloS heartbeat."""
-    result = _run_cli(_run(db_path, config_path, cwd, concurrent_tasks))
+    result = _run_cli(_run(db_path, config_path, workdir, concurrent_tasks))
     if not result.attention_tasks and not result.planning_tasks and not result.execution_tasks:
         console.print("No tasks to run.")
         return
@@ -138,12 +146,12 @@ def run(db_path: Path, cwd: Path, config_path: Path, concurrent_tasks: int | Non
 @main.command(hidden=True)
 @click.argument("task_id")
 @click.option("--mode", type=click.Choice(["planning", "execution"]), required=True)
-@click.option("--db", "db_path", type=click.Path(path_type=Path), default=DEFAULT_DB_PATH)
-@click.option("--cwd", type=click.Path(path_type=Path), default=Path.cwd())
+@click.option("--workdir", type=click.Path(path_type=Path), default=None)
+@click.option("--db", "db_path", type=click.Path(path_type=Path), default=None)
 @click.option("--config", "config_path", type=click.Path(path_type=Path), default=DEFAULT_CONFIG_PATH)
-def worker(task_id: str, mode: str, db_path: Path, cwd: Path, config_path: Path) -> None:
+def worker(task_id: str, mode: str, workdir: Path | None, db_path: Path | None, config_path: Path) -> None:
     """Run one task worker process."""
-    _run_cli(_worker(task_id, mode, db_path, config_path, cwd))
+    _run_cli(_worker(task_id, mode, db_path, config_path, workdir))
 
 
 async def _init(db_path: Path) -> None:
@@ -160,28 +168,45 @@ def _run_cli(coro: Awaitable[T]) -> T:
         raise click.ClickException(str(exc)) from exc
 
 
-async def _open_app(db_path: Path, config_path: Path, cwd: Path | None = None) -> CellosApp:
+def _resolve_workdir(workdir: Path | None) -> Path:
+    if workdir is not None:
+        return workdir.expanduser().resolve()
+    current = Path.cwd()
+    if (current / DEFAULT_DB_PATH).exists():
+        return current.resolve()
+    return DEFAULT_WORKDIR.resolve()
+
+
+def _resolve_db_path(db_path: Path | None, workdir: Path) -> Path:
+    if db_path is not None:
+        return db_path.expanduser().resolve()
+    return workdir / DEFAULT_DB_PATH
+
+
+async def _open_app(db_path: Path | None, config_path: Path, workdir: Path | None = None) -> CellosApp:
+    resolved_workdir = _resolve_workdir(workdir)
+    resolved_db_path = _resolve_db_path(db_path, resolved_workdir)
     config = load_config(config_path)
-    db = CellosDatabase(db_path)
+    db = CellosDatabase(resolved_db_path)
     await db.connect()
     try:
         await db.ensure_initialized()
     except Exception:
         await db.close()
         raise
-    return CellosApp(config=config, db=db, cwd=cwd or Path.cwd())
+    return CellosApp(config=config, db=db, workdir=resolved_workdir)
 
 
-async def _add_task(db_path: Path, config_path: Path, task: Task) -> None:
-    app = await _open_app(db_path, config_path)
+async def _add_task(db_path: Path | None, config_path: Path, workdir: Path | None, task: Task) -> None:
+    app = await _open_app(db_path, config_path, workdir)
     try:
         await app.db.create_task(task)
     finally:
         await app.db.close()
 
 
-async def _status(db_path: Path, config_path: Path) -> None:
-    app = await _open_app(db_path, config_path)
+async def _status(db_path: Path | None, config_path: Path, workdir: Path | None) -> None:
+    app = await _open_app(db_path, config_path, workdir)
     try:
         tasks = await app.db.list_tasks()
     finally:
@@ -200,8 +225,14 @@ async def _status(db_path: Path, config_path: Path) -> None:
     console.print(table)
 
 
-async def _events(db_path: Path, config_path: Path, task_id: str | None, limit: int) -> None:
-    app = await _open_app(db_path, config_path)
+async def _events(
+    db_path: Path | None,
+    config_path: Path,
+    workdir: Path | None,
+    task_id: str | None,
+    limit: int,
+) -> None:
+    app = await _open_app(db_path, config_path, workdir)
     try:
         events = await app.db.list_task_events(task_id=task_id, limit=limit)
     finally:
@@ -224,20 +255,23 @@ async def _events(db_path: Path, config_path: Path, task_id: str | None, limit: 
     console.print(table)
 
 
-def _build_worker(config: CellosConfig):
+def _build_worker(config: CellosConfig, workdir: Path):
     if config.worker.backend == "acp":
         if not config.worker.command:
             raise click.ClickException("Config worker.command is required when worker.backend is 'acp'.")
+        debug_log_path = config.worker.debug_log_path
+        if debug_log_path is not None and not Path(debug_log_path).is_absolute():
+            debug_log_path = str(workdir / debug_log_path)
         return AcpWorker(
             command=config.worker.command,
             timeout_seconds=config.scheduler.worker_timeout_seconds,
-            debug_log_path=config.worker.debug_log_path,
+            debug_log_path=debug_log_path,
         )
     raise click.ClickException(f"Unsupported worker backend: {config.worker.backend}")
 
 
-async def _run(db_path: Path, config_path: Path, cwd: Path, concurrent_tasks: int | None):
-    app = await _open_app(db_path, config_path, cwd)
+async def _run(db_path: Path | None, config_path: Path, workdir: Path | None, concurrent_tasks: int | None):
+    app = await _open_app(db_path, config_path, workdir)
     resolved_concurrent_tasks = concurrent_tasks or app.config.scheduler.concurrent_tasks
     try:
         planning_candidates = await app.db.list_tasks_ready_for_planning(limit=resolved_concurrent_tasks)
@@ -272,7 +306,7 @@ async def _run(db_path: Path, config_path: Path, cwd: Path, concurrent_tasks: in
 async def _schedule_worker(
     app: CellosApp,
     task: Task,
-    db_path: Path,
+    db_path: Path | None,
     config_path: Path,
     mode: str,
 ) -> Task | None:
@@ -280,7 +314,7 @@ async def _schedule_worker(
     await app.db.record_task_event(task.id, "worker_spawned", f"Background {mode} worker spawned")
     await app.db.conn.commit()
     try:
-        _spawn_worker(scheduled, db_path, config_path, app.cwd, mode)
+        _spawn_worker(scheduled, db_path, config_path, app.workdir, mode)
     except Exception as exc:
         await app.db.save_task_result(
             TaskResult(
@@ -294,17 +328,17 @@ async def _schedule_worker(
     return scheduled
 
 
-async def _worker(task_id: str, mode: str, db_path: Path, config_path: Path, cwd: Path) -> None:
-    app = await _open_app(db_path, config_path, cwd)
+async def _worker(task_id: str, mode: str, db_path: Path | None, config_path: Path, workdir: Path | None) -> None:
+    app = await _open_app(db_path, config_path, workdir)
     try:
         task = await app.db.get_task(task_id)
         if task is None:
             raise click.ClickException(f"Task not found: {task_id}")
         await app.db.record_task_event(task.id, "worker_started", f"Background {mode} worker started")
         await app.db.conn.commit()
-        worker_backend = _build_worker(app.config)
+        worker_backend = _build_worker(app.config, app.workdir)
         try:
-            result = await worker_backend.run_task(task, app.cwd)
+            result = await worker_backend.run_task(task, app.workdir)
         except Exception as exc:
             result = TaskResult(
                 task_id=task.id,
@@ -336,8 +370,9 @@ async def _save_planning_result(app: CellosApp, task: Task, result: TaskResult) 
     await app.db.conn.commit()
 
 
-def _spawn_worker(task: Task, db_path: Path, config_path: Path, cwd: Path, mode: str) -> None:
-    log_path = cwd / ".cellos" / f"worker-{task.id}.log"
+def _spawn_worker(task: Task, db_path: Path | None, config_path: Path, workdir: Path, mode: str) -> None:
+    resolved_db_path = _resolve_db_path(db_path, workdir)
+    log_path = workdir / ".cellos" / "logs" / f"worker-{task.id}.log"
     log_path.parent.mkdir(parents=True, exist_ok=True)
     command = [
         sys.executable,
@@ -348,16 +383,16 @@ def _spawn_worker(task: Task, db_path: Path, config_path: Path, cwd: Path, mode:
         "--mode",
         mode,
         "--db",
-        str(db_path),
+        str(resolved_db_path),
         "--config",
         str(config_path),
-        "--cwd",
-        str(cwd),
+        "--workdir",
+        str(workdir),
     ]
     with log_path.open("ab") as log:
         subprocess.Popen(
             command,
-            cwd=cwd,
+            cwd=workdir,
             stdout=log,
             stderr=log,
             stdin=subprocess.DEVNULL,

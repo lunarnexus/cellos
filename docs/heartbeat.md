@@ -38,8 +38,8 @@ Initial sample config:
   },
   "worker": {
     "backend": "acp",
-    "command": ["python3", "tests/fakes/acp_server.py"],
-    "debug_log_path": ".cellos/acp-debug.log"
+    "command": ["python3", "-m", "cellos.connectors.fake_acp"],
+    "debug_log_path": ".cellos/logs/acp-debug.log"
   }
 }
 ```

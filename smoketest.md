@@ -10,13 +10,29 @@ This smoke test verifies the current local MVP behavior:
 - task status updates,
 - task event history.
 
-Run commands from the project root:
+The easiest path is to run commands from the project root:
 
 ```bash
 cd /Users/james/Scripts/CelloS/cellos
 ```
 
 Do not run this through a filesystem sandbox. Use the normal project directory so background workers can read the local config, write the local SQLite database, and run the fake ACP process.
+
+The default fake ACP command is package-based:
+
+```bash
+python3 -m cellos.connectors.fake_acp
+```
+
+That command does not depend on a relative path into `tests/`.
+
+Workdir rules:
+
+- `--workdir PATH` uses `PATH`.
+- If the current directory has `.cellos/cellos.sqlite`, the current directory is used.
+- Otherwise CelloS uses `~/`, which makes the default DB path `~/.cellos/cellos.sqlite`.
+
+This smoke test uses `--workdir .` so it always tests the repository workdir.
 
 ## 1. Run Pytests
 
@@ -27,19 +43,19 @@ PYTHONDONTWRITEBYTECODE=1 python3 -m pytest -p no:cacheprovider tests/test_confi
 Expected result:
 
 ```text
-32 passed
+36 passed
 ```
 
 ## 2. Reset Local State
 
 ```bash
-cellos init --hard-reset
+cellos init --hard-reset --workdir .
 ```
 
 Expected output:
 
 ```text
-Initialized database at .cellos/cellos.sqlite
+Initialized database at /Users/james/Scripts/CelloS/cellos/.cellos/cellos.sqlite
 Initialized config at /Users/james/.cellos/config.json
 ```
 
@@ -48,8 +64,8 @@ The default config should use fake ACP:
 ```json
 "worker": {
   "backend": "acp",
-  "command": ["python3", "tests/fakes/acp_server.py"],
-  "debug_log_path": ".cellos/acp-debug.log"
+  "command": ["python3", "-m", "cellos.connectors.fake_acp"],
+  "debug_log_path": ".cellos/logs/acp-debug.log"
 }
 ```
 
@@ -58,13 +74,13 @@ The default config should use fake ACP:
 Create a draft task:
 
 ```bash
-cellos add-task "Plan smoke test work" --role coordinator --type proposal --prompt "Create a short plan."
+cellos add-task "Plan smoke test work" --role coordinator --type proposal --prompt "Create a short plan." --workdir .
 ```
 
 Run one heartbeat:
 
 ```bash
-cellos run
+cellos run --workdir .
 ```
 
 Expected output:
@@ -82,7 +98,7 @@ sleep 1
 Check status:
 
 ```bash
-cellos status
+cellos status --workdir .
 ```
 
 Expected result:
@@ -93,7 +109,7 @@ Expected result:
 Check events:
 
 ```bash
-cellos events
+cellos events --workdir .
 ```
 
 Expected event trail includes:
@@ -111,13 +127,13 @@ planning_saved
 Create an approved implementation task:
 
 ```bash
-cellos add-task "Execute smoke test work" --status approved --role engineer --type implementation --prompt "Return a short success message."
+cellos add-task "Execute smoke test work" --status approved --role engineer --type implementation --prompt "Return a short success message." --workdir .
 ```
 
 Run one heartbeat:
 
 ```bash
-cellos run
+cellos run --workdir .
 ```
 
 Expected output:
@@ -135,7 +151,7 @@ sleep 1
 Check status:
 
 ```bash
-cellos status
+cellos status --workdir .
 ```
 
 Expected result:
@@ -146,7 +162,7 @@ Expected result:
 Check events:
 
 ```bash
-cellos events
+cellos events --workdir .
 ```
 
 Expected event trail for the execution task includes:
@@ -171,8 +187,8 @@ Useful files:
 
 ```text
 .cellos/cellos.sqlite
-.cellos/acp-debug.log
-.cellos/worker-task-*.log
+.cellos/logs/acp-debug.log
+.cellos/logs/worker-task-*.log
 ```
 
 Empty worker logs are normal when the fake ACP worker succeeds without stderr/stdout outside the ACP protocol.

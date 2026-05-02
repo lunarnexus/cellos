@@ -25,7 +25,7 @@ class AcpWorker:
             cwd=cwd,
             prompt=build_task_prompt(task),
             timeout_seconds=task.timeout_seconds or self.timeout_seconds,
-            debug_log_path=self.debug_log_path or Path(cwd) / ".cellos" / "acp-debug.log",
+            debug_log_path=self.debug_log_path or Path(cwd) / ".cellos" / "logs" / "acp-debug.log",
             skip_non_json_stdout=self.skip_non_json_stdout,
             ignore_close_not_found=True,
         )
