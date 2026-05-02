@@ -89,7 +89,7 @@ def add_task(
 ) -> None:
     """Add a task to the local CelloS database."""
     task = Task(
-        id=f"task-{uuid4().hex[:8]}",
+        id=uuid4().hex[:8],
         title=title,
         role=AgentRole(role),
         task_type=TaskType(task_type),
@@ -235,7 +235,7 @@ async def _status(db_path: Path | None, config_path: Path, workdir: Path | None)
         await app.db.close()
 
     table = Table(title="CelloS Tasks")
-    table.add_column("ID")
+    table.add_column("ID", no_wrap=True)
     table.add_column("Status")
     table.add_column("Role")
     table.add_column("Type")
@@ -261,8 +261,8 @@ async def _events(
         await app.db.close()
 
     table = Table(title="CelloS Events")
-    table.add_column("ID")
-    table.add_column("Task")
+    table.add_column("ID", no_wrap=True)
+    table.add_column("Task", no_wrap=True)
     table.add_column("Type")
     table.add_column("Message")
     table.add_column("Created")

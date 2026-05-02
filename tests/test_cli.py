@@ -126,7 +126,11 @@ def test_add_task_and_status(tmp_path):
 
     assert init_result.exit_code == 0
     assert add_result.exit_code == 0
+    task_id = task_id_from_add_output(add_result.output)
+    assert not task_id.startswith("task-")
+    assert len(task_id) == 8
     assert status_result.exit_code == 0
+    assert task_id in status_result.output
     assert "Draft plan" in status_result.output
     assert "coordinator" in status_result.output
     assert "draft" in status_result.output

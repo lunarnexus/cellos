@@ -32,8 +32,6 @@ Workdir rules:
 - If the current directory has `.cellos/cellos.sqlite`, the current directory is used.
 - Otherwise CelloS uses `~/`, which makes the default DB path `~/.cellos/cellos.sqlite`.
 
-This smoke test uses `--workdir .` so it always tests the repository workdir.
-
 ## 1. Run Pytests
 
 ```bash
@@ -43,19 +41,19 @@ PYTHONDONTWRITEBYTECODE=1 python3 -m pytest -p no:cacheprovider tests/test_confi
 Expected result:
 
 ```text
-36 passed
+39 passed
 ```
 
 ## 2. Reset Local State
 
 ```bash
-cellos init --hard-reset --workdir .
+cellos init --hard-reset
 ```
 
 Expected output:
 
 ```text
-Initialized database at /Users/james/Scripts/CelloS/cellos/.cellos/cellos.sqlite
+Initialized database at ...
 Initialized config at /Users/james/.cellos/config.json
 ```
 
@@ -74,19 +72,19 @@ The default config should use fake ACP:
 Create a draft task:
 
 ```bash
-cellos add-task "Plan smoke test work" --role coordinator --type proposal --prompt "Create a short plan." --workdir .
+cellos add-task "Plan smoke test work" --role coordinator --type proposal --prompt "Create a short plan."
 ```
 
 Run one heartbeat:
 
 ```bash
-cellos run --workdir .
+cellos run
 ```
 
 Expected output:
 
 ```text
-task-...: scheduled planning - Plan smoke test work
+<ID>: scheduled planning - Plan smoke test work
 ```
 
 Wait briefly for the background worker:
@@ -98,7 +96,7 @@ sleep 1
 Check status:
 
 ```bash
-cellos status --workdir .
+cellos status
 ```
 
 Expected result:
@@ -109,7 +107,7 @@ Expected result:
 Inspect the planned task:
 
 ```bash
-cellos detail TASK_ID --workdir .
+cellos detail TASK_ID
 ```
 
 Expected result:
@@ -120,19 +118,19 @@ Expected result:
 Approve the planned task:
 
 ```bash
-cellos approve TASK_ID --workdir .
+cellos approve TASK_ID
 ```
 
 Expected output:
 
 ```text
-Approved task-...: Plan smoke test work
+Approved <ID>: Plan smoke test work
 ```
 
 Check events:
 
 ```bash
-cellos events --workdir .
+cellos events
 ```
 
 Expected event trail includes:
@@ -151,13 +149,13 @@ approved
 Run one heartbeat to execute the approved planned task:
 
 ```bash
-cellos run --workdir .
+cellos run
 ```
 
 Expected output:
 
 ```text
-task-...: scheduled execution - Plan smoke test work
+<ID>: scheduled execution - Plan smoke test work
 ```
 
 Wait briefly for the background worker:
@@ -169,7 +167,7 @@ sleep 1
 Check status:
 
 ```bash
-cellos status --workdir .
+cellos status
 ```
 
 Expected result:
@@ -182,19 +180,19 @@ Expected result:
 Create an approved implementation task:
 
 ```bash
-cellos add-task "Execute smoke test work" --status approved --role engineer --type implementation --prompt "Return a short success message." --workdir .
+cellos add-task "Execute smoke test work" --status approved --role engineer --type implementation --prompt "Return a short success message."
 ```
 
 Run one heartbeat:
 
 ```bash
-cellos run --workdir .
+cellos run
 ```
 
 Expected output:
 
 ```text
-task-...: scheduled execution - Execute smoke test work
+<ID>: scheduled execution - Execute smoke test work
 ```
 
 Wait briefly for the background worker:
@@ -206,7 +204,7 @@ sleep 1
 Check status:
 
 ```bash
-cellos status --workdir .
+cellos status
 ```
 
 Expected result:
@@ -217,7 +215,7 @@ Expected result:
 Check events:
 
 ```bash
-cellos events --workdir .
+cellos events
 ```
 
 Expected event trail for the execution task includes:
@@ -243,7 +241,7 @@ Useful files:
 ```text
 .cellos/cellos.sqlite
 .cellos/logs/acp-debug.log
-.cellos/logs/worker-task-*.log
+.cellos/logs/worker-*.log
 ```
 
 Empty worker logs are normal when the fake ACP worker succeeds without stderr/stdout outside the ACP protocol.
