@@ -28,9 +28,30 @@ def test_build_task_prompt_includes_approved_scope():
 
     assert "Role: engineer" in prompt
     assert "Task type: implementation" in prompt
+    assert "Mode: execution" in prompt
+    assert "Perform approved implementation work within scope" in prompt
     assert "Task prompt / approved scope:" in prompt
     assert "Change only the CLI." in prompt
     assert "Keep it small." in prompt
+
+
+def test_build_task_prompt_uses_planning_profile():
+    task = Task(
+        id="task-1",
+        title="Plan feature",
+        role=AgentRole.ARCHITECT,
+        task_type=TaskType.PROPOSAL,
+        status=TaskStatus.DRAFT,
+        prompt="Draft a plan.",
+    )
+
+    prompt = build_task_prompt(task, mode="planning")
+
+    assert "Role: architect" in prompt
+    assert "Mode: planning" in prompt
+    assert "Draft or revise a plan only." in prompt
+    assert "Design task boundaries" in prompt
+    assert "Do not perform write actions" in prompt
 
 
 @pytest.mark.anyio
@@ -82,9 +103,10 @@ async def test_acp_worker_runs_task_with_fake_server(tmp_path):
         status=TaskStatus.APPROVED,
     )
 
-    result = await worker.run_task(task, tmp_path)
+    result = await worker.run_task(task, tmp_path, mode="planning")
 
     assert result.task_id == "task-1"
     assert result.success is True
     assert result.summary == "built"
     assert result.output["session_id"] == "s1"
+    assert result.output["mode"] == "planning"

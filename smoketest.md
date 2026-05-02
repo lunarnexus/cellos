@@ -115,6 +115,18 @@ Expected result:
 - full prompt/plan text is visible,
 - recent events include `planning_saved`.
 
+Optionally revise the planned task before approval:
+
+```bash
+cellos update TASK_ID --prompt "Human-approved revised plan text."
+cellos detail TASK_ID
+```
+
+Expected result:
+
+- the revised prompt is visible,
+- recent events include `updated`.
+
 Approve the planned task:
 
 ```bash

@@ -15,7 +15,7 @@ from rich.table import Table
 from cellos.acp_worker import AcpWorker
 from cellos.config import CellosConfig, ConfigError, DEFAULT_CONFIG_PATH, ensure_config, load_config
 from cellos.db import CellosDatabase, DatabaseNotInitialized
-from cellos.models import AgentRole, Task, TaskResult, TaskStatus, TaskType
+from cellos.models import AgentRole, AttentionReason, Task, TaskResult, TaskStatus, TaskType
 
 
 DEFAULT_DB_PATH = Path(".cellos") / "cellos.sqlite"
@@ -133,6 +133,30 @@ def events(task_id: str | None, limit: int, workdir: Path | None, db_path: Path 
 def detail(task_id: str, event_limit: int, workdir: Path | None, db_path: Path | None, config_path: Path) -> None:
     """Show task details."""
     _run_cli(_detail(db_path, config_path, workdir, task_id, event_limit))
+
+
+@main.command()
+@click.argument("task_id")
+@click.option("--title", default=None)
+@click.option("--prompt", default=None)
+@click.option("--description", default=None)
+@click.option("--status", type=click.Choice([item.value for item in TaskStatus]), default=None)
+@click.option("--workdir", type=click.Path(path_type=Path), default=None)
+@click.option("--db", "db_path", type=click.Path(path_type=Path), default=None)
+@click.option("--config", "config_path", type=click.Path(path_type=Path), default=DEFAULT_CONFIG_PATH)
+def update(
+    task_id: str,
+    title: str | None,
+    prompt: str | None,
+    description: str | None,
+    status: str | None,
+    workdir: Path | None,
+    db_path: Path | None,
+    config_path: Path,
+) -> None:
+    """Update a task."""
+    task = _run_cli(_update(db_path, config_path, workdir, task_id, title, prompt, description, status))
+    console.print(f"Updated [bold]{task.id}[/bold]: {task.title}")
 
 
 @main.command()
@@ -320,6 +344,52 @@ async def _detail(
             console.print(f"- {event['event_type']}: {event['message']}")
 
 
+async def _update(
+    db_path: Path | None,
+    config_path: Path,
+    workdir: Path | None,
+    task_id: str,
+    title: str | None,
+    prompt: str | None,
+    description: str | None,
+    status: str | None,
+) -> Task:
+    if title is None and prompt is None and description is None and status is None:
+        raise click.ClickException("Nothing to update.")
+    app = await _open_app(db_path, config_path, workdir)
+    try:
+        task = await app.db.get_task(task_id)
+        if task is None:
+            raise click.ClickException(f"Task not found: {task_id}")
+
+        updates: dict[str, object] = {}
+        content_changed = False
+        if title is not None:
+            updates["title"] = title
+            content_changed = content_changed or title != task.title
+        if prompt is not None:
+            updates["prompt"] = prompt
+            content_changed = content_changed or prompt != task.prompt
+        if description is not None:
+            updates["description"] = description
+            content_changed = content_changed or description != task.description
+        if status is not None:
+            updates["status"] = TaskStatus(status)
+
+        updated_task = task.model_copy(update=updates)
+        if content_changed and updated_task.status != TaskStatus.APPROVED:
+            updated_task = updated_task.requires_attention(
+                AttentionReason.HUMAN_CHANGED_TASK,
+                "Human updated task content",
+            )
+        updated = await app.db.update_task(updated_task)
+        await app.db.record_task_event(task.id, "updated", "Task updated")
+        await app.db.conn.commit()
+        return updated
+    finally:
+        await app.db.close()
+
+
 async def _approve(db_path: Path | None, config_path: Path, workdir: Path | None, task_id: str) -> Task:
     app = await _open_app(db_path, config_path, workdir)
     try:
@@ -421,7 +491,7 @@ async def _worker(task_id: str, mode: str, db_path: Path | None, config_path: Pa
         await app.db.conn.commit()
         worker_backend = _build_worker(app.config, app.workdir)
         try:
-            result = await worker_backend.run_task(task, app.workdir)
+            result = await worker_backend.run_task(task, app.workdir, mode=mode)
         except Exception as exc:
             result = TaskResult(
                 task_id=task.id,

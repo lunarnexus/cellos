@@ -254,6 +254,71 @@ def test_detail_shows_prompt_result_and_events(tmp_path):
     assert "Task created" in result.output
 
 
+def test_update_changes_prompt_and_records_event(tmp_path):
+    db_path = tmp_path / "cellos.sqlite"
+    config_path = tmp_path / ".cellos" / "config.json"
+    runner = CliRunner()
+    runner.invoke(main, ["init", "--db", str(db_path), "--config", str(config_path)])
+    add_result = runner.invoke(
+        main,
+        [
+            "add-task",
+            "Needs edits",
+            "--prompt",
+            "Old prompt.",
+            "--db",
+            str(db_path),
+            "--config",
+            str(config_path),
+        ],
+    )
+    task_id = task_id_from_add_output(add_result.output)
+
+    update_result = runner.invoke(
+        main,
+        [
+            "update",
+            task_id,
+            "--prompt",
+            "New prompt.",
+            "--status",
+            "needs_approval",
+            "--db",
+            str(db_path),
+            "--config",
+            str(config_path),
+        ],
+    )
+    detail_result = runner.invoke(main, ["detail", task_id, "--db", str(db_path), "--config", str(config_path)])
+    events_result = runner.invoke(main, ["events", task_id, "--db", str(db_path), "--config", str(config_path)])
+    saved_task = task_payload(db_path)
+
+    assert update_result.exit_code == 0
+    assert f"Updated {task_id}" in update_result.output
+    assert "New prompt." in detail_result.output
+    assert saved_task["status"] == "needs_approval"
+    assert saved_task["attention"]["required"] is True
+    assert saved_task["attention"]["reason"] == "human_changed_task"
+    assert "Task updated" in events_result.output
+
+
+def test_update_rejects_empty_update(tmp_path):
+    db_path = tmp_path / "cellos.sqlite"
+    config_path = tmp_path / ".cellos" / "config.json"
+    runner = CliRunner()
+    runner.invoke(main, ["init", "--db", str(db_path), "--config", str(config_path)])
+    add_result = runner.invoke(
+        main,
+        ["add-task", "No-op", "--db", str(db_path), "--config", str(config_path)],
+    )
+    task_id = task_id_from_add_output(add_result.output)
+
+    result = runner.invoke(main, ["update", task_id, "--db", str(db_path), "--config", str(config_path)])
+
+    assert result.exit_code != 0
+    assert "Nothing to update." in result.output
+
+
 def test_approve_moves_task_to_approved(tmp_path):
     db_path = tmp_path / "cellos.sqlite"
     config_path = tmp_path / ".cellos" / "config.json"
