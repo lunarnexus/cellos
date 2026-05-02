@@ -150,6 +150,22 @@ class CellosDatabase:
         rows = await cursor.fetchall()
         return [Task.model_validate_json(row["payload"]) for row in rows]
 
+    async def list_tasks_ready_for_planning(self, limit: int | None = None) -> list[Task]:
+        sql = """
+            SELECT payload
+            FROM tasks
+            WHERE status = ?
+               OR (status = ? AND attention_required = 1)
+            ORDER BY created_at
+        """
+        params: list[Any] = [TaskStatus.DRAFT.value, TaskStatus.NEEDS_APPROVAL.value]
+        if limit is not None:
+            sql += " LIMIT ?"
+            params.append(limit)
+        cursor = await self.conn.execute(sql, params)
+        rows = await cursor.fetchall()
+        return [Task.model_validate_json(row["payload"]) for row in rows]
+
     async def list_approved_unblocked_tasks(self, limit: int | None = None) -> list[Task]:
         sql = """
             SELECT t.payload

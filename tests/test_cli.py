@@ -1,4 +1,5 @@
 import json
+import sqlite3
 import sys
 import time
 from pathlib import Path
@@ -16,6 +17,12 @@ def wait_for_status(runner: CliRunner, db_path: Path, config_path: Path, expecte
             return result
         time.sleep(0.1)
     return result
+
+
+def task_payload(db_path: Path) -> dict:
+    with sqlite3.connect(db_path) as conn:
+        row = conn.execute("SELECT payload FROM tasks ORDER BY created_at LIMIT 1").fetchone()
+    return json.loads(row[0])
 
 
 def test_init_creates_database(tmp_path):
@@ -131,6 +138,43 @@ def test_run_schedules_approved_task(tmp_path):
     assert "scheduled" in run_result.output
     assert "fake ACP" in status_result.output
     assert "completed" in status_result.output
+
+
+def test_run_schedules_draft_task_for_planning(tmp_path):
+    db_path = tmp_path / "cellos.sqlite"
+    config_path = tmp_path / ".cellos" / "config.json"
+    runner = CliRunner()
+    init_result = runner.invoke(main, ["init", "--db", str(db_path), "--config", str(config_path)])
+
+    add_result = runner.invoke(
+        main,
+        [
+            "add-task",
+            "Plan this work",
+            "--role",
+            "coordinator",
+            "--type",
+            "proposal",
+            "--prompt",
+            "Create a short plan.",
+            "--db",
+            str(db_path),
+            "--config",
+            str(config_path),
+        ],
+    )
+    run_result = runner.invoke(main, ["run", "--db", str(db_path), "--config", str(config_path)])
+    wait_for_status(runner, db_path, config_path, "fake ACP")
+    events_result = runner.invoke(main, ["events", "--db", str(db_path), "--config", str(config_path)])
+    saved_task = task_payload(db_path)
+
+    assert init_result.exit_code == 0
+    assert add_result.exit_code == 0
+    assert run_result.exit_code == 0
+    assert "scheduled planning" in run_result.output
+    assert saved_task["status"] == "needs_approval"
+    assert saved_task["prompt"] == "fake ACP completed task"
+    assert "planning_saved" in events_result.output
 
 
 def test_events_shows_task_history(tmp_path):

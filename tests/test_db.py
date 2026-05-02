@@ -72,6 +72,43 @@ async def test_database_lists_tasks_requiring_attention(tmp_path):
 
 
 @pytest.mark.anyio
+async def test_database_lists_tasks_ready_for_planning(tmp_path):
+    db = CellosDatabase(tmp_path / "cellos.sqlite")
+    await db.connect()
+    await db.init_db()
+
+    draft = Task(id="task-draft", title="Draft", role=AgentRole.COORDINATOR)
+    waiting = Task(
+        id="task-waiting",
+        title="Waiting",
+        role=AgentRole.ARCHITECT,
+        status=TaskStatus.NEEDS_APPROVAL,
+    )
+    revised = Task(
+        id="task-revised",
+        title="Revised",
+        role=AgentRole.ARCHITECT,
+        status=TaskStatus.NEEDS_APPROVAL,
+    ).requires_attention(AttentionReason.HUMAN_COMMENTED, "Human asked for revision")
+    approved = Task(
+        id="task-approved",
+        title="Approved",
+        role=AgentRole.ENGINEER,
+        status=TaskStatus.APPROVED,
+    )
+
+    await db.create_task(draft)
+    await db.create_task(waiting)
+    await db.create_task(revised)
+    await db.create_task(approved)
+
+    tasks = await db.list_tasks_ready_for_planning()
+
+    assert [task.id for task in tasks] == ["task-draft", "task-revised"]
+    await db.close()
+
+
+@pytest.mark.anyio
 async def test_database_lists_only_approved_unblocked_tasks(tmp_path):
     db = CellosDatabase(tmp_path / "cellos.sqlite")
     await db.connect()

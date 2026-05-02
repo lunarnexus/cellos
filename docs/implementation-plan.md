@@ -1,41 +1,72 @@
 # Implementation Plan
 
-This plan stages implementation around the new docs. Keep work small, testable, and aligned with approval-first behavior.
+This plan stages implementation around the current docs. Keep work small, testable, and aligned with approval-first behavior.
 
-## Phase 1: Align Core Models
+## Completed Foundation
 
-Goal: update internal models to match the canonical roles and lifecycle.
+Implemented:
+
+- canonical roles: `coordinator`, `researcher`, `architect`, `engineer`, `tester`,
+- canonical lifecycle statuses,
+- task prompt storage,
+- attention metadata,
+- processing metadata,
+- structured change request reports,
+- SQLite persistence,
+- `cellos init`,
+- required config at `~/.cellos/config.json`,
+- fake ACP worker default for development,
+- ACP worker execution,
+- one-turn `cellos run`,
+- async background `cellos worker TASK_ID`,
+- DB sanity checks that require `cellos init`,
+- task events and `cellos events`,
+- approved-task execution scheduling,
+- draft-task planning scheduling,
+- tests for config, models, DB, ACP worker, heartbeat, and CLI.
+
+## Phase 1: Planning Mode Refinement
+
+Goal: make planning useful enough for human approval.
+
+Current behavior:
+
+- `draft` tasks are eligible for planning.
+- `needs_approval` tasks are eligible for replanning only when they have attention.
+- successful planning stores worker output in the task prompt and returns the task to `needs_approval`.
+- `approved` tasks are eligible for execution.
+
+Next work:
+
+- display task prompt/plan clearly in CLI status or a task detail command,
+- add a CLI command to approve a planned task,
+- add a CLI command to request revision or mark attention,
+- make planning prompts role-aware,
+- clarify how parent/child planning should create follow-up tasks.
+
+## Phase 2: Approval Gates
+
+Goal: prevent unapproved write actions.
 
 Work:
 
-- Replace old role names with `coordinator`, `researcher`, `architect`, `engineer`, `tester`.
-- Replace old statuses with the canonical lifecycle statuses.
-- Add attention metadata.
-- Add processing metadata needed for idempotency.
-- Keep existing tests passing or update them to the new language.
+- enforce approval before task creation by an AI role,
+- enforce approval before filesystem or PM writes,
+- distinguish planning output from execution output,
+- add tests for blocked unapproved work,
+- add clear CLI/PM status for tasks waiting on approval.
 
-## Phase 2: Communication Artifacts
+## Phase 3: ACP Prompt Profiles
 
-Goal: represent proposals, reports, and change requests cleanly.
-
-Work:
-
-- Add fields or helper models for proposal text.
-- Add structured report/result shapes where useful.
-- Add change request report support.
-- Update CLI display to show proposal/result status clearly.
-
-## Phase 3: Heartbeat Semantics
-
-Goal: make `cellos run` behave like one scheduler heartbeat.
+Goal: align worker prompts and results with roles.
 
 Work:
 
-- Load `~/.cellos/config.json` with defaults.
-- Support CLI overrides for concurrency and timeout.
-- Evaluate attention before worker spawning.
-- Skip tasks with no new signal.
-- Preserve best-effort behavior.
+- add role-specific prompt templates,
+- add planning vs execution prompt templates,
+- add expected report formats,
+- add change request reporting instructions,
+- preserve raw output on parsing/debug failures.
 
 ## Phase 4: PM Adapter Contract
 
@@ -43,10 +74,10 @@ Goal: create a PM-neutral adapter boundary.
 
 Work:
 
-- Define adapter interfaces for sync, discovery, updates, and task creation.
-- Store PM sync metadata.
-- Keep adapter failures isolated.
-- Write fake adapter tests before Trello.
+- define adapter interfaces for sync, discovery, updates, and task creation,
+- store PM sync metadata,
+- keep adapter failures isolated,
+- write fake adapter tests before Trello.
 
 ## Phase 5: Trello MVP
 
@@ -54,42 +85,20 @@ Goal: sync Trello cards into CelloS and push updates back.
 
 Work:
 
-- Read board/list/card metadata.
-- Filter cards by case-insensitive `cellos` label.
-- Map Trello lists to CelloS states.
-- Detect human edits/comments/list moves.
-- Write proposals/results/comments back to cards.
-- Create child cards only after approved scope allows task creation.
+- read board/list/card metadata,
+- filter cards by case-insensitive `cellos` label,
+- map Trello lists to CelloS states,
+- detect human edits/comments/list moves,
+- write prompts/results/comments back to cards,
+- create child cards only after approved scope allows task creation.
 
-## Phase 6: Approval Gates
+## Phase 6: Documentation Maintenance
 
-Goal: prevent unapproved write actions.
-
-Work:
-
-- Enforce approval before task creation.
-- Enforce approval before worker execution.
-- Add tests for blocked unapproved work.
-- Add clear CLI/PM status for tasks waiting on approval.
-
-## Phase 7: ACP Worker Refinement
-
-Goal: align worker prompts and results with new roles.
+Goal: keep docs aligned with implementation.
 
 Work:
 
-- Add role-specific prompt templates.
-- Add expected report formats.
-- Add change request reporting instructions.
-- Preserve raw output on parsing/debug failures.
-
-## Phase 8: Documentation Cleanup
-
-Goal: make `docs2/` the canonical documentation.
-
-Work:
-
-- Review all docs2 files.
-- Update project README to point to docs2.
-- Archive, remove, or redirect old docs.
-- Update HANDOFF.md to reflect the new design.
+- update docs when lifecycle behavior changes,
+- keep examples aligned with `cellos.config.example.json`,
+- keep implementation plan focused on remaining work,
+- avoid preserving obsolete design history in canonical docs.

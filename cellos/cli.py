@@ -33,7 +33,8 @@ class CellosApp:
 @dataclass
 class RunScheduleResult:
     attention_tasks: list[Task]
-    scheduled_tasks: list[Task]
+    planning_tasks: list[Task]
+    execution_tasks: list[Task]
 
 
 @click.group(context_settings={"help_option_names": ["-h", "--help"]})
@@ -123,23 +124,26 @@ def events(task_id: str | None, limit: int, db_path: Path, config_path: Path) ->
 def run(db_path: Path, cwd: Path, config_path: Path, concurrent_tasks: int | None) -> None:
     """Run one local CelloS heartbeat."""
     result = _run_cli(_run(db_path, config_path, cwd, concurrent_tasks))
-    if not result.attention_tasks and not result.scheduled_tasks:
+    if not result.attention_tasks and not result.planning_tasks and not result.execution_tasks:
         console.print("No tasks to run.")
         return
     for task in result.attention_tasks:
         console.print(f"{task.id}: attention - {task.attention.reason}")
-    for task in result.scheduled_tasks:
-        console.print(f"{task.id}: scheduled - {task.title}")
+    for task in result.planning_tasks:
+        console.print(f"{task.id}: scheduled planning - {task.title}")
+    for task in result.execution_tasks:
+        console.print(f"{task.id}: scheduled execution - {task.title}")
 
 
 @main.command(hidden=True)
 @click.argument("task_id")
+@click.option("--mode", type=click.Choice(["planning", "execution"]), required=True)
 @click.option("--db", "db_path", type=click.Path(path_type=Path), default=DEFAULT_DB_PATH)
 @click.option("--cwd", type=click.Path(path_type=Path), default=Path.cwd())
 @click.option("--config", "config_path", type=click.Path(path_type=Path), default=DEFAULT_CONFIG_PATH)
-def worker(task_id: str, db_path: Path, cwd: Path, config_path: Path) -> None:
+def worker(task_id: str, mode: str, db_path: Path, cwd: Path, config_path: Path) -> None:
     """Run one task worker process."""
-    _run_cli(_worker(task_id, db_path, config_path, cwd))
+    _run_cli(_worker(task_id, mode, db_path, config_path, cwd))
 
 
 async def _init(db_path: Path) -> None:
@@ -236,39 +240,67 @@ async def _run(db_path: Path, config_path: Path, cwd: Path, concurrent_tasks: in
     app = await _open_app(db_path, config_path, cwd)
     resolved_concurrent_tasks = concurrent_tasks or app.config.scheduler.concurrent_tasks
     try:
-        attention_tasks = await app.db.list_tasks_requiring_attention(limit=resolved_concurrent_tasks)
-        remaining_slots = max(resolved_concurrent_tasks - len(attention_tasks), 0)
+        planning_candidates = await app.db.list_tasks_ready_for_planning(limit=resolved_concurrent_tasks)
+        planning_ids = {task.id for task in planning_candidates}
+        remaining_after_planning = max(resolved_concurrent_tasks - len(planning_candidates), 0)
+        attention_tasks = [
+            task
+            for task in await app.db.list_tasks_requiring_attention(limit=resolved_concurrent_tasks)
+            if task.id not in planning_ids
+        ][:remaining_after_planning]
+        remaining_slots = max(remaining_after_planning - len(attention_tasks), 0)
         approved_tasks = await app.db.list_approved_unblocked_tasks(limit=remaining_slots)
-        scheduled_tasks: list[Task] = []
+        planning_tasks: list[Task] = []
+        execution_tasks: list[Task] = []
+        for task in planning_candidates:
+            scheduled = await _schedule_worker(app, task, db_path, config_path, "planning")
+            if scheduled is not None:
+                planning_tasks.append(scheduled)
         for task in approved_tasks:
-            scheduled = await app.db.update_task_status(task.id, TaskStatus.IN_PROGRESS)
-            await app.db.record_task_event(task.id, "worker_spawned", "Background worker spawned")
-            await app.db.conn.commit()
-            try:
-                _spawn_worker(scheduled, db_path, config_path, app.cwd)
-            except Exception as exc:
-                await app.db.save_task_result(
-                    TaskResult(
-                        task_id=task.id,
-                        success=False,
-                        summary=f"Worker spawn failed: {exc}",
-                        error=str(exc),
-                    )
-                )
-                continue
-            scheduled_tasks.append(scheduled)
-        return RunScheduleResult(attention_tasks=attention_tasks, scheduled_tasks=scheduled_tasks)
+            scheduled = await _schedule_worker(app, task, db_path, config_path, "execution")
+            if scheduled is not None:
+                execution_tasks.append(scheduled)
+        return RunScheduleResult(
+            attention_tasks=attention_tasks,
+            planning_tasks=planning_tasks,
+            execution_tasks=execution_tasks,
+        )
     finally:
         await app.db.close()
 
 
-async def _worker(task_id: str, db_path: Path, config_path: Path, cwd: Path) -> None:
+async def _schedule_worker(
+    app: CellosApp,
+    task: Task,
+    db_path: Path,
+    config_path: Path,
+    mode: str,
+) -> Task | None:
+    scheduled = await app.db.update_task_status(task.id, TaskStatus.IN_PROGRESS)
+    await app.db.record_task_event(task.id, "worker_spawned", f"Background {mode} worker spawned")
+    await app.db.conn.commit()
+    try:
+        _spawn_worker(scheduled, db_path, config_path, app.cwd, mode)
+    except Exception as exc:
+        await app.db.save_task_result(
+            TaskResult(
+                task_id=task.id,
+                success=False,
+                summary=f"Worker spawn failed: {exc}",
+                error=str(exc),
+            )
+        )
+        return None
+    return scheduled
+
+
+async def _worker(task_id: str, mode: str, db_path: Path, config_path: Path, cwd: Path) -> None:
     app = await _open_app(db_path, config_path, cwd)
     try:
         task = await app.db.get_task(task_id)
         if task is None:
             raise click.ClickException(f"Task not found: {task_id}")
-        await app.db.record_task_event(task.id, "worker_started", "Background worker started")
+        await app.db.record_task_event(task.id, "worker_started", f"Background {mode} worker started")
         await app.db.conn.commit()
         worker_backend = _build_worker(app.config)
         try:
@@ -280,12 +312,31 @@ async def _worker(task_id: str, db_path: Path, config_path: Path, cwd: Path) -> 
                 summary=f"Task failed: {exc}",
                 error=str(exc),
             )
-        await app.db.save_task_result(result)
+        if mode == "planning" and result.success:
+            await _save_planning_result(app, task, result)
+        else:
+            await app.db.save_task_result(result)
     finally:
         await app.db.close()
 
 
-def _spawn_worker(task: Task, db_path: Path, config_path: Path, cwd: Path) -> None:
+async def _save_planning_result(app: CellosApp, task: Task, result: TaskResult) -> None:
+    current = await app.db.get_task(task.id)
+    if current is None:
+        raise click.ClickException(f"Task not found: {task.id}")
+    updated = current.clear_attention().model_copy(
+        update={
+            "prompt": result.summary,
+            "result": result,
+            "status": TaskStatus.NEEDS_APPROVAL,
+        }
+    )
+    await app.db.update_task(updated)
+    await app.db.record_task_event(task.id, "planning_saved", "Planning result saved; task needs approval")
+    await app.db.conn.commit()
+
+
+def _spawn_worker(task: Task, db_path: Path, config_path: Path, cwd: Path, mode: str) -> None:
     log_path = cwd / ".cellos" / f"worker-{task.id}.log"
     log_path.parent.mkdir(parents=True, exist_ok=True)
     command = [
@@ -294,6 +345,8 @@ def _spawn_worker(task: Task, db_path: Path, config_path: Path, cwd: Path) -> No
         "cellos.cli",
         "worker",
         task.id,
+        "--mode",
+        mode,
         "--db",
         str(db_path),
         "--config",

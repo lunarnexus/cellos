@@ -35,6 +35,11 @@ Initial sample config:
   "scheduler": {
     "concurrent_tasks": 4,
     "worker_timeout_seconds": 300
+  },
+  "worker": {
+    "backend": "acp",
+    "command": ["python3", "tests/fakes/acp_server.py"],
+    "debug_log_path": ".cellos/acp-debug.log"
   }
 }
 ```
@@ -173,12 +178,20 @@ One heartbeat should run in this order:
 5. Discover new PM tasks that are in CelloS scope.
 6. Update task records, PM sync metadata, and attention metadata.
 7. Evaluate tasks requiring attention.
-8. Evaluate approved executable tasks whose dependencies are satisfied.
-9. Select a bounded set of tasks for this heartbeat.
-10. Start worker tasks.
-11. Record results, failures, change requests, and task events.
-12. Push state and result updates back to PM tools.
-13. Exit.
+8. Evaluate tasks that are ready for planning.
+9. Evaluate approved executable tasks whose dependencies are satisfied.
+10. Select a bounded set of tasks for this heartbeat.
+11. Start worker tasks.
+12. Record scheduling events and exit.
+
+Background worker processes then:
+
+1. Load configuration.
+2. Open the local database.
+3. Run the ACP worker for one task.
+4. Save planning or execution results.
+5. Record failures, change requests, and task events.
+6. Push state and result updates back to PM tools when adapters exist.
 
 Known PM-linked tasks should be synced before discovering new candidates. Active workflows should keep moving before new work is imported.
 
@@ -196,9 +209,33 @@ Do not process a task just because:
 An LLM session requires one of:
 
 - durable attention metadata requiring AI action,
+- a draft task that needs an initial plan,
 - approved executable work,
 - stale/hung task handling that requires reasoning,
 - explicit user command to reprocess or check.
+
+## Planning Mode
+
+Planning and execution are distinct scheduler modes.
+
+Planning is allowed for:
+
+- `draft` tasks, and
+- `needs_approval` tasks that have new attention, such as a human revision comment.
+
+Planning workers may draft or revise the task prompt/plan. A successful planning result leaves the task in:
+
+```text
+needs_approval
+```
+
+Planning does not mark the task `done`, and it does not authorize execution. The human must approve the resulting prompt/scope before `cellos run` schedules execution.
+
+Execution is allowed for:
+
+- `approved` tasks whose dependencies are satisfied.
+
+Execution workers perform the approved work and then save a normal result, failure, or change request.
 
 ## Concurrency
 

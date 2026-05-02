@@ -1,6 +1,6 @@
 # CelloS Docs
 
-This folder contains the clean CelloS design docs. Treat these docs as the current planning source of truth while the older `docs/` folder remains reference material.
+This folder contains the canonical CelloS design docs. Treat these docs as the current planning and implementation source of truth.
 
 ## Current Canonical Docs
 
@@ -25,4 +25,4 @@ This folder contains the clean CelloS design docs. Treat these docs as the curre
 
 ## Working Rule
 
-When docs conflict, prefer this folder over older docs. If `roles-and-lifecycle.md` conflicts with any other new doc, prefer `roles-and-lifecycle.md` until the conflict is resolved.
+When docs conflict, prefer `roles-and-lifecycle.md` for lifecycle and approval behavior. Otherwise prefer the most specific doc for the topic.
