@@ -25,6 +25,14 @@ The core engine is responsible for:
 - worker scheduling,
 - result handling.
 
+The MVP adapter contract lives in:
+
+```text
+cellos/pm.py
+```
+
+Adapters should implement `ProjectManagementAdapter` and exchange `PmTaskSnapshot`, `PmDetectedChange`, `PmTaskUpdate`, `PmCreatedTask`, and `PmSyncResult` objects with the core.
+
 ## Canonical Concepts
 
 Adapters should map PM-specific objects onto these CelloS concepts:
