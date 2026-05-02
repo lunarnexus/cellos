@@ -1,13 +1,20 @@
 """Async SQLite persistence for CelloS."""
 
 import json
-from datetime import datetime
 from pathlib import Path
 from typing import Any
 
 import aiosqlite
 
-from cellos.models import Task, TaskResult, TaskStatus, Worker, WorkerStatus, utc_now
+from cellos.models import Task, TaskResult, TaskStatus, utc_now
+
+
+REQUIRED_TABLES = {"tasks", "task_dependencies", "task_results", "task_events"}
+
+
+class DatabaseNotInitialized(RuntimeError):
+    def __init__(self, path: Path):
+        super().__init__(f"CelloS database is not initialized at {path}. Run `cellos init` first.")
 
 
 class CellosDatabase:
@@ -38,9 +45,10 @@ class CellosDatabase:
             CREATE TABLE IF NOT EXISTS tasks (
                 id TEXT PRIMARY KEY,
                 parent_id TEXT,
-                task_type TEXT NOT NULL,
                 role TEXT NOT NULL,
+                task_type TEXT NOT NULL,
                 status TEXT NOT NULL,
+                attention_required INTEGER NOT NULL,
                 assigned_worker_id TEXT,
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL,
@@ -63,16 +71,6 @@ class CellosDatabase:
                 FOREIGN KEY (task_id) REFERENCES tasks(id) ON DELETE CASCADE
             );
 
-            CREATE TABLE IF NOT EXISTS workers (
-                id TEXT PRIMARY KEY,
-                role TEXT NOT NULL,
-                status TEXT NOT NULL,
-                backend TEXT NOT NULL,
-                current_task_id TEXT,
-                last_seen_at TEXT NOT NULL,
-                payload TEXT NOT NULL
-            );
-
             CREATE TABLE IF NOT EXISTS task_events (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 task_id TEXT NOT NULL,
@@ -86,14 +84,24 @@ class CellosDatabase:
         )
         await self.conn.commit()
 
+    async def ensure_initialized(self) -> None:
+        cursor = await self.conn.execute(
+            "SELECT name FROM sqlite_master WHERE type = 'table' AND name IN (?, ?, ?, ?)",
+            tuple(sorted(REQUIRED_TABLES)),
+        )
+        rows = await cursor.fetchall()
+        found_tables = {row["name"] for row in rows}
+        if found_tables != REQUIRED_TABLES:
+            raise DatabaseNotInitialized(self.path)
+
     async def create_task(self, task: Task) -> None:
         await self.conn.execute(
             """
             INSERT INTO tasks (
-                id, parent_id, task_type, role, status, assigned_worker_id,
-                created_at, updated_at, payload
+                id, parent_id, role, task_type, status, attention_required,
+                assigned_worker_id, created_at, updated_at, payload
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             self._task_row(task),
         )
@@ -101,19 +109,21 @@ class CellosDatabase:
         await self.record_task_event(task.id, "created", "Task created")
         await self.conn.commit()
 
-    async def update_task(self, task: Task) -> None:
-        task = task.model_copy(update={"updated_at": utc_now()})
+    async def update_task(self, task: Task) -> Task:
+        updated = task.model_copy(update={"updated_at": utc_now()})
         await self.conn.execute(
             """
             UPDATE tasks
-            SET parent_id = ?, task_type = ?, role = ?, status = ?,
-                assigned_worker_id = ?, created_at = ?, updated_at = ?, payload = ?
+            SET parent_id = ?, role = ?, task_type = ?, status = ?,
+                attention_required = ?, assigned_worker_id = ?,
+                created_at = ?, updated_at = ?, payload = ?
             WHERE id = ?
             """,
-            (*self._task_row(task)[1:], task.id),
+            (*self._task_row(updated)[1:], updated.id),
         )
-        await self._replace_dependencies(task)
+        await self._replace_dependencies(updated)
         await self.conn.commit()
+        return updated
 
     async def get_task(self, task_id: str) -> Task | None:
         row = await self._fetchone("SELECT payload FROM tasks WHERE id = ?", (task_id,))
@@ -130,15 +140,17 @@ class CellosDatabase:
         rows = await cursor.fetchall()
         return [Task.model_validate_json(row["payload"]) for row in rows]
 
-    async def list_tasks_updated_since(self, cutoff: datetime) -> list[Task]:
-        cursor = await self.conn.execute(
-            "SELECT payload FROM tasks WHERE updated_at >= ? ORDER BY updated_at",
-            (cutoff.isoformat(),),
-        )
+    async def list_tasks_requiring_attention(self, limit: int | None = None) -> list[Task]:
+        sql = "SELECT payload FROM tasks WHERE attention_required = 1 ORDER BY updated_at"
+        params: list[Any] = []
+        if limit is not None:
+            sql += " LIMIT ?"
+            params.append(limit)
+        cursor = await self.conn.execute(sql, params)
         rows = await cursor.fetchall()
         return [Task.model_validate_json(row["payload"]) for row in rows]
 
-    async def list_ready_tasks(self, limit: int | None = None) -> list[Task]:
+    async def list_approved_unblocked_tasks(self, limit: int | None = None) -> list[Task]:
         sql = """
             SELECT t.payload
             FROM tasks t
@@ -151,7 +163,7 @@ class CellosDatabase:
               )
             ORDER BY t.created_at
         """
-        params: list[Any] = [TaskStatus.READY.value, TaskStatus.DONE.value]
+        params: list[Any] = [TaskStatus.APPROVED.value, TaskStatus.DONE.value]
         if limit is not None:
             sql += " LIMIT ?"
             params.append(limit)
@@ -159,26 +171,50 @@ class CellosDatabase:
         rows = await cursor.fetchall()
         return [Task.model_validate_json(row["payload"]) for row in rows]
 
-    async def update_task_status(
-        self,
-        task_id: str,
-        status: TaskStatus,
-        assigned_worker_id: str | None = None,
-    ) -> Task:
+    async def list_task_events(self, task_id: str | None = None, limit: int | None = None) -> list[dict[str, Any]]:
+        sql = """
+            SELECT id, task_id, event_type, message, created_at, payload
+            FROM task_events
+        """
+        params: list[Any] = []
+        if task_id is not None:
+            sql += " WHERE task_id = ?"
+            params.append(task_id)
+        sql += " ORDER BY id"
+        if limit is not None:
+            sql += " LIMIT ?"
+            params.append(limit)
+        cursor = await self.conn.execute(sql, params)
+        rows = await cursor.fetchall()
+        return [
+            {
+                "id": row["id"],
+                "task_id": row["task_id"],
+                "event_type": row["event_type"],
+                "message": row["message"],
+                "created_at": row["created_at"],
+                "payload": json.loads(row["payload"]),
+            }
+            for row in rows
+        ]
+
+    async def update_task_status(self, task_id: str, status: TaskStatus) -> Task:
         task = await self.get_task(task_id)
         if task is None:
             raise KeyError(f"Task not found: {task_id}")
 
         updates: dict[str, Any] = {"status": status, "updated_at": utc_now()}
-        if assigned_worker_id is not None:
-            updates["assigned_worker_id"] = assigned_worker_id
         if status == TaskStatus.IN_PROGRESS and task.started_at is None:
             updates["started_at"] = utc_now()
-        if status in {TaskStatus.DONE, TaskStatus.FAILED, TaskStatus.ESCALATED}:
+        if status in {
+            TaskStatus.DONE,
+            TaskStatus.FAILED,
+            TaskStatus.CHANGE_REQUESTED,
+            TaskStatus.CANCELLED,
+        }:
             updates["completed_at"] = utc_now()
 
-        updated = task.model_copy(update=updates)
-        await self.update_task(updated)
+        updated = await self.update_task(task.model_copy(update=updates))
         await self.record_task_event(task_id, "status_changed", f"Task marked {status.value}")
         await self.conn.commit()
         return updated
@@ -202,70 +238,13 @@ class CellosDatabase:
         )
         task = await self.get_task(result.task_id)
         if task is not None:
-            status = TaskStatus.DONE if result.success else TaskStatus.FAILED
+            if result.change_request is not None:
+                status = TaskStatus.CHANGE_REQUESTED
+            else:
+                status = TaskStatus.DONE if result.success else TaskStatus.FAILED
             await self.update_task(task.model_copy(update={"result": result, "status": status}))
         await self.record_task_event(result.task_id, "result_saved", result.summary)
         await self.conn.commit()
-
-    async def retry_task(self, task_id: str) -> Task:
-        task = await self.get_task(task_id)
-        if task is None:
-            raise KeyError(f"Task not found: {task_id}")
-        retried = task.model_copy(
-            update={
-                "status": TaskStatus.READY,
-                "assigned_worker_id": None,
-                "started_at": None,
-                "completed_at": None,
-                "result": None,
-                "updated_at": utc_now(),
-            }
-        )
-        await self.update_task(retried)
-        await self.conn.execute("DELETE FROM task_results WHERE task_id = ?", (task_id,))
-        await self.record_task_event(task_id, "retried", "Task reset to ready")
-        await self.conn.commit()
-        return retried
-
-    async def upsert_worker(self, worker: Worker) -> None:
-        await self.conn.execute(
-            """
-            INSERT INTO workers (id, role, status, backend, current_task_id, last_seen_at, payload)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
-            ON CONFLICT(id) DO UPDATE SET
-                role = excluded.role,
-                status = excluded.status,
-                backend = excluded.backend,
-                current_task_id = excluded.current_task_id,
-                last_seen_at = excluded.last_seen_at,
-                payload = excluded.payload
-            """,
-            self._worker_row(worker),
-        )
-        await self.conn.commit()
-
-    async def get_worker(self, worker_id: str) -> Worker | None:
-        row = await self._fetchone("SELECT payload FROM workers WHERE id = ?", (worker_id,))
-        return Worker.model_validate_json(row["payload"]) if row else None
-
-    async def update_worker_status(
-        self,
-        worker_id: str,
-        status: WorkerStatus,
-        current_task_id: str | None = None,
-    ) -> Worker:
-        worker = await self.get_worker(worker_id)
-        if worker is None:
-            raise KeyError(f"Worker not found: {worker_id}")
-        updated = worker.model_copy(
-            update={
-                "status": status,
-                "current_task_id": current_task_id,
-                "last_seen_at": utc_now(),
-            }
-        )
-        await self.upsert_worker(updated)
-        return updated
 
     async def record_task_event(
         self,
@@ -301,25 +280,14 @@ class CellosDatabase:
         return (
             task.id,
             task.parent_id,
-            task.task_type.value,
             task.role.value,
+            task.task_type.value,
             task.status.value,
+            int(task.attention.required),
             task.assigned_worker_id,
             task.created_at.isoformat(),
             task.updated_at.isoformat(),
             task.model_dump_json(),
-        )
-
-    @staticmethod
-    def _worker_row(worker: Worker) -> tuple[Any, ...]:
-        return (
-            worker.id,
-            worker.role.value,
-            worker.status.value,
-            worker.backend,
-            worker.current_task_id,
-            worker.last_seen_at.isoformat(),
-            worker.model_dump_json(),
         )
 
 

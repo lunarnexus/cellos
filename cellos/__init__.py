@@ -1,3 +1,3 @@
-"""CelloS — Hierarchical AI Orchestration Framework."""
+"""CelloS core package."""
 
 __version__ = "0.1.0"

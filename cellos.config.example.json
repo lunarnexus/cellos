@@ -1,0 +1,11 @@
+{
+  "scheduler": {
+    "concurrent_tasks": 4,
+    "worker_timeout_seconds": 300
+  },
+  "worker": {
+    "backend": "acp",
+    "command": ["python3", "tests/fakes/acp_server.py"],
+    "debug_log_path": ".cellos/acp-debug.log"
+  }
+}

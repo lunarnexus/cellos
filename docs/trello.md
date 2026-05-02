@@ -1,20 +1,20 @@
-# CelloS Trello Adapter Plan
+# Trello Adapter
 
-This document describes the Trello-specific project-management adapter. Core CelloS should keep a PM-neutral model for tasks, statuses, roles, parent relationships, dependencies, approval state, and execution state. The Trello adapter translates that model into Trello boards, lists, cards, labels, members, comments, and descriptions.
+Trello is the first PM adapter target. This document maps Trello boards, lists, cards, labels, comments, and descriptions onto the PM-neutral CelloS model.
 
 ## Trello Concepts
 
-- **Board**: A project workspace.
-- **List**: A workflow column on a board. The Trello adapter maps lists to CelloS task states.
-- **Card**: A task or planning item.
-- **Label**: A tag on a card. CelloS uses labels for opt-in scope, roles, and task types.
-- **Member**: A normal Trello assignee. Do not create fake Trello users for CelloS roles.
-- **Comment**: Human/CelloS conversation and relationship notes.
-- **Description**: The current editable task request or plan.
+- **Board**: project workspace.
+- **List**: workflow column.
+- **Card**: task or planning item.
+- **Label**: tag on a card.
+- **Member**: normal Trello assignee.
+- **Description**: current proposal or approved plan.
+- **Comment**: discussion, status update, relationship note, or report.
 
-Do not use Trello checklists for CelloS child tasks. Checklists cannot move through the approval workflow independently, so every actionable unit should be a card.
+Do not use Trello checklists for CelloS child tasks. Checklist items cannot move independently through approval.
 
-## Opt-In Scope
+## In-Scope Cards
 
 CelloS only examines cards with a case-insensitive `cellos` label.
 
@@ -26,182 +26,150 @@ CelloS
 CELLOS
 ```
 
-Cards without this label are ignored unless a future connector mode explicitly imports them.
+Cards without this label are ignored.
 
 ## Lists
 
-The MVP Trello board uses these lists:
+Recommended MVP lists:
 
 ```text
 Inbox
 Planning
-Needs Human
+Needs Approval
 Approved
 In Progress
 Done
+Cancelled
 ```
 
-List meanings:
+Mapping:
 
-- **Inbox**: New untriaged human cards.
-- **Planning**: CelloS may inspect the card and draft or revise a plan.
-- **Needs Human**: CelloS is waiting for human approval, clarification, or edits.
-- **Approved**: CelloS may perform the approved action.
-- **In Progress**: CelloS is actively working on the task.
-- **Done**: The task is complete.
+- `Inbox`: human-created, not yet ready for CelloS.
+- `Planning`: CelloS may draft or revise a proposal.
+- `Needs Approval`: waiting for human approval, edit, or cancellation.
+- `Approved`: approved scope may be processed when dependencies allow.
+- `In Progress`: CelloS is working.
+- `Done`: task completed.
+- `Cancelled`: task should not be performed.
 
-The Trello adapter owns list-name/list-ID mapping. Core CelloS should not know that Trello represents status with lists.
+The adapter owns list-name/list-ID mapping. Core CelloS should not know Trello represents status with lists.
 
 ## Labels
 
-The human only needs to add the `cellos` label.
+The human should only need to add `cellos`.
 
-If a `cellos` card has no parent and no role label, CelloS infers:
-
-```text
-role = conductor
-type = decompose/plan
-```
-
-CelloS may add role/type labels as it imports or creates cards:
+CelloS may add role/type labels:
 
 ```text
-conductor
-composer
-cello
-critic
+coordinator
+researcher
+architect
+engineer
+tester
 research
-planning
 build
-verify
+test
 blocked
+change-requested
 ```
 
-Use labels for role/type/status hints, not as the only source of truth. CelloS stores the canonical task state in SQLite.
+Labels are hints and display aids. SQLite remains canonical for task state.
 
-## Members And Assignment
+## Members
 
-Do not create Trello users named Conductor, Composer, Cello, or Critic. Those are CelloS roles, not Trello identities.
+Do not create fake Trello users for CelloS roles. Roles are CelloS metadata, not Trello identities.
 
-Trello members remain normal human or service-account assignees. The MVP may run based on `cellos` label + role/type + list state. A future configuration can use a real bot/service account member to indicate CelloS ownership.
+Trello members remain real human users or future service accounts.
 
-## Two-Phase Retrieval
+## Card Description
 
-The Trello adapter should avoid loading an entire board into LLM context.
+The card description should hold the current proposal or approved plan.
 
-1. Sync known cards first.
-   - Use local CelloS mappings to find cards already tracked in SQLite.
-   - Refresh their list, labels, description hash, and recent comments/actions.
+Suggested shape:
 
-2. Discover new candidate cards.
-   - Fetch cards from relevant lists.
-   - Filter locally for cards with the case-insensitive `cellos` label.
-   - Ignore cards already tracked.
-   - Ignore archived/closed cards.
+```md
+## Objective
 
-This keeps large human boards from overwhelming CelloS.
+## Proposed Actions
 
-## Idempotency And Attention
+## Scope
 
-CelloS must not process a Planning card repeatedly just because it remains in Planning.
+## Dependencies And Assumptions
 
-Store Trello sync metadata locally, such as:
+## Success Criteria
 
-```text
-trello_card_id
-trello_list_id
-trello_desc_hash
-trello_last_activity_date
-trello_last_processed_activity_id
-trello_last_cellos_comment_id
+## Approval Request
 ```
 
-A `Planning` card is eligible for CelloS planning only if:
+Humans may edit the description directly. Description edits are human change signals unless CelloS made the edit and metadata confirms it.
 
-- it has the `cellos` label,
-- it is new to CelloS, or
-- its description changed since CelloS last processed it, or
-- its latest relevant comment is from a human and newer than the last processed CelloS activity, or
-- its list/label/role/status changed in a way CelloS has not processed.
+## Comments
 
-If CelloS was the last actor and nothing meaningful changed, skip the card.
+Use comments for:
 
-## Planning Flow
+- human revision requests,
+- CelloS status updates,
+- result reports,
+- change request reports,
+- parent/dependency mirrors.
 
-1. Human creates a card in `Inbox` and adds `cellos`.
-2. Human moves the card to `Planning`.
-3. CelloS imports the card.
-4. If no role label exists, CelloS infers and adds `conductor`.
-5. CelloS writes or updates the plan in the card description.
-6. CelloS comments that the plan is ready for review.
-7. CelloS records the processed description/activity metadata.
-8. CelloS moves the card to `Needs Human`.
-
-Humans can then:
-
-- edit the description directly,
-- add comments with requested changes,
-- move the card back to `Planning` for revision,
-- move the card to `Approved` to accept the plan.
-
-CelloS only revises a card when it returns to `Planning` with new human signal or a changed description.
-
-## Approval And Execution Flow
-
-Moving a card to `Approved` means:
-
-```text
-The human approves the current card description/plan as written.
-```
-
-When a parent planning card is approved, CelloS reads the approved plan and may create child cards. Generated child cards should go to `Needs Human` by default so a human can approve them individually.
-
-CelloS executes only cards that are:
-
-- labeled `cellos`,
-- in `Approved`,
-- mapped to an executable role/type,
-- not blocked by dependencies,
-- not already completed or in progress.
-
-During execution, the Trello adapter may move cards to `In Progress`, then `Done`, and comment with the result.
-
-## Parent And Dependency Relationships
-
-CelloS stores canonical parent/dependency relationships in SQLite. The Trello adapter mirrors them for readability using comments.
-
-Suggested comment format:
+Suggested relationship comments:
 
 ```text
 CelloS parent: <trello-card-url-or-id>
 
 CelloS depends on:
 - <trello-card-url-or-id>
-- <trello-card-url-or-id>
 ```
 
-Humans may create or edit these comments when inserting cards manually into the CelloS workflow. The Trello adapter can use them to initialize or update local mappings during sync.
+## Planning Flow
 
-## Rework
+1. Human creates a card.
+2. Human adds `cellos`.
+3. Human moves it to `Planning`.
+4. CelloS imports or syncs it.
+5. CelloS drafts or revises a proposal in the description.
+6. CelloS comments that the proposal is ready.
+7. CelloS moves the card to `Needs Approval`.
+8. Human approves, edits, comments, cancels, or moves it back to `Planning`.
 
-If a plan is too broad or creates too many proposed tasks, the human should leave the card out of `Approved` and comment with the requested correction, for example:
+CelloS should not repeatedly process a card in `Planning` unless the card has a new human change or other attention signal.
 
-```text
-Reduce this to three tasks and keep the first pass docs-only.
-```
+## Approval Flow
 
-Then move the card back to `Planning`. CelloS revises the plan on the next heartbeat.
+Moving a card to `Approved` means the current proposal is approved.
 
-## Connector Boundary
+Once approved, CelloS may perform the approved action:
 
-Trello-specific behavior belongs in the Trello connector:
+- conduct approved research,
+- create explicitly approved child cards,
+- perform approved implementation,
+- run approved tests.
 
-- Trello API calls
-- list-name/list-ID mapping
-- label lookup and case-insensitive `cellos` filtering
-- card creation and movement
-- comments and description updates
-- Trello activity/comment idempotency
-- Trello card ID to CelloS task ID mapping
+If CelloS needs to materially change scope, it must request approval again.
 
-Core CelloS should stay PM-neutral and operate on tasks, statuses, roles, dependencies, parent IDs, results, and approval state.
+## Task Creation
+
+Generated child cards should be real cards, not checklist items.
+
+Generated child cards should usually start in `Needs Approval`, unless the approved parent proposal explicitly allows a different state.
+
+Each generated card should include:
+
+- `cellos` label,
+- role/type labels,
+- parent relationship comment,
+- dependency comments if applicable,
+- proposal or task scope in the description.
+
+## Sync Strategy
+
+Each heartbeat:
+
+1. Sync known Trello-linked cards.
+2. Discover new candidate cards from relevant lists.
+3. Filter candidate cards for the `cellos` label.
+4. Update local task records and sync metadata.
+5. Mark attention for human edits, comments, approvals, list moves, cancellations, or relationship changes.
+
+The adapter should avoid passing whole-board context to LLM workers. It may fetch many cards from Trello, but workers should receive only the focused task context they need.
