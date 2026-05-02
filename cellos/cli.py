@@ -125,6 +125,28 @@ def events(task_id: str | None, limit: int, workdir: Path | None, db_path: Path 
 
 
 @main.command()
+@click.argument("task_id")
+@click.option("--events", "event_limit", type=int, default=10, show_default=True)
+@click.option("--workdir", type=click.Path(path_type=Path), default=None)
+@click.option("--db", "db_path", type=click.Path(path_type=Path), default=None)
+@click.option("--config", "config_path", type=click.Path(path_type=Path), default=DEFAULT_CONFIG_PATH)
+def detail(task_id: str, event_limit: int, workdir: Path | None, db_path: Path | None, config_path: Path) -> None:
+    """Show task details."""
+    _run_cli(_detail(db_path, config_path, workdir, task_id, event_limit))
+
+
+@main.command()
+@click.argument("task_id")
+@click.option("--workdir", type=click.Path(path_type=Path), default=None)
+@click.option("--db", "db_path", type=click.Path(path_type=Path), default=None)
+@click.option("--config", "config_path", type=click.Path(path_type=Path), default=DEFAULT_CONFIG_PATH)
+def approve(task_id: str, workdir: Path | None, db_path: Path | None, config_path: Path) -> None:
+    """Approve a planned task for execution."""
+    task = _run_cli(_approve(db_path, config_path, workdir, task_id))
+    console.print(f"Approved [bold]{task.id}[/bold]: {task.title}")
+
+
+@main.command()
 @click.option("--workdir", type=click.Path(path_type=Path), default=None)
 @click.option("--db", "db_path", type=click.Path(path_type=Path), default=None)
 @click.option("--config", "config_path", type=click.Path(path_type=Path), default=DEFAULT_CONFIG_PATH)
@@ -253,6 +275,67 @@ async def _events(
             event["created_at"],
         )
     console.print(table)
+
+
+async def _detail(
+    db_path: Path | None,
+    config_path: Path,
+    workdir: Path | None,
+    task_id: str,
+    event_limit: int,
+) -> None:
+    app = await _open_app(db_path, config_path, workdir)
+    try:
+        task = await app.db.get_task(task_id)
+        if task is None:
+            raise click.ClickException(f"Task not found: {task_id}")
+        events = await app.db.list_task_events(task_id=task_id, limit=event_limit)
+    finally:
+        await app.db.close()
+
+    console.print(f"[bold]{task.title}[/bold]")
+    console.print(f"ID: {task.id}")
+    console.print(f"Status: {task.status.value}")
+    console.print(f"Role: {task.role.value}")
+    console.print(f"Type: {task.task_type.value}")
+    if task.parent_id:
+        console.print(f"Parent: {task.parent_id}")
+    if task.dependencies:
+        console.print(f"Dependencies: {', '.join(task.dependencies)}")
+    console.print("")
+    console.print("[bold]Prompt[/bold]")
+    console.print(task.prompt or "")
+    if task.description:
+        console.print("")
+        console.print("[bold]Description[/bold]")
+        console.print(task.description)
+    if task.result is not None:
+        console.print("")
+        console.print("[bold]Result[/bold]")
+        console.print(task.result.summary)
+    if events:
+        console.print("")
+        console.print("[bold]Recent Events[/bold]")
+        for event in events:
+            console.print(f"- {event['event_type']}: {event['message']}")
+
+
+async def _approve(db_path: Path | None, config_path: Path, workdir: Path | None, task_id: str) -> Task:
+    app = await _open_app(db_path, config_path, workdir)
+    try:
+        task = await app.db.get_task(task_id)
+        if task is None:
+            raise click.ClickException(f"Task not found: {task_id}")
+        if task.status not in {TaskStatus.DRAFT, TaskStatus.NEEDS_APPROVAL}:
+            raise click.ClickException(
+                f"Task {task.id} cannot be approved from status {task.status.value}."
+            )
+        updated = await app.db.update_task(task.clear_attention().model_copy(update={"status": TaskStatus.APPROVED}))
+        await app.db.record_task_event(task.id, "approved", "Task approved")
+        await app.db.conn.commit()
+        return updated
+    finally:
+        await app.db.close()
 
 
 def _build_worker(config: CellosConfig, workdir: Path):

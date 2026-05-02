@@ -33,6 +33,10 @@ def task_payload(db_path: Path) -> dict:
     return json.loads(row[0])
 
 
+def task_id_from_add_output(output: str) -> str:
+    return output.split("Added ", 1)[1].split(":", 1)[0].strip()
+
+
 def test_init_creates_database(tmp_path):
     db_path = tmp_path / "cellos.sqlite"
     config_path = tmp_path / ".cellos" / "config.json"
@@ -215,6 +219,105 @@ def test_run_schedules_draft_task_for_planning(tmp_path):
     assert saved_task["status"] == "needs_approval"
     assert saved_task["prompt"] == "fake ACP completed task"
     assert "planning_saved" in events_result.output
+
+
+def test_detail_shows_prompt_result_and_events(tmp_path):
+    db_path = tmp_path / "cellos.sqlite"
+    config_path = tmp_path / ".cellos" / "config.json"
+    runner = CliRunner()
+    runner.invoke(main, ["init", "--db", str(db_path), "--config", str(config_path)])
+    add_result = runner.invoke(
+        main,
+        [
+            "add-task",
+            "Detail task",
+            "--prompt",
+            "Explain the work.",
+            "--db",
+            str(db_path),
+            "--config",
+            str(config_path),
+        ],
+    )
+    task_id = task_id_from_add_output(add_result.output)
+
+    result = runner.invoke(main, ["detail", task_id, "--db", str(db_path), "--config", str(config_path)])
+
+    assert result.exit_code == 0
+    assert "Detail task" in result.output
+    assert "Explain the work." in result.output
+    assert "created" in result.output
+    assert "Task created" in result.output
+
+
+def test_approve_moves_task_to_approved(tmp_path):
+    db_path = tmp_path / "cellos.sqlite"
+    config_path = tmp_path / ".cellos" / "config.json"
+    runner = CliRunner()
+    runner.invoke(main, ["init", "--db", str(db_path), "--config", str(config_path)])
+    add_result = runner.invoke(
+        main,
+        [
+            "add-task",
+            "Approve me",
+            "--status",
+            "needs_approval",
+            "--prompt",
+            "Approved scope.",
+            "--db",
+            str(db_path),
+            "--config",
+            str(config_path),
+        ],
+    )
+    task_id = task_id_from_add_output(add_result.output)
+
+    approve_result = runner.invoke(main, ["approve", task_id, "--db", str(db_path), "--config", str(config_path)])
+    status_result = runner.invoke(main, ["status", "--db", str(db_path), "--config", str(config_path)])
+    events_result = runner.invoke(main, ["events", task_id, "--db", str(db_path), "--config", str(config_path)])
+
+    assert approve_result.exit_code == 0
+    assert f"Approved {task_id}" in approve_result.output
+    assert "approved" in status_result.output
+    assert "Task approved" in events_result.output
+
+
+def test_planned_task_can_be_approved_and_executed(tmp_path):
+    db_path = tmp_path / "cellos.sqlite"
+    config_path = tmp_path / ".cellos" / "config.json"
+    runner = CliRunner()
+    runner.invoke(main, ["init", "--db", str(db_path), "--config", str(config_path)])
+    add_result = runner.invoke(
+        main,
+        [
+            "add-task",
+            "Plan then execute",
+            "--role",
+            "engineer",
+            "--type",
+            "implementation",
+            "--prompt",
+            "Plan the work.",
+            "--db",
+            str(db_path),
+            "--config",
+            str(config_path),
+        ],
+    )
+    task_id = task_id_from_add_output(add_result.output)
+    planning_result = runner.invoke(main, ["run", "--db", str(db_path), "--config", str(config_path)])
+    wait_for_status(runner, db_path, config_path, "fake ACP")
+
+    approve_result = runner.invoke(main, ["approve", task_id, "--db", str(db_path), "--config", str(config_path)])
+    execution_result = runner.invoke(main, ["run", "--db", str(db_path), "--config", str(config_path)])
+    status_result = wait_for_status(runner, db_path, config_path, "done")
+
+    assert planning_result.exit_code == 0
+    assert "scheduled planning" in planning_result.output
+    assert approve_result.exit_code == 0
+    assert execution_result.exit_code == 0
+    assert "scheduled execution" in execution_result.output
+    assert "done" in status_result.output
 
 
 def test_events_shows_task_history(tmp_path):

@@ -106,6 +106,29 @@ Expected result:
 - task status is `needs_approval`,
 - result text includes `fake ACP completed task`.
 
+Inspect the planned task:
+
+```bash
+cellos detail TASK_ID --workdir .
+```
+
+Expected result:
+
+- full prompt/plan text is visible,
+- recent events include `planning_saved`.
+
+Approve the planned task:
+
+```bash
+cellos approve TASK_ID --workdir .
+```
+
+Expected output:
+
+```text
+Approved task-...: Plan smoke test work
+```
+
 Check events:
 
 ```bash
@@ -120,9 +143,41 @@ status_changed
 worker_spawned
 worker_started
 planning_saved
+approved
 ```
 
 ## 4. Smoke Test Approved Execution
+
+Run one heartbeat to execute the approved planned task:
+
+```bash
+cellos run --workdir .
+```
+
+Expected output:
+
+```text
+task-...: scheduled execution - Plan smoke test work
+```
+
+Wait briefly for the background worker:
+
+```bash
+sleep 1
+```
+
+Check status:
+
+```bash
+cellos status --workdir .
+```
+
+Expected result:
+
+- task status is `done`,
+- result text includes `fake ACP completed task`.
+
+## 5. Smoke Test Direct Approved Execution
 
 Create an approved implementation task:
 
@@ -175,7 +230,7 @@ worker_started
 result_saved
 ```
 
-## 5. Useful Debug Files
+## 6. Useful Debug Files
 
 Local runtime files live under:
 
