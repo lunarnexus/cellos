@@ -7,6 +7,7 @@ This smoke test verifies the current local MVP behavior:
 - approved task execution,
 - async background workers,
 - fake ACP worker calls,
+- optional OpenCode ACP planning,
 - task status updates,
 - task event history.
 
@@ -18,7 +19,7 @@ cd /Users/james/Scripts/CelloS/cellos
 
 Do not run this through a filesystem sandbox. Use the normal project directory so background workers can read the local config, write the local SQLite database, and run the fake ACP process.
 
-The default fake ACP command is package-based:
+The default fake ACP connector command is package-based:
 
 ```bash
 python3 -m cellos.connectors.fake_acp
@@ -35,13 +36,13 @@ Workdir rules:
 ## 1. Run Pytests
 
 ```bash
-PYTHONDONTWRITEBYTECODE=1 python3 -m pytest -p no:cacheprovider tests/test_config.py tests/test_models.py tests/test_db.py tests/test_acp_worker.py tests/test_heartbeat.py tests/test_cli.py
+PYTHONDONTWRITEBYTECODE=1 python3 -m pytest -p no:cacheprovider tests/test_config.py tests/test_models.py tests/test_db.py tests/test_pm.py tests/test_acp_worker.py tests/test_heartbeat.py tests/test_cli.py
 ```
 
 Expected result:
 
 ```text
-39 passed
+49 passed
 ```
 
 ## 2. Reset Local State
@@ -55,15 +56,51 @@ Expected output:
 ```text
 Initialized database at ...
 Initialized config at /Users/james/.cellos/config.json
+Initialized agent catalog at /Users/james/.cellos/agentcatalog.json
+Initialized prompt profiles at /Users/james/.cellos/promptprofiles.json
 ```
 
-The default config should use fake ACP:
+The default config should use the fake agent:
 
 ```json
-"worker": {
-  "backend": "acp",
-  "command": ["python3", "-m", "cellos.connectors.fake_acp"],
-  "debug_log_path": ".cellos/logs/acp-debug.log"
+"agents": {
+  "default": "fake",
+  "catalog_path": "agentcatalog.json"
+},
+"prompts": {
+  "profiles_path": "promptprofiles.json"
+}
+```
+
+The default agent catalog should include both `fake` and `opencode`:
+
+```json
+{
+  "available": {
+    "fake": {
+      "connector": "fake_acp",
+      "description": "Fake development agent"
+    },
+    "opencode": {
+      "connector": "opencode",
+      "description": "OpenCode local ACP agent"
+    }
+  }
+}
+```
+
+The default prompt profiles should include planning output sections:
+
+```json
+"planning": {
+  "output_sections": [
+    "Objective",
+    "Proposed Actions",
+    "Files/Systems Affected",
+    "Risks",
+    "Acceptance Criteria",
+    "Approval Request"
+  ]
 }
 ```
 
@@ -257,3 +294,129 @@ Useful files:
 ```
 
 Empty worker logs are normal when the fake ACP worker succeeds without stderr/stdout outside the ACP protocol.
+
+## 7. Optional Real Agent Execution With OpenCode
+
+This test verifies that CelloS can route a planning task and approved execution task through the real OpenCode ACP connector.
+
+Prerequisite:
+
+```bash
+which opencode
+```
+
+Expected result:
+
+```text
+/Users/james/.opencode/bin/opencode
+```
+
+Reset local state from the example files:
+
+```bash
+cellos init --hard-reset
+```
+
+Edit `~/.cellos/config.json` and set:
+
+```json
+"agents": {
+  "default": "opencode",
+  "catalog_path": "agentcatalog.json"
+}
+```
+
+Confirm `~/.cellos/agentcatalog.json` contains:
+
+```json
+"opencode": {
+  "connector": "opencode",
+  "description": "OpenCode local ACP agent"
+}
+```
+
+Create a tiny harmless draft task:
+
+```bash
+cellos add-task "Add harmless real-agent smoke note" --role engineer --type implementation --prompt "Plan a tiny harmless docs-only change: add one short sentence to suggestions.md noting that the real-agent smoke test reached execution. Do not edit files during planning."
+```
+
+Run one heartbeat:
+
+```bash
+cellos run
+```
+
+Expected output:
+
+```text
+<ID>: scheduled planning - Add harmless real-agent smoke note
+```
+
+Wait for the background agent process:
+
+```bash
+sleep 20
+```
+
+Inspect the task:
+
+```bash
+cellos detail TASK_ID
+```
+
+Expected result:
+
+- task status is `needs_approval`,
+- prompt/result contains a real OpenCode-generated plan with structured sections,
+- recent events include `planning_saved`.
+
+Approve the plan:
+
+```bash
+cellos approve TASK_ID
+```
+
+Run one heartbeat to execute:
+
+```bash
+cellos run
+```
+
+Expected output:
+
+```text
+<ID>: scheduled execution - Add harmless real-agent smoke note
+```
+
+Wait for the background agent process:
+
+```bash
+sleep 30
+```
+
+Inspect the task:
+
+```bash
+cellos detail TASK_ID
+```
+
+Expected result:
+
+- task status is `done`,
+- result contains OpenCode's execution summary,
+- recent events include `result_saved`.
+
+Review the file diff before committing anything:
+
+```bash
+git diff -- suggestions.md
+```
+
+If the task remains `in_progress`, check:
+
+```bash
+cellos detail TASK_ID
+tail -120 .cellos/logs/worker-TASK_ID.log
+tail -120 .cellos/logs/acp-debug.log
+```
