@@ -8,7 +8,7 @@
     "debug_log_path": ".cellos/logs/acp-debug.log"
   },
   "agents": {
-    "default": "fake",
+    "default": "opencode",
     "catalog_path": "agentcatalog.json"
   },
   "prompts": {

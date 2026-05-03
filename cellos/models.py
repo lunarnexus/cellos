@@ -59,6 +59,19 @@ class WorkerStatus(StrEnum):
     FAILED = "failed"
 
 
+class TaskAttemptStatus(StrEnum):
+    STARTED = "started"
+    SUCCEEDED = "succeeded"
+    FAILED = "failed"
+    CANCELLED = "cancelled"
+
+
+class CommentAuthorType(StrEnum):
+    HUMAN = "human"
+    AGENT = "agent"
+    SYSTEM = "system"
+
+
 class AttentionMetadata(BaseModel):
     required: bool = False
     reason: AttentionReason | None = None
@@ -98,6 +111,33 @@ class TaskResult(BaseModel):
     error: str | None = None
     change_request: ChangeRequestReport | None = None
     created_at: datetime = Field(default_factory=utc_now)
+
+
+class TaskComment(BaseModel):
+    id: int | None = None
+    task_id: str
+    author_type: CommentAuthorType
+    author_id: str = ""
+    message: str
+    created_at: datetime = Field(default_factory=utc_now)
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class TaskAttempt(BaseModel):
+    id: int | None = None
+    task_id: str
+    mode: str
+    agent_id: str
+    connector: str
+    status: TaskAttemptStatus = TaskAttemptStatus.STARTED
+    prompt_snapshot: str = ""
+    result_summary: str = ""
+    result_payload: dict[str, Any] = Field(default_factory=dict)
+    error: str | None = None
+    log_path: str = ""
+    started_at: datetime = Field(default_factory=utc_now)
+    completed_at: datetime | None = None
+    metadata: dict[str, Any] = Field(default_factory=dict)
 
 
 class TaskDependency(BaseModel):

@@ -15,7 +15,19 @@ from rich.table import Table
 from cellos.acp_worker import AcpWorker
 from cellos.config import CellosConfig, ConfigError, DEFAULT_CONFIG_PATH, ensure_config, load_config
 from cellos.db import CellosDatabase, DatabaseNotInitialized
-from cellos.models import AgentRole, AttentionReason, Task, TaskResult, TaskStatus, TaskType
+from cellos.models import (
+    AgentRole,
+    AttentionReason,
+    CommentAuthorType,
+    Task,
+    TaskAttempt,
+    TaskAttemptStatus,
+    TaskComment,
+    TaskResult,
+    TaskStatus,
+    TaskType,
+)
+from cellos.prompt_builder import build_task_prompt
 
 
 DEFAULT_DB_PATH = Path(".cellos") / "cellos.sqlite"
@@ -159,6 +171,26 @@ def update(
     """Update a task."""
     task = _run_cli(_update(db_path, config_path, workdir, task_id, title, prompt, description, status))
     console.print(f"Updated [bold]{task.id}[/bold]: {task.title}")
+
+
+@main.command("comment")
+@click.argument("task_id")
+@click.argument("message")
+@click.option("--author", "author_id", default="human")
+@click.option("--workdir", type=click.Path(path_type=Path), default=None)
+@click.option("--db", "db_path", type=click.Path(path_type=Path), default=None)
+@click.option("--config", "config_path", type=click.Path(path_type=Path), default=DEFAULT_CONFIG_PATH)
+def comment_task(
+    task_id: str,
+    message: str,
+    author_id: str,
+    workdir: Path | None,
+    db_path: Path | None,
+    config_path: Path,
+) -> None:
+    """Add a human comment to a task."""
+    _run_cli(_comment(db_path, config_path, workdir, task_id, message, author_id))
+    console.print(f"Commented on [bold]{task_id}[/bold]")
 
 
 @main.command()
@@ -316,6 +348,8 @@ async def _detail(
         if task is None:
             raise click.ClickException(f"Task not found: {task_id}")
         events = await app.db.list_task_events(task_id=task_id, limit=event_limit)
+        comments = await app.db.list_task_comments(task_id=task_id, limit=10)
+        attempts = await app.db.list_task_attempts(task_id=task_id, limit=10)
     finally:
         await app.db.close()
 
@@ -339,6 +373,21 @@ async def _detail(
         console.print("")
         console.print("[bold]Result[/bold]")
         console.print(task.result.summary)
+    if comments:
+        console.print("")
+        console.print("[bold]Recent Comments[/bold]")
+        for comment in comments:
+            author = comment["author_id"] or comment["author_type"]
+            console.print(f"- {author}: {comment['message']}")
+    if attempts:
+        console.print("")
+        console.print("[bold]Attempts[/bold]")
+        for attempt in attempts:
+            summary = attempt["result_summary"] or attempt["error"] or attempt["log_path"]
+            console.print(
+                f"- #{attempt['id']} {attempt['mode']} {attempt['status']} "
+                f"via {attempt['agent_id']} ({attempt['connector']}): {summary}"
+            )
     if events:
         console.print("")
         console.print("[bold]Recent Events[/bold]")
@@ -388,6 +437,35 @@ async def _update(
         await app.db.record_task_event(task.id, "updated", "Task updated")
         await app.db.conn.commit()
         return updated
+    finally:
+        await app.db.close()
+
+
+async def _comment(
+    db_path: Path | None,
+    config_path: Path,
+    workdir: Path | None,
+    task_id: str,
+    message: str,
+    author_id: str,
+) -> None:
+    app = await _open_app(db_path, config_path, workdir)
+    try:
+        task = await app.db.get_task(task_id)
+        if task is None:
+            raise click.ClickException(f"Task not found: {task_id}")
+        await app.db.add_task_comment(
+            TaskComment(
+                task_id=task.id,
+                author_type=CommentAuthorType.HUMAN,
+                author_id=author_id,
+                message=message,
+            )
+        )
+        if task.status != TaskStatus.APPROVED:
+            updated = task.requires_attention(AttentionReason.HUMAN_COMMENTED, message)
+            await app.db.update_task(updated)
+        await app.db.conn.commit()
     finally:
         await app.db.close()
 
@@ -490,10 +568,24 @@ async def _schedule_worker(
 
 async def _worker(task_id: str, mode: str, db_path: Path | None, config_path: Path, workdir: Path | None) -> None:
     app = await _open_app(db_path, config_path, workdir)
+    attempt: TaskAttempt | None = None
     try:
         task = await app.db.get_task(task_id)
         if task is None:
             raise click.ClickException(f"Task not found: {task_id}")
+        agent_id = app.config.agents.default
+        agent = app.config.get_default_agent()
+        log_path = app.workdir / ".cellos" / "logs" / f"worker-{task.id}.log"
+        attempt = await app.db.start_task_attempt(
+            TaskAttempt(
+                task_id=task.id,
+                mode=mode,
+                agent_id=agent_id,
+                connector=agent.connector,
+                prompt_snapshot=build_task_prompt(task, app.config.prompt_profiles, mode=mode),
+                log_path=str(log_path),
+            )
+        )
         await app.db.record_task_event(task.id, "worker_started", f"Background {mode} worker started")
         await app.db.conn.commit()
         worker_backend = _build_worker(app.config, app.workdir)
@@ -510,6 +602,14 @@ async def _worker(task_id: str, mode: str, db_path: Path | None, config_path: Pa
             await _save_planning_result(app, task, result)
         else:
             await app.db.save_task_result(result)
+        if attempt.id is not None:
+            await app.db.complete_task_attempt(
+                attempt.id,
+                TaskAttemptStatus.SUCCEEDED if result.success else TaskAttemptStatus.FAILED,
+                result.summary,
+                result.model_dump(mode="json"),
+                result.error,
+            )
     finally:
         await app.db.close()
 

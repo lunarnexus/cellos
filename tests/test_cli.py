@@ -53,6 +53,41 @@ def task_id_from_add_output(output: str) -> str:
     return output.split("Added ", 1)[1].split(":", 1)[0].strip()
 
 
+def write_fake_runtime_config(config_path: Path) -> None:
+    config_path.parent.mkdir(parents=True, exist_ok=True)
+    config_path.write_text(
+        json.dumps(
+            {
+                "scheduler": {"concurrent_tasks": 4, "worker_timeout_seconds": 30},
+                "worker": {
+                    "backend": "acp",
+                    "debug_log_path": ".cellos/logs/acp-debug.log",
+                },
+                "agents": {
+                    "default": "fake",
+                    "catalog_path": "agentcatalog.json",
+                },
+                "prompts": {
+                    "profiles_path": "promptprofiles.json",
+                },
+            }
+        )
+    )
+    (config_path.parent / "agentcatalog.json").write_text(
+        json.dumps(
+            {
+                "available": {
+                    "fake": {
+                        "connector": "fake_acp",
+                        "description": "Fake development agent",
+                    }
+                }
+            }
+        )
+    )
+    (config_path.parent / "promptprofiles.json").write_text(json.dumps(MINIMAL_PROMPT_PROFILES))
+
+
 def test_init_creates_database(tmp_path):
     db_path = tmp_path / "cellos.sqlite"
     config_path = tmp_path / ".cellos" / "config.json"
@@ -175,6 +210,7 @@ def test_run_schedules_approved_task(tmp_path):
     db_path = tmp_path / "cellos.sqlite"
     config_path = tmp_path / ".cellos" / "config.json"
     runner = CliRunner()
+    write_fake_runtime_config(config_path)
     init_result = runner.invoke(main, ["init", "--db", str(db_path), "--config", str(config_path)])
 
     add_result = runner.invoke(
@@ -211,6 +247,7 @@ def test_run_schedules_draft_task_for_planning(tmp_path):
     db_path = tmp_path / "cellos.sqlite"
     config_path = tmp_path / ".cellos" / "config.json"
     runner = CliRunner()
+    write_fake_runtime_config(config_path)
     init_result = runner.invoke(main, ["init", "--db", str(db_path), "--config", str(config_path)])
 
     add_result = runner.invoke(
@@ -338,6 +375,51 @@ def test_update_rejects_empty_update(tmp_path):
     assert "Nothing to update." in result.output
 
 
+def test_comment_marks_unapproved_task_attention_and_shows_detail(tmp_path):
+    db_path = tmp_path / "cellos.sqlite"
+    config_path = tmp_path / ".cellos" / "config.json"
+    runner = CliRunner()
+    runner.invoke(main, ["init", "--db", str(db_path), "--config", str(config_path)])
+    add_result = runner.invoke(
+        main,
+        [
+            "add-task",
+            "Needs conversation",
+            "--status",
+            "needs_approval",
+            "--prompt",
+            "Initial plan.",
+            "--db",
+            str(db_path),
+            "--config",
+            str(config_path),
+        ],
+    )
+    task_id = task_id_from_add_output(add_result.output)
+
+    comment_result = runner.invoke(
+        main,
+        [
+            "comment",
+            task_id,
+            "Revise this to only edit docs.",
+            "--db",
+            str(db_path),
+            "--config",
+            str(config_path),
+        ],
+    )
+    detail_result = runner.invoke(main, ["detail", task_id, "--db", str(db_path), "--config", str(config_path)])
+    saved_task = task_payload(db_path)
+
+    assert comment_result.exit_code == 0
+    assert f"Commented on {task_id}" in comment_result.output
+    assert saved_task["attention"]["required"] is True
+    assert saved_task["attention"]["reason"] == "human_commented"
+    assert "Recent Comments" in detail_result.output
+    assert "Revise this to only edit docs." in detail_result.output
+
+
 def test_approve_moves_task_to_approved(tmp_path):
     db_path = tmp_path / "cellos.sqlite"
     config_path = tmp_path / ".cellos" / "config.json"
@@ -374,6 +456,7 @@ def test_planned_task_can_be_approved_and_executed(tmp_path):
     db_path = tmp_path / "cellos.sqlite"
     config_path = tmp_path / ".cellos" / "config.json"
     runner = CliRunner()
+    write_fake_runtime_config(config_path)
     runner.invoke(main, ["init", "--db", str(db_path), "--config", str(config_path)])
     add_result = runner.invoke(
         main,
@@ -399,6 +482,7 @@ def test_planned_task_can_be_approved_and_executed(tmp_path):
     approve_result = runner.invoke(main, ["approve", task_id, "--db", str(db_path), "--config", str(config_path)])
     execution_result = runner.invoke(main, ["run", "--db", str(db_path), "--config", str(config_path)])
     status_result = wait_for_status(runner, db_path, config_path, "done")
+    detail_result = runner.invoke(main, ["detail", task_id, "--db", str(db_path), "--config", str(config_path)])
 
     assert planning_result.exit_code == 0
     assert "scheduled planning" in planning_result.output
@@ -406,6 +490,9 @@ def test_planned_task_can_be_approved_and_executed(tmp_path):
     assert execution_result.exit_code == 0
     assert "scheduled execution" in execution_result.output
     assert "done" in status_result.output
+    assert "Attempts" in detail_result.output
+    assert "planning succeeded via fake" in detail_result.output
+    assert "execution succeeded via fake" in detail_result.output
 
 
 def test_events_shows_task_history(tmp_path):
@@ -438,38 +525,7 @@ def test_run_schedules_approved_task_with_fake_acp(tmp_path):
     config_path = tmp_path / ".cellos" / "config.json"
     runner = CliRunner()
 
-    config_path.parent.mkdir()
-    config_path.write_text(
-        json.dumps(
-            {
-                "scheduler": {"concurrent_tasks": 4, "worker_timeout_seconds": 30},
-                "worker": {
-                    "backend": "acp",
-                    "debug_log_path": str(tmp_path / "acp-debug.log"),
-                },
-                "agents": {
-                    "default": "fake",
-                    "catalog_path": "agentcatalog.json",
-                },
-                "prompts": {
-                    "profiles_path": "promptprofiles.json",
-                },
-            }
-        )
-    )
-    (config_path.parent / "agentcatalog.json").write_text(
-        json.dumps(
-            {
-                "available": {
-                    "fake": {
-                        "connector": "fake_acp",
-                        "description": "Fake development agent",
-                    }
-                }
-            }
-        )
-    )
-    (config_path.parent / "promptprofiles.json").write_text(json.dumps(MINIMAL_PROMPT_PROFILES))
+    write_fake_runtime_config(config_path)
     init_result = runner.invoke(main, ["init", "--db", str(db_path), "--config", str(config_path)])
     add_result = runner.invoke(
         main,

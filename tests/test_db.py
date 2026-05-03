@@ -5,7 +5,11 @@ from cellos.models import (
     AgentRole,
     AttentionReason,
     ChangeRequestReport,
+    CommentAuthorType,
     Task,
+    TaskAttempt,
+    TaskAttemptStatus,
+    TaskComment,
     TaskResult,
     TaskStatus,
     TaskType,
@@ -216,4 +220,65 @@ async def test_database_lists_task_events(tmp_path):
 
     assert [event["event_type"] for event in events] == ["created", "status_changed"]
     assert events[0]["message"] == "Task created"
+    await db.close()
+
+
+@pytest.mark.anyio
+async def test_database_stores_task_comments(tmp_path):
+    db = CellosDatabase(tmp_path / "cellos.sqlite")
+    await db.connect()
+    await db.init_db()
+
+    task = Task(id="task-1", title="Comment target", role=AgentRole.ENGINEER)
+    await db.create_task(task)
+    saved = await db.add_task_comment(
+        TaskComment(
+            task_id=task.id,
+            author_type=CommentAuthorType.HUMAN,
+            author_id="james",
+            message="Please revise this plan.",
+        )
+    )
+    comments = await db.list_task_comments(task.id)
+
+    assert saved.id is not None
+    assert comments[0]["author_type"] == "human"
+    assert comments[0]["author_id"] == "james"
+    assert comments[0]["message"] == "Please revise this plan."
+    await db.close()
+
+
+@pytest.mark.anyio
+async def test_database_stores_task_attempts(tmp_path):
+    db = CellosDatabase(tmp_path / "cellos.sqlite")
+    await db.connect()
+    await db.init_db()
+
+    task = Task(id="task-1", title="Attempt target", role=AgentRole.ENGINEER)
+    await db.create_task(task)
+    attempt = await db.start_task_attempt(
+        TaskAttempt(
+            task_id=task.id,
+            mode="planning",
+            agent_id="fake",
+            connector="fake_acp",
+            prompt_snapshot="Prompt text",
+            log_path=".cellos/logs/worker-task-1.log",
+        )
+    )
+    await db.complete_task_attempt(
+        attempt.id,
+        TaskAttemptStatus.SUCCEEDED,
+        "Attempt worked",
+        {"ok": True},
+    )
+    attempts = await db.list_task_attempts(task.id)
+
+    assert attempt.id is not None
+    assert attempts[0]["mode"] == "planning"
+    assert attempts[0]["agent_id"] == "fake"
+    assert attempts[0]["status"] == "succeeded"
+    assert attempts[0]["prompt_snapshot"] == "Prompt text"
+    assert attempts[0]["result_summary"] == "Attempt worked"
+    assert attempts[0]["result_payload"] == {"ok": True}
     await db.close()

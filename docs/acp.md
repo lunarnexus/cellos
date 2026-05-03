@@ -24,7 +24,7 @@ Runtime config:
 ```json
 {
   "agents": {
-    "default": "fake",
+    "default": "opencode",
     "catalog_path": "agentcatalog.json"
   },
   "prompts": {
@@ -70,7 +70,7 @@ Relative `catalog_path` and `profiles_path` values resolve next to the config fi
 
 The default agent is only a fallback. Later, the Coordinator should select or propose agents at runtime based on task needs, available capabilities, and human approval rules.
 
-Each task attempt should record the selected agent and connector for auditability.
+Each task attempt records the selected agent, connector, prompt snapshot, result or error summary, and log path for auditability.
 
 ## Connectors
 
@@ -115,6 +115,26 @@ prepare invocation -> launch agent runtime -> initialize -> create session -> se
 This keeps task attempts isolated and reduces context carryover.
 
 If similar work must be retried after failure or change request, CelloS should create a fresh attempt with a fresh prompt and concise lessons from the previous attempt.
+
+## Attempt Logs
+
+Each planning or execution run creates a task attempt record.
+
+Attempt records include:
+
+- task id,
+- mode,
+- selected agent id,
+- connector,
+- status,
+- prompt snapshot,
+- result summary,
+- raw result payload where available,
+- error,
+- worker log path,
+- started/completed timestamps.
+
+Attempt records are the first layer of audit history and failure-learning context. Parent or coordinating agents should be able to receive compact attempt history when replanning after failed child work. If an agent crashes before producing a graceful report, the attempt still points to the worker log for diagnosis.
 
 ## ACP Flow
 

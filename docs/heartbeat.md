@@ -41,7 +41,7 @@ Initial sample config:
     "debug_log_path": ".cellos/logs/acp-debug.log"
   },
   "agents": {
-    "default": "fake",
+    "default": "opencode",
     "catalog_path": "agentcatalog.json"
   },
   "prompts": {
@@ -218,6 +218,8 @@ Background worker processes then:
 5. Record failures, change requests, and task events.
 6. Push state and result updates back to PM tools when adapters exist.
 
+Each background agent run creates a `task_attempts` record. The attempt captures the selected agent, connector, mode, prompt snapshot, result/error summary, and worker log path.
+
 Known PM-linked tasks should be synced before discovering new candidates. Active workflows should keep moving before new work is imported.
 
 ## Selection Rules
@@ -261,6 +263,8 @@ Execution is allowed for:
 - `approved` tasks whose dependencies are satisfied.
 
 Execution workers perform the approved work and then save a normal result, failure, or change request.
+
+Human comments are stored separately from the task prompt/plan. A comment on an unapproved task marks durable attention, which makes the task eligible for replanning without adding a separate revision status.
 
 ## Concurrency
 

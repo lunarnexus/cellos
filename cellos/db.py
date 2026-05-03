@@ -6,10 +6,17 @@ from typing import Any
 
 import aiosqlite
 
-from cellos.models import Task, TaskResult, TaskStatus, utc_now
+from cellos.models import Task, TaskAttempt, TaskAttemptStatus, TaskComment, TaskResult, TaskStatus, utc_now
 
 
-REQUIRED_TABLES = {"tasks", "task_dependencies", "task_results", "task_events"}
+REQUIRED_TABLES = {
+    "tasks",
+    "task_dependencies",
+    "task_results",
+    "task_events",
+    "task_comments",
+    "task_attempts",
+}
 
 
 class DatabaseNotInitialized(RuntimeError):
@@ -80,13 +87,43 @@ class CellosDatabase:
                 payload TEXT NOT NULL DEFAULT '{}',
                 FOREIGN KEY (task_id) REFERENCES tasks(id) ON DELETE CASCADE
             );
+
+            CREATE TABLE IF NOT EXISTS task_comments (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                task_id TEXT NOT NULL,
+                author_type TEXT NOT NULL,
+                author_id TEXT NOT NULL,
+                message TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                payload TEXT NOT NULL DEFAULT '{}',
+                FOREIGN KEY (task_id) REFERENCES tasks(id) ON DELETE CASCADE
+            );
+
+            CREATE TABLE IF NOT EXISTS task_attempts (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                task_id TEXT NOT NULL,
+                mode TEXT NOT NULL,
+                agent_id TEXT NOT NULL,
+                connector TEXT NOT NULL,
+                status TEXT NOT NULL,
+                prompt_snapshot TEXT NOT NULL,
+                result_summary TEXT NOT NULL DEFAULT '',
+                result_payload TEXT NOT NULL DEFAULT '{}',
+                error TEXT,
+                log_path TEXT NOT NULL DEFAULT '',
+                started_at TEXT NOT NULL,
+                completed_at TEXT,
+                payload TEXT NOT NULL DEFAULT '{}',
+                FOREIGN KEY (task_id) REFERENCES tasks(id) ON DELETE CASCADE
+            );
             """
         )
         await self.conn.commit()
 
     async def ensure_initialized(self) -> None:
+        placeholders = ", ".join("?" for _ in REQUIRED_TABLES)
         cursor = await self.conn.execute(
-            "SELECT name FROM sqlite_master WHERE type = 'table' AND name IN (?, ?, ?, ?)",
+            f"SELECT name FROM sqlite_master WHERE type = 'table' AND name IN ({placeholders})",
             tuple(sorted(REQUIRED_TABLES)),
         )
         rows = await cursor.fetchall()
@@ -214,6 +251,133 @@ class CellosDatabase:
             for row in rows
         ]
 
+    async def add_task_comment(self, comment: TaskComment) -> TaskComment:
+        cursor = await self.conn.execute(
+            """
+            INSERT INTO task_comments (task_id, author_type, author_id, message, created_at, payload)
+            VALUES (?, ?, ?, ?, ?, json(?))
+            """,
+            (
+                comment.task_id,
+                comment.author_type.value,
+                comment.author_id,
+                comment.message,
+                comment.created_at.isoformat(),
+                _json(comment.metadata),
+            ),
+        )
+        saved = comment.model_copy(update={"id": cursor.lastrowid})
+        await self.record_task_event(comment.task_id, "comment_added", f"{comment.author_type.value}: {comment.message}")
+        await self.conn.commit()
+        return saved
+
+    async def list_task_comments(self, task_id: str, limit: int | None = None) -> list[dict[str, Any]]:
+        sql = """
+            SELECT id, task_id, author_type, author_id, message, created_at, payload
+            FROM task_comments
+            WHERE task_id = ?
+            ORDER BY id
+        """
+        params: list[Any] = [task_id]
+        if limit is not None:
+            sql += " LIMIT ?"
+            params.append(limit)
+        cursor = await self.conn.execute(sql, params)
+        rows = await cursor.fetchall()
+        return [
+            {
+                "id": row["id"],
+                "task_id": row["task_id"],
+                "author_type": row["author_type"],
+                "author_id": row["author_id"],
+                "message": row["message"],
+                "created_at": row["created_at"],
+                "payload": json.loads(row["payload"]),
+            }
+            for row in rows
+        ]
+
+    async def start_task_attempt(self, attempt: TaskAttempt) -> TaskAttempt:
+        cursor = await self.conn.execute(
+            """
+            INSERT INTO task_attempts (
+                task_id, mode, agent_id, connector, status, prompt_snapshot,
+                result_summary, result_payload, error, log_path, started_at,
+                completed_at, payload
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, json(?), ?, ?, ?, ?, json(?))
+            """,
+            self._attempt_row(attempt),
+        )
+        saved = attempt.model_copy(update={"id": cursor.lastrowid})
+        await self.record_task_event(attempt.task_id, "attempt_started", f"{attempt.mode} attempt started")
+        await self.conn.commit()
+        return saved
+
+    async def complete_task_attempt(
+        self,
+        attempt_id: int,
+        status: TaskAttemptStatus,
+        result_summary: str,
+        result_payload: dict[str, Any] | None = None,
+        error: str | None = None,
+    ) -> None:
+        completed_at = utc_now()
+        await self.conn.execute(
+            """
+            UPDATE task_attempts
+            SET status = ?, result_summary = ?, result_payload = json(?), error = ?, completed_at = ?
+            WHERE id = ?
+            """,
+            (
+                status.value,
+                result_summary,
+                _json(result_payload or {}),
+                error,
+                completed_at.isoformat(),
+                attempt_id,
+            ),
+        )
+        row = await self._fetchone("SELECT task_id, mode FROM task_attempts WHERE id = ?", (attempt_id,))
+        if row is not None:
+            await self.record_task_event(row["task_id"], "attempt_completed", f"{row['mode']} attempt {status.value}")
+        await self.conn.commit()
+
+    async def list_task_attempts(self, task_id: str, limit: int | None = None) -> list[dict[str, Any]]:
+        sql = """
+            SELECT id, task_id, mode, agent_id, connector, status, prompt_snapshot,
+                   result_summary, result_payload, error, log_path, started_at,
+                   completed_at, payload
+            FROM task_attempts
+            WHERE task_id = ?
+            ORDER BY id
+        """
+        params: list[Any] = [task_id]
+        if limit is not None:
+            sql += " LIMIT ?"
+            params.append(limit)
+        cursor = await self.conn.execute(sql, params)
+        rows = await cursor.fetchall()
+        return [
+            {
+                "id": row["id"],
+                "task_id": row["task_id"],
+                "mode": row["mode"],
+                "agent_id": row["agent_id"],
+                "connector": row["connector"],
+                "status": row["status"],
+                "prompt_snapshot": row["prompt_snapshot"],
+                "result_summary": row["result_summary"],
+                "result_payload": json.loads(row["result_payload"]),
+                "error": row["error"],
+                "log_path": row["log_path"],
+                "started_at": row["started_at"],
+                "completed_at": row["completed_at"],
+                "payload": json.loads(row["payload"]),
+            }
+            for row in rows
+        ]
+
     async def update_task_status(self, task_id: str, status: TaskStatus) -> Task:
         task = await self.get_task(task_id)
         if task is None:
@@ -304,6 +468,24 @@ class CellosDatabase:
             task.created_at.isoformat(),
             task.updated_at.isoformat(),
             task.model_dump_json(),
+        )
+
+    @staticmethod
+    def _attempt_row(attempt: TaskAttempt) -> tuple[Any, ...]:
+        return (
+            attempt.task_id,
+            attempt.mode,
+            attempt.agent_id,
+            attempt.connector,
+            attempt.status.value,
+            attempt.prompt_snapshot,
+            attempt.result_summary,
+            _json(attempt.result_payload),
+            attempt.error,
+            attempt.log_path,
+            attempt.started_at.isoformat(),
+            attempt.completed_at.isoformat() if attempt.completed_at is not None else None,
+            _json(attempt.metadata),
         )
 
 
