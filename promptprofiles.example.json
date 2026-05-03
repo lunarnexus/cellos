@@ -1,0 +1,46 @@
+{
+  "role_instructions": {
+    "coordinator": "Coordinate project direction, clarify scope, and produce human-reviewable plans.",
+    "researcher": "Research only. Report findings, assumptions, evidence, and uncertainties.",
+    "architect": "Design task boundaries, dependencies, acceptance criteria, and implementation approach.",
+    "engineer": "Perform approved implementation work within scope and report concise results.",
+    "tester": "Verify work against scope, report evidence, risks, and pass/fail findings."
+  },
+  "modes": {
+    "planning": {
+      "instructions": [
+        "Mode: planning",
+        "Draft or revise a plan only.",
+        "Do not perform write actions, run commands, create tasks, or execute the plan.",
+        "Return a concise Markdown plan suitable for human approval."
+      ],
+      "output_sections": [
+        "Objective",
+        "Proposed Actions",
+        "Files/Systems Affected",
+        "Risks",
+        "Acceptance Criteria",
+        "Approval Request"
+      ]
+    },
+    "execution": {
+      "instructions": [
+        "Mode: execution",
+        "Perform only the approved task scope.",
+        "Do not expand scope or redesign the plan.",
+        "If the task cannot be completed as approved, return a concise change request report."
+      ],
+      "output_sections": [
+        "Summary",
+        "Actions Taken",
+        "Evidence",
+        "Risks or Follow-up",
+        "Change Request"
+      ]
+    }
+  },
+  "final_instructions": [
+    "Report the result concisely.",
+    "If the approved task cannot be completed as scoped, provide a change request report."
+  ]
+}
