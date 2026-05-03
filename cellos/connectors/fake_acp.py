@@ -2,6 +2,21 @@
 
 import json
 import sys
+from typing import Any
+
+from cellos.connectors.base import AgentInvocation, PreparedAgentInvocation, prepare_acp_invocation
+
+
+def resolve_launch_command(_options: dict[str, Any] | None = None) -> list[str]:
+    return [sys.executable, "-m", "cellos.connectors.fake_acp"]
+
+
+def prepare_invocation(invocation: AgentInvocation) -> PreparedAgentInvocation:
+    return prepare_acp_invocation(
+        invocation,
+        resolve_launch_command(invocation.agent.options),
+        metadata={"agent_runtime": "fake_acp"},
+    )
 
 
 def send(message: dict) -> None:

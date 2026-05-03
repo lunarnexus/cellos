@@ -38,13 +38,38 @@ Initial sample config:
   },
   "worker": {
     "backend": "acp",
-    "command": ["python3", "-m", "cellos.connectors.fake_acp"],
     "debug_log_path": ".cellos/logs/acp-debug.log"
+  },
+  "agents": {
+    "default": "fake",
+    "catalog_path": "agentcatalog.json"
+  },
+  "prompts": {
+    "profiles_path": "promptprofiles.json"
   }
 }
 ```
 
-Reading this small file every heartbeat is acceptable and useful. Config changes take effect on the next `cellos run`. CLI flags may override config values for one heartbeat.
+Initial agent catalog:
+
+```json
+{
+  "available": {
+    "fake": {
+      "connector": "fake_acp",
+      "description": "Fake development agent"
+    },
+    "opencode": {
+      "connector": "opencode",
+      "description": "OpenCode local ACP agent"
+    }
+  }
+}
+```
+
+Initial prompt profiles include role instructions, mode instructions, and planning response sections such as objective, proposed actions, affected files/systems, risks, acceptance criteria, and approval request.
+
+Reading these small files every heartbeat is acceptable and useful. Config, agent catalog, and prompt profile changes take effect on the next `cellos run`. CLI flags may override config values for one heartbeat.
 
 PM authentication, auto-approval, and provider-specific settings are intentionally deferred to their own design sections.
 

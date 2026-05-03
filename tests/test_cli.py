@@ -8,6 +8,22 @@ from click.testing import CliRunner
 from cellos.cli import DEFAULT_DB_PATH, DEFAULT_WORKDIR, _resolve_db_path, _resolve_workdir, main
 
 
+MINIMAL_PROMPT_PROFILES = {
+    "role_instructions": {"engineer": "Engineer instructions."},
+    "modes": {
+        "planning": {
+            "instructions": ["Mode: planning"],
+            "output_sections": ["Objective"],
+        },
+        "execution": {
+            "instructions": ["Mode: execution"],
+            "output_sections": ["Summary"],
+        },
+    },
+    "final_instructions": ["Report concisely."],
+}
+
+
 def wait_for_status(
     runner: CliRunner,
     db_path: Path,
@@ -89,9 +105,12 @@ def test_init_hard_reset_overwrites_database_and_config(tmp_path):
     runner.invoke(main, ["init", "--db", str(db_path), "--config", str(config_path)])
     config_path.write_text(
         '{"scheduler": {"concurrent_tasks": 99, "worker_timeout_seconds": 99}, '
-        '"worker": {"backend": "acp", "command": ["python3", "-m", "cellos.connectors.fake_acp"], '
-        '"debug_log_path": ".cellos/logs/acp-debug.log"}}'
+        '"worker": {"backend": "acp", "debug_log_path": ".cellos/logs/acp-debug.log"}, '
+        '"agents": {"default": "fake", "catalog_path": "agentcatalog.json"}, '
+        '"prompts": {"profiles_path": "promptprofiles.json"}}'
     )
+    (config_path.parent / "agentcatalog.json").write_text('{"available": {"fake": {"connector": "fake_acp"}}}')
+    (config_path.parent / "promptprofiles.json").write_text(json.dumps(MINIMAL_PROMPT_PROFILES))
 
     result = runner.invoke(main, ["init", "--hard-reset", "--db", str(db_path), "--config", str(config_path)])
 
@@ -426,12 +445,31 @@ def test_run_schedules_approved_task_with_fake_acp(tmp_path):
                 "scheduler": {"concurrent_tasks": 4, "worker_timeout_seconds": 30},
                 "worker": {
                     "backend": "acp",
-                    "command": ["python3", "-m", "cellos.connectors.fake_acp"],
                     "debug_log_path": str(tmp_path / "acp-debug.log"),
+                },
+                "agents": {
+                    "default": "fake",
+                    "catalog_path": "agentcatalog.json",
+                },
+                "prompts": {
+                    "profiles_path": "promptprofiles.json",
                 },
             }
         )
     )
+    (config_path.parent / "agentcatalog.json").write_text(
+        json.dumps(
+            {
+                "available": {
+                    "fake": {
+                        "connector": "fake_acp",
+                        "description": "Fake development agent",
+                    }
+                }
+            }
+        )
+    )
+    (config_path.parent / "promptprofiles.json").write_text(json.dumps(MINIMAL_PROMPT_PROFILES))
     init_result = runner.invoke(main, ["init", "--db", str(db_path), "--config", str(config_path)])
     add_result = runner.invoke(
         main,

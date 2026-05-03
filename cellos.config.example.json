@@ -5,7 +5,13 @@
   },
   "worker": {
     "backend": "acp",
-    "command": ["python3", "-m", "cellos.connectors.fake_acp"],
     "debug_log_path": ".cellos/logs/acp-debug.log"
+  },
+  "agents": {
+    "default": "fake",
+    "catalog_path": "agentcatalog.json"
+  },
+  "prompts": {
+    "profiles_path": "promptprofiles.json"
   }
 }

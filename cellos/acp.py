@@ -1,10 +1,20 @@
 """Minimal generic ACP client for one-task agent execution."""
 
 import asyncio
+import importlib
 import json
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
+
+from cellos.config import AgentConfig
+from cellos.connectors.base import AgentInvocation, PreparedAgentInvocation, PromptEnvelope
+
+
+CONNECTOR_MODULES = {
+    "fake_acp": "cellos.connectors.fake_acp",
+    "opencode": "cellos.connectors.opencode",
+}
 
 
 @dataclass
@@ -31,6 +41,42 @@ class AcpError(RuntimeError):
     @property
     def code(self) -> Any:
         return self.error.get("code")
+
+
+def prepare_agent_invocation(
+    agent_id: str,
+    agent: AgentConfig,
+    prompt: PromptEnvelope,
+    workdir: str | Path,
+    timeout_seconds: int | None = None,
+    debug_log_path: str | Path | None = None,
+    skip_non_json_stdout: bool = True,
+) -> PreparedAgentInvocation:
+    """Prepare a configured CelloS agent invocation for ACP execution."""
+    module_name = CONNECTOR_MODULES.get(agent.connector)
+    if module_name is None:
+        raise RuntimeError(f"Unsupported ACP connector for agent {agent_id}: {agent.connector}")
+    module = importlib.import_module(module_name)
+    prepare_invocation = getattr(module, "prepare_invocation", None)
+    if prepare_invocation is None:
+        raise RuntimeError(f"ACP connector {agent.connector} does not define prepare_invocation()")
+    invocation = AgentInvocation(
+        agent_id=agent_id,
+        agent=agent,
+        prompt=prompt,
+        workdir=Path(workdir),
+        timeout_seconds=timeout_seconds,
+        debug_log_path=Path(debug_log_path) if debug_log_path is not None else None,
+        skip_non_json_stdout=skip_non_json_stdout,
+    )
+    prepared = prepare_invocation(invocation)
+    if not isinstance(prepared, PreparedAgentInvocation):
+        raise RuntimeError(f"ACP connector {agent.connector} returned an invalid invocation: {prepared!r}")
+    if not prepared.launch_command or not all(isinstance(item, str) for item in prepared.launch_command):
+        raise RuntimeError(
+            f"ACP connector {agent.connector} returned an invalid launch command: {prepared.launch_command!r}"
+        )
+    return prepared
 
 
 class AcpClient:

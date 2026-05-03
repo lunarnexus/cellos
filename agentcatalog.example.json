@@ -1,0 +1,12 @@
+{
+  "available": {
+    "fake": {
+      "connector": "fake_acp",
+      "description": "Fake development agent"
+    },
+    "opencode": {
+      "connector": "opencode",
+      "description": "OpenCode local ACP agent"
+    }
+  }
+}

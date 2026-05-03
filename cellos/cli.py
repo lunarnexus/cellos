@@ -58,6 +58,8 @@ def init(workdir: Path | None, db_path: Path | None, config_path: Path, hard_res
     asyncio.run(_init(resolved_db_path))
     console.print(f"Initialized database at [bold]{resolved_db_path}[/bold]")
     console.print(f"Initialized config at [bold]{copied_config}[/bold]")
+    console.print(f"Initialized agent catalog at [bold]{copied_config.parent / 'agentcatalog.json'}[/bold]")
+    console.print(f"Initialized prompt profiles at [bold]{copied_config.parent / 'promptprofiles.json'}[/bold]")
 
 
 @main.command("add-task")
@@ -410,13 +412,18 @@ async def _approve(db_path: Path | None, config_path: Path, workdir: Path | None
 
 def _build_worker(config: CellosConfig, workdir: Path):
     if config.worker.backend == "acp":
-        if not config.worker.command:
-            raise click.ClickException("Config worker.command is required when worker.backend is 'acp'.")
+        agent_id = config.agents.default
+        try:
+            agent = config.get_default_agent()
+        except ValueError as exc:
+            raise click.ClickException(str(exc)) from exc
         debug_log_path = config.worker.debug_log_path
         if debug_log_path is not None and not Path(debug_log_path).is_absolute():
             debug_log_path = str(workdir / debug_log_path)
         return AcpWorker(
-            command=config.worker.command,
+            agent_id=agent_id,
+            agent=agent,
+            prompt_profiles=config.prompt_profiles,
             timeout_seconds=config.scheduler.worker_timeout_seconds,
             debug_log_path=debug_log_path,
         )
