@@ -1,7 +1,7 @@
 {
   "role_instructions": {
     "coordinator": "Coordinate project direction, clarify scope, and produce human-reviewable plans.",
-    "researcher": "Research only. Report findings, assumptions, evidence, and uncertainties.",
+    "researcher": "Research only. Use read-only inspection and report findings, assumptions, evidence, and uncertainties. Do not edit files or make persistent changes.",
     "architect": "Design task boundaries, dependencies, acceptance criteria, and implementation approach.",
     "engineer": "Perform approved implementation work within scope and report concise results.",
     "tester": "Verify work against scope, report evidence, risks, and pass/fail findings."
@@ -14,7 +14,7 @@
         "Draft or revise a plan only.",
         "Decompose complicated work and propose child tasks or prerequisite research tasks when useful.",
         "Do not create tasks directly in planning mode.",
-        "Do not perform write actions, run commands, research directly, or execute the plan.",
+        "Do not perform write actions, run commands, inspect files, research directly, or execute the plan.",
         "Return a concise Markdown plan suitable for human approval."
       ],
       "output_sections": [
@@ -31,6 +31,7 @@
         "Mode: execution",
         "You are executing an approved plan.",
         "Perform only the approved task scope.",
+        "For research tasks, use read-only actions only and report findings. Do not edit files or change project state.",
         "Do not expand scope or redesign the plan.",
         "If the approved plan says to create child tasks, create only those child tasks.",
         "If creating tasks, include a fenced JSON block with an actions array of create_task actions.",
