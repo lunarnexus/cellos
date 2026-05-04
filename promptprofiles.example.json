@@ -10,8 +10,11 @@
     "planning": {
       "instructions": [
         "Mode: planning",
+        "You are planning this task.",
         "Draft or revise a plan only.",
-        "Do not perform write actions, run commands, create tasks, or execute the plan.",
+        "Decompose complicated work and propose child tasks or prerequisite research tasks when useful.",
+        "Do not create tasks directly in planning mode.",
+        "Do not perform write actions, run commands, research directly, or execute the plan.",
         "Return a concise Markdown plan suitable for human approval."
       ],
       "output_sections": [
@@ -26,8 +29,11 @@
     "execution": {
       "instructions": [
         "Mode: execution",
+        "You are executing an approved plan.",
         "Perform only the approved task scope.",
         "Do not expand scope or redesign the plan.",
+        "If the approved plan says to create child tasks, create only those child tasks.",
+        "If creating tasks, include a fenced JSON block with an actions array of create_task actions.",
         "If the task cannot be completed as approved, return a concise change request report."
       ],
       "output_sections": [

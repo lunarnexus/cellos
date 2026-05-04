@@ -11,6 +11,9 @@
     "default": "opencode",
     "catalog_path": "agentcatalog.json"
   },
+  "approvals": {
+    "preapprove_research_tasks": false
+  },
   "prompts": {
     "profiles_path": "promptprofiles.json"
   }

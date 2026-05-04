@@ -48,6 +48,10 @@ class PromptRuntimeConfig(BaseModel):
     profiles_path: str = "promptprofiles.json"
 
 
+class ApprovalConfig(BaseModel):
+    preapprove_research_tasks: bool = False
+
+
 class PromptModeProfile(BaseModel):
     instructions: list[str] = Field(default_factory=list)
     output_sections: list[str] = Field(default_factory=list)
@@ -63,6 +67,7 @@ class CellosConfig(BaseModel):
     scheduler: SchedulerConfig
     worker: WorkerConfig
     agents: AgentRuntimeConfig
+    approvals: ApprovalConfig = Field(default_factory=ApprovalConfig)
     prompts: PromptRuntimeConfig = Field(default_factory=PromptRuntimeConfig)
     agent_catalog: AgentCatalogConfig = Field(default_factory=lambda: AgentCatalogConfig(available={}))
     prompt_profiles: PromptProfilesConfig = Field(default_factory=PromptProfilesConfig)

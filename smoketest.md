@@ -13,14 +13,10 @@ Do not run this through a filesystem sandbox. Use the normal project directory s
 ## 1. Tests
 
 ```bash
-PYTHONDONTWRITEBYTECODE=1 python3 -m pytest -p no:cacheprovider tests/test_config.py tests/test_models.py tests/test_db.py tests/test_pm.py tests/test_acp_worker.py tests/test_heartbeat.py tests/test_cli.py
+PYTHONDONTWRITEBYTECODE=1 python3 -m pytest -p no:cacheprovider tests/test_config.py tests/test_models.py tests/test_db.py tests/test_pm.py tests/test_task_actions.py tests/test_acp_worker.py tests/test_heartbeat.py tests/test_cli.py
 ```
 
-Expected:
-
-```text
-55 passed
-```
+Expected: all tests pass.
 
 ## 2. Fake Agent End-To-End
 

@@ -7,4 +7,10 @@ from cellos.models import Task, TaskResult
 
 
 class TaskWorker(Protocol):
-    async def run_task(self, task: Task, cwd: Path, mode: str = "execution") -> TaskResult: ...
+    async def run_task(
+        self,
+        task: Task,
+        cwd: Path,
+        mode: str = "execution",
+        prompt_text: str | None = None,
+    ) -> TaskResult: ...

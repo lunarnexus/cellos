@@ -4,7 +4,11 @@ from cellos.config import PromptProfilesConfig
 from cellos.models import Task
 
 
-def build_task_prompt(task: Task, profiles: PromptProfilesConfig, mode: str = "execution") -> str:
+def build_task_prompt(
+    task: Task,
+    profiles: PromptProfilesConfig,
+    mode: str = "execution",
+) -> str:
     mode_profile = profiles.modes.get(mode) or profiles.modes.get("execution")
     role_instruction = profiles.role_instructions.get(task.role.value, "")
     parts = [

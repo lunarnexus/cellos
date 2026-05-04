@@ -6,7 +6,7 @@ from typing import Any
 
 import aiosqlite
 
-from cellos.models import Task, TaskAttempt, TaskAttemptStatus, TaskComment, TaskResult, TaskStatus, utc_now
+from cellos.models import AttentionReason, Task, TaskAttempt, TaskAttemptStatus, TaskComment, TaskResult, TaskStatus, utc_now
 
 
 REQUIRED_TABLES = {
@@ -189,13 +189,19 @@ class CellosDatabase:
 
     async def list_tasks_ready_for_planning(self, limit: int | None = None) -> list[Task]:
         sql = """
-            SELECT payload
-            FROM tasks
-            WHERE status = ?
-               OR (status = ? AND attention_required = 1)
-            ORDER BY created_at
+            SELECT t.payload
+            FROM tasks t
+            WHERE (t.status = ?
+               OR (t.status = ? AND t.attention_required = 1))
+              AND NOT EXISTS (
+                SELECT 1
+                FROM task_dependencies d
+                JOIN tasks dep ON dep.id = d.depends_on_task_id
+                WHERE d.task_id = t.id AND dep.status != ?
+              )
+            ORDER BY t.created_at
         """
-        params: list[Any] = [TaskStatus.DRAFT.value, TaskStatus.NEEDS_APPROVAL.value]
+        params: list[Any] = [TaskStatus.DRAFT.value, TaskStatus.NEEDS_APPROVAL.value, TaskStatus.DONE.value]
         if limit is not None:
             sql += " LIMIT ?"
             params.append(limit)
@@ -223,6 +229,31 @@ class CellosDatabase:
         cursor = await self.conn.execute(sql, params)
         rows = await cursor.fetchall()
         return [Task.model_validate_json(row["payload"]) for row in rows]
+
+    async def list_tasks_depending_on(self, task_id: str) -> list[Task]:
+        cursor = await self.conn.execute(
+            """
+            SELECT t.payload
+            FROM tasks t
+            JOIN task_dependencies d ON d.task_id = t.id
+            WHERE d.depends_on_task_id = ?
+            ORDER BY t.created_at
+            """,
+            (task_id,),
+        )
+        rows = await cursor.fetchall()
+        return [Task.model_validate_json(row["payload"]) for row in rows]
+
+    async def dependencies_satisfied(self, task: Task) -> bool:
+        if not task.dependencies:
+            return True
+        placeholders = ", ".join("?" for _ in task.dependencies)
+        cursor = await self.conn.execute(
+            f"SELECT COUNT(*) AS incomplete FROM tasks WHERE id IN ({placeholders}) AND status != ?",
+            (*task.dependencies, TaskStatus.DONE.value),
+        )
+        row = await cursor.fetchone()
+        return bool(row is not None and row["incomplete"] == 0)
 
     async def list_task_events(self, task_id: str | None = None, limit: int | None = None) -> list[dict[str, Any]]:
         sql = """
@@ -423,6 +454,8 @@ class CellosDatabase:
             else:
                 status = TaskStatus.DONE if result.success else TaskStatus.FAILED
             await self.update_task(task.model_copy(update={"result": result, "status": status}))
+        if result.success:
+            await self._wake_satisfied_blocked_dependents(result.task_id)
         await self.record_task_event(result.task_id, "result_saved", result.summary)
         await self.conn.commit()
 
@@ -450,6 +483,19 @@ class CellosDatabase:
             """,
             [(task.id, dependency_id) for dependency_id in task.dependencies],
         )
+
+    async def _wake_satisfied_blocked_dependents(self, completed_task_id: str) -> None:
+        for dependent in await self.list_tasks_depending_on(completed_task_id):
+            if dependent.status != TaskStatus.BLOCKED:
+                continue
+            if not await self.dependencies_satisfied(dependent):
+                continue
+            updated = dependent.model_copy(update={"status": TaskStatus.DRAFT}).requires_attention(
+                AttentionReason.DEPENDENCY_DONE,
+                "Dependency completed; task is ready for replanning",
+            )
+            await self.update_task(updated)
+            await self.record_task_event(dependent.id, "dependency_done", f"Dependency completed: {completed_task_id}")
 
     async def _fetchone(self, sql: str, params: tuple[Any, ...]) -> aiosqlite.Row | None:
         cursor = await self.conn.execute(sql, params)

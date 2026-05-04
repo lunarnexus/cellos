@@ -49,11 +49,17 @@ def task_payload(db_path: Path) -> dict:
     return json.loads(row[0])
 
 
+def task_payloads(db_path: Path) -> list[dict]:
+    with sqlite3.connect(db_path) as conn:
+        rows = conn.execute("SELECT payload FROM tasks ORDER BY created_at").fetchall()
+    return [json.loads(row[0]) for row in rows]
+
+
 def task_id_from_add_output(output: str) -> str:
     return output.split("Added ", 1)[1].split(":", 1)[0].strip()
 
 
-def write_fake_runtime_config(config_path: Path) -> None:
+def write_fake_runtime_config(config_path: Path, preapprove_research_tasks: bool = False) -> None:
     config_path.parent.mkdir(parents=True, exist_ok=True)
     config_path.write_text(
         json.dumps(
@@ -67,6 +73,7 @@ def write_fake_runtime_config(config_path: Path) -> None:
                     "default": "fake",
                     "catalog_path": "agentcatalog.json",
                 },
+                "approvals": {"preapprove_research_tasks": preapprove_research_tasks},
                 "prompts": {
                     "profiles_path": "promptprofiles.json",
                 },
@@ -188,6 +195,42 @@ def test_add_task_and_status(tmp_path):
     assert "Draft plan" in status_result.output
     assert "coordinator" in status_result.output
     assert "draft" in status_result.output
+
+
+def test_add_task_accepts_parent_and_depends(tmp_path):
+    db_path = tmp_path / "cellos.sqlite"
+    config_path = tmp_path / ".cellos" / "config.json"
+    runner = CliRunner()
+    runner.invoke(main, ["init", "--db", str(db_path), "--config", str(config_path)])
+    parent_result = runner.invoke(main, ["add-task", "Parent", "--db", str(db_path), "--config", str(config_path)])
+    dependency_result = runner.invoke(
+        main,
+        ["add-task", "Dependency", "--db", str(db_path), "--config", str(config_path)],
+    )
+    parent_id = task_id_from_add_output(parent_result.output)
+    dependency_id = task_id_from_add_output(dependency_result.output)
+
+    child_result = runner.invoke(
+        main,
+        [
+            "add-task",
+            "Child",
+            "--parent",
+            parent_id,
+            "--depends",
+            dependency_id,
+            "--db",
+            str(db_path),
+            "--config",
+            str(config_path),
+        ],
+    )
+    child_id = task_id_from_add_output(child_result.output)
+    detail_result = runner.invoke(main, ["detail", child_id, "--db", str(db_path), "--config", str(config_path)])
+
+    assert child_result.exit_code == 0
+    assert f"Parent: {parent_id}" in detail_result.output
+    assert f"Dependencies: {dependency_id}" in detail_result.output
 
 
 def test_add_task_requires_init(tmp_path):
@@ -356,6 +399,60 @@ def test_update_changes_prompt_and_records_event(tmp_path):
     assert saved_task["attention"]["required"] is True
     assert saved_task["attention"]["reason"] == "human_changed_task"
     assert "Task updated" in events_result.output
+
+
+def test_update_changes_parent_and_dependencies(tmp_path):
+    db_path = tmp_path / "cellos.sqlite"
+    config_path = tmp_path / ".cellos" / "config.json"
+    runner = CliRunner()
+    runner.invoke(main, ["init", "--db", str(db_path), "--config", str(config_path)])
+    child_result = runner.invoke(main, ["add-task", "Child", "--db", str(db_path), "--config", str(config_path)])
+    parent_result = runner.invoke(main, ["add-task", "Parent", "--db", str(db_path), "--config", str(config_path)])
+    dependency_result = runner.invoke(
+        main,
+        ["add-task", "Dependency", "--db", str(db_path), "--config", str(config_path)],
+    )
+    child_id = task_id_from_add_output(child_result.output)
+    parent_id = task_id_from_add_output(parent_result.output)
+    dependency_id = task_id_from_add_output(dependency_result.output)
+
+    update_result = runner.invoke(
+        main,
+        [
+            "update",
+            child_id,
+            "--parent",
+            parent_id,
+            "--depends",
+            dependency_id,
+            "--db",
+            str(db_path),
+            "--config",
+            str(config_path),
+        ],
+    )
+    detail_after_add = runner.invoke(main, ["detail", child_id, "--db", str(db_path), "--config", str(config_path)])
+    remove_result = runner.invoke(
+        main,
+        [
+            "update",
+            child_id,
+            "--remove-dep",
+            dependency_id,
+            "--db",
+            str(db_path),
+            "--config",
+            str(config_path),
+        ],
+    )
+    detail_after_remove = runner.invoke(main, ["detail", child_id, "--db", str(db_path), "--config", str(config_path)])
+
+    assert update_result.exit_code == 0
+    assert f"Parent: {parent_id}" in detail_after_add.output
+    assert f"Dependencies: {dependency_id}" in detail_after_add.output
+    assert remove_result.exit_code == 0
+    assert f"Parent: {parent_id}" in detail_after_remove.output
+    assert "Dependencies:" not in detail_after_remove.output
 
 
 def test_update_rejects_empty_update(tmp_path):
@@ -554,6 +651,82 @@ def test_run_schedules_approved_task_with_fake_acp(tmp_path):
     assert run_result.exit_code == 0
     assert "scheduled" in run_result.output
     assert "done" in status_result.output
+
+
+def test_execution_can_create_preapproved_blocking_research_task(tmp_path):
+    db_path = tmp_path / "cellos.sqlite"
+    config_path = tmp_path / ".cellos" / "config.json"
+    runner = CliRunner()
+
+    write_fake_runtime_config(config_path, preapprove_research_tasks=True)
+    runner.invoke(main, ["init", "--db", str(db_path), "--config", str(config_path)])
+    add_result = runner.invoke(
+        main,
+        [
+            "add-task",
+            "Needs research",
+            "--role",
+            "architect",
+            "--type",
+            "architecture",
+            "--status",
+            "approved",
+            "--prompt",
+            "CREATE_RESEARCH_CHILD_ACTION",
+            "--db",
+            str(db_path),
+            "--config",
+            str(config_path),
+        ],
+    )
+    parent_id = task_id_from_add_output(add_result.output)
+
+    run_result = runner.invoke(main, ["run", "--db", str(db_path), "--config", str(config_path)])
+    status_result = wait_for_status(runner, db_path, config_path, "Research prerequisite")
+    parent_detail = runner.invoke(main, ["detail", parent_id, "--db", str(db_path), "--config", str(config_path)])
+
+    assert run_result.exit_code == 0
+    assert "blocked" in status_result.output
+    assert "approved" in status_result.output
+    assert "Dependencies:" in parent_detail.output
+    assert "child_task_created" in parent_detail.output
+    assert "blocked_on_children" in parent_detail.output
+
+
+def test_execution_gates_research_task_when_preapproval_disabled(tmp_path):
+    db_path = tmp_path / "cellos.sqlite"
+    config_path = tmp_path / ".cellos" / "config.json"
+    runner = CliRunner()
+
+    write_fake_runtime_config(config_path, preapprove_research_tasks=False)
+    runner.invoke(main, ["init", "--db", str(db_path), "--config", str(config_path)])
+    runner.invoke(
+        main,
+        [
+            "add-task",
+            "Needs gated research",
+            "--role",
+            "architect",
+            "--type",
+            "architecture",
+            "--status",
+            "approved",
+            "--prompt",
+            "CREATE_RESEARCH_CHILD_ACTION",
+            "--db",
+            str(db_path),
+            "--config",
+            str(config_path),
+        ],
+    )
+
+    runner.invoke(main, ["run", "--db", str(db_path), "--config", str(config_path)])
+    status_result = wait_for_status(runner, db_path, config_path, "Research prerequisite")
+    payloads = task_payloads(db_path)
+    research_task = next(payload for payload in payloads if payload["title"] == "Research prerequisite")
+
+    assert "blocked" in status_result.output
+    assert research_task["status"] == "needs_approval"
 
 
 def test_run_help_shows_concurrent_tasks_option():

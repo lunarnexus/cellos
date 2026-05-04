@@ -34,6 +34,31 @@ def main() -> None:
         elif method == "session/new":
             send({"jsonrpc": "2.0", "id": request_id, "result": {"sessionId": "fake-session"}})
         elif method == "session/prompt":
+            prompt_text = ""
+            params = message.get("params") or {}
+            prompt_items = params.get("prompt") or []
+            if prompt_items and isinstance(prompt_items[0], dict):
+                prompt_text = str(prompt_items[0].get("text") or "")
+            response_text = "fake ACP completed task"
+            if "CREATE_RESEARCH_CHILD_ACTION" in prompt_text:
+                response_text = (
+                    "fake ACP completed task\n\n"
+                    "```json\n"
+                    "{\n"
+                    '  "actions": [\n'
+                    "    {\n"
+                    '      "type": "create_task",\n'
+                    '      "title": "Research prerequisite",\n'
+                    '      "role": "researcher",\n'
+                    '      "task_type": "research",\n'
+                    '      "prompt": "Research the prerequisite and report findings.",\n'
+                    '      "status": "approved",\n'
+                    '      "blocks_parent": true\n'
+                    "    }\n"
+                    "  ]\n"
+                    "}\n"
+                    "```"
+                )
             send(
                 {
                     "jsonrpc": "2.0",
@@ -41,7 +66,7 @@ def main() -> None:
                     "params": {
                         "update": {
                             "sessionUpdate": "agent_message_chunk",
-                            "content": {"type": "text", "text": "fake ACP completed task"},
+                            "content": {"type": "text", "text": response_text},
                         }
                     },
                 }

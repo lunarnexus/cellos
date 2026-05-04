@@ -28,6 +28,7 @@ from cellos.models import (
     TaskType,
 )
 from cellos.prompt_builder import build_task_prompt
+from cellos.task_actions import parse_create_task_actions, task_from_create_action
 
 
 DEFAULT_DB_PATH = Path(".cellos") / "cellos.sqlite"
@@ -81,7 +82,7 @@ def init(workdir: Path | None, db_path: Path | None, config_path: Path, hard_res
 @click.option("--status", type=click.Choice([item.value for item in TaskStatus]), default=TaskStatus.DRAFT.value)
 @click.option("--prompt", default="", help="Task prompt or approved scope.")
 @click.option("--description", default="", help="Additional task description.")
-@click.option("--depends-on", multiple=True, help="Task ID this task depends on. May be repeated.")
+@click.option("--depends", "depends_on", multiple=True, help="Task ID this task depends on. May be repeated.")
 @click.option("--parent", "parent_id", default=None, help="Parent task ID.")
 @click.option("--timeout", type=int, default=None, help="Per-task worker timeout in seconds.")
 @click.option("--workdir", type=click.Path(path_type=Path), default=None)
@@ -155,6 +156,9 @@ def detail(task_id: str, event_limit: int, workdir: Path | None, db_path: Path |
 @click.option("--prompt", default=None)
 @click.option("--description", default=None)
 @click.option("--status", type=click.Choice([item.value for item in TaskStatus]), default=None)
+@click.option("--parent", "parent_id", default=None)
+@click.option("--depends", "add_dependencies", multiple=True, help="Add a task dependency. May be repeated.")
+@click.option("--remove-dep", "remove_dependencies", multiple=True, help="Remove a task dependency. May be repeated.")
 @click.option("--workdir", type=click.Path(path_type=Path), default=None)
 @click.option("--db", "db_path", type=click.Path(path_type=Path), default=None)
 @click.option("--config", "config_path", type=click.Path(path_type=Path), default=DEFAULT_CONFIG_PATH)
@@ -164,12 +168,29 @@ def update(
     prompt: str | None,
     description: str | None,
     status: str | None,
+    parent_id: str | None,
+    add_dependencies: tuple[str, ...],
+    remove_dependencies: tuple[str, ...],
     workdir: Path | None,
     db_path: Path | None,
     config_path: Path,
 ) -> None:
     """Update a task."""
-    task = _run_cli(_update(db_path, config_path, workdir, task_id, title, prompt, description, status))
+    task = _run_cli(
+        _update(
+            db_path,
+            config_path,
+            workdir,
+            task_id,
+            title,
+            prompt,
+            description,
+            status,
+            parent_id,
+            add_dependencies,
+            remove_dependencies,
+        )
+    )
     console.print(f"Updated [bold]{task.id}[/bold]: {task.title}")
 
 
@@ -404,8 +425,19 @@ async def _update(
     prompt: str | None,
     description: str | None,
     status: str | None,
+    parent_id: str | None,
+    add_dependencies: tuple[str, ...],
+    remove_dependencies: tuple[str, ...],
 ) -> Task:
-    if title is None and prompt is None and description is None and status is None:
+    if (
+        title is None
+        and prompt is None
+        and description is None
+        and status is None
+        and parent_id is None
+        and not add_dependencies
+        and not remove_dependencies
+    ):
         raise click.ClickException("Nothing to update.")
     app = await _open_app(db_path, config_path, workdir)
     try:
@@ -426,12 +458,26 @@ async def _update(
             content_changed = content_changed or description != task.description
         if status is not None:
             updates["status"] = TaskStatus(status)
+        relationship_changed = False
+        if parent_id is not None:
+            updates["parent_id"] = parent_id
+            relationship_changed = parent_id != task.parent_id
+        if add_dependencies or remove_dependencies:
+            dependencies = list(task.dependencies)
+            for dependency_id in add_dependencies:
+                if dependency_id not in dependencies:
+                    dependencies.append(dependency_id)
+            for dependency_id in remove_dependencies:
+                if dependency_id in dependencies:
+                    dependencies.remove(dependency_id)
+            updates["dependencies"] = dependencies
+            relationship_changed = dependencies != task.dependencies
 
         updated_task = task.model_copy(update=updates)
-        if content_changed and updated_task.status != TaskStatus.APPROVED:
+        if (content_changed or relationship_changed) and updated_task.status != TaskStatus.APPROVED:
             updated_task = updated_task.requires_attention(
                 AttentionReason.HUMAN_CHANGED_TASK,
-                "Human updated task content",
+                "Human updated task content or relationships",
             )
         updated = await app.db.update_task(updated_task)
         await app.db.record_task_event(task.id, "updated", "Task updated")
@@ -576,13 +622,18 @@ async def _worker(task_id: str, mode: str, db_path: Path | None, config_path: Pa
         agent_id = app.config.agents.default
         agent = app.config.get_default_agent()
         log_path = app.workdir / ".cellos" / "logs" / f"worker-{task.id}.log"
+        prompt_text = build_task_prompt(
+            task,
+            app.config.prompt_profiles,
+            mode=mode,
+        )
         attempt = await app.db.start_task_attempt(
             TaskAttempt(
                 task_id=task.id,
                 mode=mode,
                 agent_id=agent_id,
                 connector=agent.connector,
-                prompt_snapshot=build_task_prompt(task, app.config.prompt_profiles, mode=mode),
+                prompt_snapshot=prompt_text,
                 log_path=str(log_path),
             )
         )
@@ -590,7 +641,7 @@ async def _worker(task_id: str, mode: str, db_path: Path | None, config_path: Pa
         await app.db.conn.commit()
         worker_backend = _build_worker(app.config, app.workdir)
         try:
-            result = await worker_backend.run_task(task, app.workdir, mode=mode)
+            result = await worker_backend.run_task(task, app.workdir, mode=mode, prompt_text=prompt_text)
         except Exception as exc:
             result = TaskResult(
                 task_id=task.id,
@@ -601,7 +652,7 @@ async def _worker(task_id: str, mode: str, db_path: Path | None, config_path: Pa
         if mode == "planning" and result.success:
             await _save_planning_result(app, task, result)
         else:
-            await app.db.save_task_result(result)
+            await _save_execution_result(app, task, result)
         if attempt.id is not None:
             await app.db.complete_task_attempt(
                 attempt.id,
@@ -628,6 +679,51 @@ async def _save_planning_result(app: CellosApp, task: Task, result: TaskResult) 
     await app.db.update_task(updated)
     await app.db.record_task_event(task.id, "planning_saved", "Planning result saved; task needs approval")
     await app.db.conn.commit()
+
+
+async def _save_execution_result(app: CellosApp, task: Task, result: TaskResult) -> None:
+    blocking_task_ids: list[str] = []
+    if result.success:
+        for action in parse_create_task_actions(result.summary):
+            child = task_from_create_action(
+                action,
+                task,
+                preapprove_research_tasks=app.config.approvals.preapprove_research_tasks,
+            )
+            await app.db.create_task(child)
+            await app.db.record_task_event(
+                task.id,
+                "child_task_created",
+                f"Created child task {child.id}: {child.title}",
+                {"child_task_id": child.id, "blocks_parent": action.blocks_parent},
+            )
+            if action.blocks_parent:
+                blocking_task_ids.append(child.id)
+
+    await app.db.save_task_result(result)
+    if blocking_task_ids:
+        current = await app.db.get_task(task.id)
+        if current is None:
+            raise click.ClickException(f"Task not found: {task.id}")
+        dependencies = list(current.dependencies)
+        for child_id in blocking_task_ids:
+            if child_id not in dependencies:
+                dependencies.append(child_id)
+        await app.db.update_task(
+            current.model_copy(
+                update={
+                    "status": TaskStatus.BLOCKED,
+                    "dependencies": dependencies,
+                }
+            )
+        )
+        await app.db.record_task_event(
+            task.id,
+            "blocked_on_children",
+            f"Task blocked on child task(s): {', '.join(blocking_task_ids)}",
+            {"child_task_ids": blocking_task_ids},
+        )
+        await app.db.conn.commit()
 
 
 def _spawn_worker(task: Task, db_path: Path | None, config_path: Path, workdir: Path, mode: str) -> None:

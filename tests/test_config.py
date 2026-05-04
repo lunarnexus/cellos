@@ -54,6 +54,7 @@ def test_ensure_config_copies_example_when_missing(tmp_path):
     assert loaded.scheduler.worker_timeout_seconds == 60
     assert loaded.worker.backend == "acp"
     assert loaded.agents.default == "fake"
+    assert loaded.approvals.preapprove_research_tasks is False
     assert loaded.agent_catalog.available["opencode"].connector == "opencode"
     assert loaded.prompt_profiles.role_instructions["engineer"] == "Engineer instructions."
 

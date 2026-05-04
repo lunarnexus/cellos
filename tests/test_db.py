@@ -113,6 +113,37 @@ async def test_database_lists_tasks_ready_for_planning(tmp_path):
 
 
 @pytest.mark.anyio
+async def test_database_does_not_plan_tasks_with_incomplete_dependencies(tmp_path):
+    db = CellosDatabase(tmp_path / "cellos.sqlite")
+    await db.connect()
+    await db.init_db()
+
+    dependency = Task(
+        id="task-dep",
+        title="Dependency",
+        role=AgentRole.RESEARCHER,
+        status=TaskStatus.APPROVED,
+    )
+    blocked_draft = Task(
+        id="task-draft",
+        title="Draft blocked by research",
+        role=AgentRole.ARCHITECT,
+        dependencies=["task-dep"],
+    )
+
+    await db.create_task(dependency)
+    await db.create_task(blocked_draft)
+
+    tasks = await db.list_tasks_ready_for_planning()
+    assert [task.id for task in tasks] == []
+
+    await db.save_task_result(TaskResult(task_id="task-dep", success=True, summary="research done"))
+    tasks = await db.list_tasks_ready_for_planning()
+    assert [task.id for task in tasks] == ["task-draft"]
+    await db.close()
+
+
+@pytest.mark.anyio
 async def test_database_lists_only_approved_unblocked_tasks(tmp_path):
     db = CellosDatabase(tmp_path / "cellos.sqlite")
     await db.connect()
@@ -148,6 +179,37 @@ async def test_database_lists_only_approved_unblocked_tasks(tmp_path):
     await db.update_task_status("task-dep", TaskStatus.DONE)
     tasks = await db.list_approved_unblocked_tasks()
     assert [task.id for task in tasks] == ["task-ready", "task-blocked"]
+    await db.close()
+
+
+@pytest.mark.anyio
+async def test_database_wakes_blocked_parent_when_dependency_completes(tmp_path):
+    db = CellosDatabase(tmp_path / "cellos.sqlite")
+    await db.connect()
+    await db.init_db()
+
+    dependency = Task(
+        id="task-research",
+        title="Research",
+        role=AgentRole.RESEARCHER,
+        status=TaskStatus.APPROVED,
+    )
+    parent = Task(
+        id="task-parent",
+        title="Parent",
+        role=AgentRole.ARCHITECT,
+        status=TaskStatus.BLOCKED,
+        dependencies=["task-research"],
+    )
+
+    await db.create_task(dependency)
+    await db.create_task(parent)
+    await db.save_task_result(TaskResult(task_id="task-research", success=True, summary="research done"))
+    saved = await db.get_task("task-parent")
+
+    assert saved.status == TaskStatus.DRAFT
+    assert saved.attention.required is True
+    assert saved.attention.reason == AttentionReason.DEPENDENCY_DONE
     await db.close()
 
 

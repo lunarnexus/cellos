@@ -7,6 +7,7 @@ This folder contains the canonical CelloS design docs. Treat these docs as the c
 - `product.md`: product vision, principles, goals, non-goals, and future features.
 - `roles-and-lifecycle.md`: canonical roles, task lifecycle, approvals, change requests, and attention metadata.
 - `heartbeat.md`: one-turn scheduler behavior for `cellos run`.
+- `prompting.md`: prompt stack, planning/execution boundaries, and structured task creation.
 - `communication.md`: proposals, reports, approval requests, comments, and task communication artifacts.
 - `pm-adapters.md`: PM-neutral adapter contract.
 - `trello.md`: Trello-specific mapping onto the PM adapter model.

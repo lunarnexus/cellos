@@ -26,12 +26,13 @@ class AcpWorker:
         self.debug_log_path = Path(debug_log_path) if debug_log_path is not None else None
         self.skip_non_json_stdout = skip_non_json_stdout
 
-    async def run_task(self, task: Task, cwd: Path, mode: str = "execution") -> TaskResult:
+    async def run_task(self, task: Task, cwd: Path, mode: str = "execution", prompt_text: str | None = None) -> TaskResult:
+        prompt_text = prompt_text or build_task_prompt(task, self.prompt_profiles, mode=mode)
         prepared = prepare_agent_invocation(
             agent_id=self.agent_id,
             agent=self.agent,
             prompt=PromptEnvelope(
-                text=build_task_prompt(task, self.prompt_profiles, mode=mode),
+                text=prompt_text,
                 mode=mode,
                 metadata={
                     "task_id": task.id,

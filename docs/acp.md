@@ -134,7 +134,7 @@ Attempt records include:
 - worker log path,
 - started/completed timestamps.
 
-Attempt records are the first layer of audit history and failure-learning context. Parent or coordinating agents should be able to receive compact attempt history when replanning after failed child work. If an agent crashes before producing a graceful report, the attempt still points to the worker log for diagnosis.
+Attempt records are the first layer of audit history and failure-learning context. Parent or coordinating agents can inspect attempt history when replanning after failed child work, but attempt history is not automatically included in every worker prompt. If an agent crashes before producing a graceful report, the attempt still points to the worker log for diagnosis.
 
 ## ACP Flow
 
