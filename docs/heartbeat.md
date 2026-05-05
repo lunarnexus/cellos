@@ -264,7 +264,7 @@ Execution is allowed for:
 
 Execution workers perform the approved work and then save a normal result, failure, or change request.
 
-Human comments are stored separately from the task prompt/plan. A comment on an unapproved task marks durable attention, which makes the task eligible for replanning without adding a separate revision status. The comment itself is collaboration history; if it changes the work, the task prompt or plan should carry the revised scope.
+Human comments are stored separately from the task prompt/plan. A comment on an unapproved task marks durable attention, which makes the task eligible for replanning without adding a separate revision status. Planning prompts include task comments and research-result system comments. Execution prompts stay focused on the approved plan.
 
 ## Concurrency
 

@@ -70,6 +70,79 @@ def test_build_task_prompt_uses_planning_profile(prompt_profiles):
     assert "- Approval Request" in prompt
 
 
+def test_planning_prompt_includes_comments_and_research_results(prompt_profiles):
+    task = Task(
+        id="task-1",
+        title="Replan feature",
+        role=AgentRole.ARCHITECT,
+        task_type=TaskType.ARCHITECTURE,
+        status=TaskStatus.DRAFT,
+        prompt="Previous plan.",
+    )
+
+    prompt = build_task_prompt(
+        task,
+        prompt_profiles,
+        mode="planning",
+        comments=[
+            {
+                "author_id": "james",
+                "author_type": "human",
+                "message": "Prefer the smaller design.",
+                "payload": {},
+            },
+            {
+                "author_id": "cellos",
+                "author_type": "system",
+                "message": "Research Results from abc123 - API research\n\nUse endpoint v2.",
+                "payload": {"kind": "research_result"},
+            },
+        ],
+    )
+
+    assert "Comments:" in prompt
+    assert "james: Prefer the smaller design." in prompt
+    assert "Research Results:" in prompt
+    assert "cellos: Research Results from abc123 - API research" in prompt
+    assert "Use endpoint v2." in prompt
+
+
+def test_execution_prompt_omits_comments_and_research_results(prompt_profiles):
+    task = Task(
+        id="task-1",
+        title="Execute feature",
+        role=AgentRole.ENGINEER,
+        task_type=TaskType.IMPLEMENTATION,
+        status=TaskStatus.APPROVED,
+        prompt="Approved scope.",
+    )
+
+    prompt = build_task_prompt(
+        task,
+        prompt_profiles,
+        mode="execution",
+        comments=[
+            {
+                "author_id": "james",
+                "author_type": "human",
+                "message": "Backstory that should not be in execution.",
+                "payload": {},
+            },
+            {
+                "author_id": "cellos",
+                "author_type": "system",
+                "message": "Research Results from abc123 - API research\n\nUse endpoint v2.",
+                "payload": {"kind": "research_result"},
+            },
+        ],
+    )
+
+    assert "Comments:" not in prompt
+    assert "Research Results:" not in prompt
+    assert "Backstory that should not be in execution." not in prompt
+    assert "Use endpoint v2." not in prompt
+
+
 def test_prepare_opencode_agent_invocation(tmp_path):
     prepared = prepare_agent_invocation(
         agent_id="opencode",

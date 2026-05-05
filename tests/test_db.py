@@ -192,6 +192,7 @@ async def test_database_wakes_blocked_parent_when_dependency_completes(tmp_path)
         id="task-research",
         title="Research",
         role=AgentRole.RESEARCHER,
+        task_type=TaskType.RESEARCH,
         status=TaskStatus.APPROVED,
     )
     parent = Task(
@@ -206,10 +207,16 @@ async def test_database_wakes_blocked_parent_when_dependency_completes(tmp_path)
     await db.create_task(parent)
     await db.save_task_result(TaskResult(task_id="task-research", success=True, summary="research done"))
     saved = await db.get_task("task-parent")
+    comments = await db.list_task_comments("task-parent")
 
     assert saved.status == TaskStatus.DRAFT
     assert saved.attention.required is True
     assert saved.attention.reason == AttentionReason.DEPENDENCY_DONE
+    assert comments[0]["author_type"] == "system"
+    assert comments[0]["author_id"] == "cellos"
+    assert comments[0]["message"] == "Research Results from task-research - Research\n\nresearch done"
+    assert comments[0]["payload"]["kind"] == "research_result"
+    assert comments[0]["payload"]["dependency_task_id"] == "task-research"
     await db.close()
 
 

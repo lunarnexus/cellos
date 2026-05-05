@@ -8,6 +8,7 @@ def build_task_prompt(
     task: Task,
     profiles: PromptProfilesConfig,
     mode: str = "execution",
+    comments: list[dict] | None = None,
 ) -> str:
     mode_profile = profiles.modes.get(mode) or profiles.modes.get("execution")
     role_instruction = profiles.role_instructions.get(task.role.value, "")
@@ -27,6 +28,13 @@ def build_task_prompt(
         parts.extend(["Task prompt / approved scope:", task.prompt.strip(), ""])
     if task.description.strip():
         parts.extend(["Additional description:", task.description.strip(), ""])
+    if mode == "planning" and comments:
+        research_results = [_format_comment(comment) for comment in comments if _is_research_result(comment)]
+        normal_comments = [_format_comment(comment) for comment in comments if not _is_research_result(comment)]
+        if normal_comments:
+            parts.extend(["Comments:", *normal_comments, ""])
+        if research_results:
+            parts.extend(["Research Results:", *research_results, ""])
     if mode_profile is not None and mode_profile.output_sections:
         parts.extend(["Response format:", "Return Markdown using these sections:"])
         parts.extend([f"- {section}" for section in mode_profile.output_sections])
@@ -34,3 +42,16 @@ def build_task_prompt(
     if profiles.final_instructions:
         parts.extend(profiles.final_instructions)
     return "\n".join(parts)
+
+
+def _is_research_result(comment: dict) -> bool:
+    payload = comment.get("payload")
+    if not isinstance(payload, dict):
+        return False
+    return payload.get("kind") == "research_result"
+
+
+def _format_comment(comment: dict) -> str:
+    author = comment.get("author_id") or comment.get("author_type") or "unknown"
+    message = str(comment.get("message") or "").strip()
+    return f"- {author}: {message}"

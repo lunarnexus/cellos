@@ -55,6 +55,12 @@ def task_payloads(db_path: Path) -> list[dict]:
     return [json.loads(row[0]) for row in rows]
 
 
+def task_event_types(db_path: Path, task_id: str) -> list[str]:
+    with sqlite3.connect(db_path) as conn:
+        rows = conn.execute("SELECT event_type FROM task_events WHERE task_id = ? ORDER BY id", (task_id,)).fetchall()
+    return [row[0] for row in rows]
+
+
 def task_id_from_add_output(output: str) -> str:
     return output.split("Added ", 1)[1].split(":", 1)[0].strip()
 
@@ -727,6 +733,41 @@ def test_execution_gates_research_task_when_preapproval_disabled(tmp_path):
 
     assert "blocked" in status_result.output
     assert research_task["status"] == "needs_approval"
+
+
+def test_execution_records_invalid_task_actions_without_crashing(tmp_path):
+    db_path = tmp_path / "cellos.sqlite"
+    config_path = tmp_path / ".cellos" / "config.json"
+    runner = CliRunner()
+
+    write_fake_runtime_config(config_path)
+    runner.invoke(main, ["init", "--db", str(db_path), "--config", str(config_path)])
+    add_result = runner.invoke(
+        main,
+        [
+            "add-task",
+            "Invalid action",
+            "--role",
+            "architect",
+            "--type",
+            "architecture",
+            "--status",
+            "approved",
+            "--prompt",
+            "CREATE_INVALID_CHILD_ACTION",
+            "--db",
+            str(db_path),
+            "--config",
+            str(config_path),
+        ],
+    )
+    task_id = task_id_from_add_output(add_result.output)
+
+    runner.invoke(main, ["run", "--db", str(db_path), "--config", str(config_path)])
+    status_result = wait_for_status(runner, db_path, config_path, "done")
+
+    assert "done" in status_result.output
+    assert "invalid_task_action" in task_event_types(db_path, task_id)
 
 
 def test_run_help_shows_concurrent_tasks_option():

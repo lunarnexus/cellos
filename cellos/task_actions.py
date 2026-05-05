@@ -6,7 +6,7 @@ from collections.abc import Callable
 from typing import Any, Literal
 from uuid import uuid4
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ValidationError
 
 from cellos.models import AgentRole, Task, TaskStatus, TaskType
 
@@ -24,19 +24,43 @@ class CreateTaskAction(BaseModel):
 
 
 def parse_create_task_actions(text: str) -> list[CreateTaskAction]:
+    actions, _errors = parse_create_task_actions_with_errors(text)
+    return actions
+
+
+def parse_create_task_actions_with_errors(text: str) -> tuple[list[CreateTaskAction], list[str]]:
     actions: list[CreateTaskAction] = []
+    errors: list[str] = []
     for payload in _candidate_payloads(text):
         raw_actions = payload.get("actions")
         if not isinstance(raw_actions, list):
             continue
         for raw_action in raw_actions:
-            if not isinstance(raw_action, dict) or raw_action.get("type") != "create_task":
+            if not isinstance(raw_action, dict):
                 continue
-            normalized = dict(raw_action)
+            normalized = _normalize_raw_action(raw_action)
+            if normalized.get("type") != "create_task":
+                continue
             if "dependencies" not in normalized and "depends" in normalized:
                 normalized["dependencies"] = normalized["depends"]
-            actions.append(CreateTaskAction.model_validate(normalized))
-    return actions
+            try:
+                actions.append(CreateTaskAction.model_validate(normalized))
+            except ValidationError as exc:
+                errors.append(str(exc))
+    return actions, errors
+
+
+def _normalize_raw_action(raw_action: dict[str, Any]) -> dict[str, Any]:
+    if raw_action.get("type") == "create_task":
+        return dict(raw_action)
+    if raw_action.get("action") == "create_task":
+        nested_task = raw_action.get("task")
+        if isinstance(nested_task, dict):
+            return {"type": "create_task", **nested_task}
+        normalized = dict(raw_action)
+        normalized["type"] = "create_task"
+        return normalized
+    return dict(raw_action)
 
 
 def task_from_create_action(

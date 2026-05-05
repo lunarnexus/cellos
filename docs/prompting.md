@@ -25,7 +25,7 @@ Output format
 Final instructions
 ```
 
-The prompt should not automatically include parent task history, comments, attempt logs, dependency logs, or broad project history. If context matters, the current task prompt or approved plan should include it.
+Planning prompts include task comments and research results because planning needs the available discussion and completed research to produce a better plan. Execution prompts stay narrower and do not automatically include comments, parent task history, attempt logs, dependency logs, or broad project history. If execution context matters, the approved plan should include it.
 
 ## Planning Mode
 
@@ -49,6 +49,14 @@ Planning agents must not:
 - execute any part of the plan.
 
 If research is needed before a reliable plan can be written, the planning result should request a research task as part of the proposed plan.
+
+Planning prompts may include:
+
+- all comments on the current task,
+- system comments containing completed research results,
+- the current task prompt or previous plan.
+
+Planning prompts should not include full attempt logs or unrelated parent history.
 
 ## Execution Mode
 
@@ -81,6 +89,7 @@ A is planned
 -> A execution creates R
 -> R waits for approval
 -> R executes after approval
+-> R result is added to A as a system comment
 -> A becomes eligible for replanning after R completes
 ```
 
@@ -95,6 +104,16 @@ CelloS can optionally pre-approve research tasks created by approved execution. 
 ```
 
 When `preapprove_research_tasks` is `true`, a created research task that asks for `approved` status may be created as `approved`. When it is `false`, that same task is created as `needs_approval`.
+
+When a research dependency completes, CelloS stores the result on the research task and also adds a system comment to each direct dependent task:
+
+```text
+Research Results from TASK_ID - Task title
+
+<result summary>
+```
+
+That system comment is included in the dependent task's next planning prompt under `Research Results`.
 
 ## Structured Task Creation
 

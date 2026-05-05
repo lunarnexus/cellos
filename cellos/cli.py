@@ -28,7 +28,7 @@ from cellos.models import (
     TaskType,
 )
 from cellos.prompt_builder import build_task_prompt
-from cellos.task_actions import parse_create_task_actions, task_from_create_action
+from cellos.task_actions import parse_create_task_actions_with_errors, task_from_create_action
 
 
 DEFAULT_DB_PATH = Path(".cellos") / "cellos.sqlite"
@@ -622,10 +622,12 @@ async def _worker(task_id: str, mode: str, db_path: Path | None, config_path: Pa
         agent_id = app.config.agents.default
         agent = app.config.get_default_agent()
         log_path = app.workdir / ".cellos" / "logs" / f"worker-{task.id}.log"
+        comments = await app.db.list_task_comments(task.id) if mode == "planning" else None
         prompt_text = build_task_prompt(
             task,
             app.config.prompt_profiles,
             mode=mode,
+            comments=comments,
         )
         attempt = await app.db.start_task_attempt(
             TaskAttempt(
@@ -684,7 +686,15 @@ async def _save_planning_result(app: CellosApp, task: Task, result: TaskResult) 
 async def _save_execution_result(app: CellosApp, task: Task, result: TaskResult) -> None:
     blocking_task_ids: list[str] = []
     if result.success:
-        for action in parse_create_task_actions(result.summary):
+        actions, action_errors = parse_create_task_actions_with_errors(result.summary)
+        for action_error in action_errors:
+            await app.db.record_task_event(
+                task.id,
+                "invalid_task_action",
+                "Skipped invalid structured task action",
+                {"error": action_error},
+            )
+        for action in actions:
             child = task_from_create_action(
                 action,
                 task,

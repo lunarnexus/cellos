@@ -6,7 +6,18 @@ from typing import Any
 
 import aiosqlite
 
-from cellos.models import AttentionReason, Task, TaskAttempt, TaskAttemptStatus, TaskComment, TaskResult, TaskStatus, utc_now
+from cellos.models import (
+    AttentionReason,
+    CommentAuthorType,
+    Task,
+    TaskAttempt,
+    TaskAttemptStatus,
+    TaskComment,
+    TaskResult,
+    TaskStatus,
+    TaskType,
+    utc_now,
+)
 
 
 REQUIRED_TABLES = {
@@ -455,6 +466,9 @@ class CellosDatabase:
                 status = TaskStatus.DONE if result.success else TaskStatus.FAILED
             await self.update_task(task.model_copy(update={"result": result, "status": status}))
         if result.success:
+            completed_task = await self.get_task(result.task_id)
+            if completed_task is not None:
+                await self._add_dependency_result_comments(completed_task, result)
             await self._wake_satisfied_blocked_dependents(result.task_id)
         await self.record_task_event(result.task_id, "result_saved", result.summary)
         await self.conn.commit()
@@ -496,6 +510,28 @@ class CellosDatabase:
             )
             await self.update_task(updated)
             await self.record_task_event(dependent.id, "dependency_done", f"Dependency completed: {completed_task_id}")
+
+    async def _add_dependency_result_comments(self, completed_task: Task, result: TaskResult) -> None:
+        for dependent in await self.list_tasks_depending_on(completed_task.id):
+            if completed_task.task_type == TaskType.RESEARCH:
+                title = f"Research Results from {completed_task.id} - {completed_task.title}"
+                kind = "research_result"
+            else:
+                title = f"Dependency Result from {completed_task.id} - {completed_task.title}"
+                kind = "dependency_result"
+            await self.add_task_comment(
+                TaskComment(
+                    task_id=dependent.id,
+                    author_type=CommentAuthorType.SYSTEM,
+                    author_id="cellos",
+                    message=f"{title}\n\n{result.summary}",
+                    metadata={
+                        "kind": kind,
+                        "dependency_task_id": completed_task.id,
+                        "dependency_task_type": completed_task.task_type.value,
+                    },
+                )
+            )
 
     async def _fetchone(self, sql: str, params: tuple[Any, ...]) -> aiosqlite.Row | None:
         cursor = await self.conn.execute(sql, params)

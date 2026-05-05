@@ -146,7 +146,7 @@ CelloS requested a change because the approved scope is insufficient.
 
 Human comments are treated as possible attention signals. CelloS should not assume every comment is an instruction, but a new human comment means the task may need evaluation.
 
-Adapters preserve comments as collaboration history. Comments are not automatically added to every worker prompt; if a comment changes the intended work, the relevant task prompt or approved plan should be updated so the next agent receives focused context.
+Adapters preserve comments as collaboration history. Planning prompts include task comments so the planner can revise the plan with current human context. Execution prompts do not include comments by default; if a comment changes approved execution scope, the approved plan should be updated first.
 
 ## Machine-Readable Data
 

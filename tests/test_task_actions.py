@@ -1,5 +1,5 @@
 from cellos.models import AgentRole, Task, TaskStatus, TaskType
-from cellos.task_actions import parse_create_task_actions, task_from_create_action
+from cellos.task_actions import parse_create_task_actions, parse_create_task_actions_with_errors, task_from_create_action
 
 
 def test_parse_create_task_actions_from_markdown_json_block():
@@ -29,6 +29,37 @@ def test_parse_create_task_actions_from_markdown_json_block():
     assert actions[0].title == "Research dependency"
     assert actions[0].role == AgentRole.RESEARCHER
     assert actions[0].task_type == TaskType.RESEARCH
+    assert actions[0].blocks_parent is True
+
+
+def test_parse_create_task_actions_reports_invalid_actions_without_raising():
+    actions, errors = parse_create_task_actions_with_errors(
+        """
+        ```json
+        {"actions": [{"type": "create_task", "task_id": "missing-title"}]}
+        ```
+        """
+    )
+
+    assert actions == []
+    assert len(errors) == 1
+    assert "title" in errors[0]
+
+
+def test_parse_create_task_actions_normalizes_nested_action_shape():
+    actions, errors = parse_create_task_actions_with_errors(
+        """
+        ```json
+        {"actions": [{"action": "create_task", "task": {"title": "Research",
+        "role": "researcher", "task_type": "research", "prompt": "Research it.",
+        "status": "approved", "blocks_parent": true}}]}
+        ```
+        """
+    )
+
+    assert errors == []
+    assert len(actions) == 1
+    assert actions[0].title == "Research"
     assert actions[0].blocks_parent is True
 
 

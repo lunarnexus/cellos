@@ -59,6 +59,13 @@ def main() -> None:
                     "}\n"
                     "```"
                 )
+            elif "CREATE_INVALID_CHILD_ACTION" in prompt_text:
+                response_text = (
+                    "fake ACP returned an invalid task action\n\n"
+                    "```json\n"
+                    '{"actions": [{"type": "create_task", "task_id": "missing-title"}]}\n'
+                    "```"
+                )
             send(
                 {
                     "jsonrpc": "2.0",
