@@ -5,7 +5,7 @@ This is a quick happy-path check for the local MVP. It is not a full feature tes
 Run commands from the project root:
 
 ```bash
-cd /Users/james/Scripts/CelloS/cellos
+# Ensure you are at the project root (where pyproject.toml lives)
 ```
 
 Do not run this through a filesystem sandbox. Use the normal project directory so background agents can read config, write SQLite state, and launch local ACP processes.
