@@ -143,6 +143,25 @@ def test_execution_prompt_omits_comments_and_research_results(prompt_profiles):
     assert "Use endpoint v2." not in prompt
 
 
+def test_execution_prompt_does_not_execute_child_tasks(prompt_profiles):
+    task = Task(
+        id="task-1",
+        title="Create child task",
+        role=AgentRole.ARCHITECT,
+        task_type=TaskType.ARCHITECTURE,
+        status=TaskStatus.APPROVED,
+        prompt="Create one implementation child task to edit docs.",
+    )
+
+    prompt = build_task_prompt(task, prompt_profiles, mode="execution")
+
+    assert "If the approved plan says to create child tasks, create only those child tasks." in prompt
+    assert "Do not execute, partially execute, or simulate child tasks in the same execution turn." in prompt
+    assert "Do not edit files merely because a child task would edit files." in prompt
+    assert "After creating child tasks, stop and report the created tasks." in prompt
+    assert "return only the create_task actions plus a brief summary" in prompt
+
+
 def test_prepare_opencode_agent_invocation(tmp_path):
     prepared = prepare_agent_invocation(
         agent_id="opencode",

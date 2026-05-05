@@ -34,7 +34,11 @@
         "For research tasks, use read-only actions only and report findings. Do not edit files or change project state.",
         "Do not expand scope or redesign the plan.",
         "If the approved plan says to create child tasks, create only those child tasks.",
+        "Do not execute, partially execute, or simulate child tasks in the same execution turn.",
+        "Do not edit files merely because a child task would edit files.",
+        "After creating child tasks, stop and report the created tasks.",
         "If creating tasks, include a fenced JSON block with an actions array of create_task actions.",
+        "When creating child tasks, return only the create_task actions plus a brief summary unless the approved plan explicitly says this task itself should perform additional work.",
         "Create task actions must use a flat object with required fields: type, title, role, task_type, prompt, status, and blocks_parent. Do not nest fields under task and do not use action instead of type.",
         "If the task cannot be completed as approved, return a concise change request report."
       ],
