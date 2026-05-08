@@ -4,15 +4,21 @@ This folder contains the canonical CelloS design docs. Treat these docs as the c
 
 ## Current Canonical Docs
 
+- `architecture.md`: module responsibilities, runtime flows, "where do I change X?"
 - `product.md`: product vision, principles, goals, non-goals, and future features.
 - `roles-and-lifecycle.md`: canonical roles, task lifecycle, approvals, change requests, and attention metadata.
-- `heartbeat.md`: one-turn scheduler behavior for `cellos run`.
+- `heartbeat.md`: scheduler behavior: selection rules, concurrency, result handling.
 - `prompting.md`: prompt stack, planning/execution boundaries, and structured task creation.
 - `communication.md`: proposals, reports, approval requests, comments, and task communication artifacts.
 - `pm-adapters.md`: PM-neutral adapter contract.
 - `trello.md`: Trello-specific mapping onto the PM adapter model.
 - `acp.md`: worker execution through ACP and related runtime rules.
 - `implementation-plan.md`: staged build plan.
+- `refactoring-spec.md`: structural refactor plan and service contracts.
+
+## Validation
+
+- `smoketest.md`: smoke test for CLI + service integration (run from project root).
 
 ## Core Decisions
 

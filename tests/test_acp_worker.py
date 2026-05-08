@@ -8,7 +8,8 @@ from cellos.acp import prepare_agent_invocation
 from cellos.acp_worker import AcpWorker
 from cellos.config import AgentConfig, load_prompt_profiles
 from cellos.connectors.base import PromptEnvelope
-from cellos.models import AgentRole, Task, TaskStatus, TaskType
+from cellos.domain.enums import AgentRole, TaskStatus, TaskType
+from cellos.domain.tasks import Task
 from cellos.prompt_builder import build_task_prompt
 
 
@@ -30,7 +31,6 @@ def test_build_task_prompt_includes_approved_scope(prompt_profiles):
         task_type=TaskType.IMPLEMENTATION,
         status=TaskStatus.APPROVED,
         prompt="Change only the CLI.",
-        description="Keep it small.",
     )
 
     prompt = build_task_prompt(task, prompt_profiles)
@@ -41,7 +41,6 @@ def test_build_task_prompt_includes_approved_scope(prompt_profiles):
     assert "Perform approved implementation work within scope" in prompt
     assert "Task prompt / approved scope:" in prompt
     assert "Change only the CLI." in prompt
-    assert "Keep it small." in prompt
 
 
 def test_build_task_prompt_uses_planning_profile(prompt_profiles):

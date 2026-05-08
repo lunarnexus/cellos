@@ -1,6 +1,8 @@
 import pytest
 
-from cellos.models import AgentRole, AttentionReason, Task, TaskStatus
+from cellos.domain.attention import AttentionReason
+from cellos.domain.enums import AgentRole, TaskStatus
+from cellos.domain.tasks import Task
 from cellos.pm import (
     PmChangeKind,
     PmCreatedTask,

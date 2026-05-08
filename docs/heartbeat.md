@@ -1,4 +1,7 @@
-# Heartbeat Loop
+# Scheduler Behavior
+
+This document describes the scheduler logic that runs when `cellos run` is invoked.
+The implementation is in `cellos/services/scheduler.py` (`SchedulerService.run_once()`).
 
 `cellos run` is one bounded scheduler heartbeat. It should be safe to run repeatedly from a CLI command, cron job, launchd job, systemd timer, webhook handler, or future daemon.
 
@@ -12,82 +15,13 @@ The heartbeat does not run forever. It performs one scan/sync/evaluation/executi
 - Make repeated invocations safe and predictable.
 - Treat project-management tools as interfaces, not as the source of orchestration truth.
 
-## Configuration
-
-The heartbeat reads configuration at the start of every run.
-
-User config location:
-
-```text
-~/.cellos/config.json
-```
-
-The project ships a sample config:
-
-```text
-cellos.config.example.json
-```
-
-Initial sample config:
-
-```json
-{
-  "scheduler": {
-    "concurrent_tasks": 4,
-    "worker_timeout_seconds": 300
-  },
-  "worker": {
-    "backend": "acp",
-    "debug_log_path": ".cellos/logs/acp-debug.log"
-  },
-  "agents": {
-    "default": "opencode",
-    "catalog_path": "agentcatalog.json"
-  },
-  "prompts": {
-    "profiles_path": "promptprofiles.json"
-  }
-}
-```
-
-Initial agent catalog:
-
-```json
-{
-  "available": {
-    "fake": {
-      "connector": "fake_acp",
-      "description": "Fake development agent"
-    },
-    "opencode": {
-      "connector": "opencode",
-      "description": "OpenCode local ACP agent"
-    }
-  }
-}
-```
-
-Initial prompt profiles include role instructions, mode instructions, and planning response sections such as objective, proposed actions, affected files/systems, risks, acceptance criteria, and approval request.
-
-Reading these small files every heartbeat is acceptable and useful. Config, agent catalog, and prompt profile changes take effect on the next `cellos run`. CLI flags may override config values for one heartbeat.
-
-PM authentication, auto-approval, and provider-specific settings are intentionally deferred to their own design sections.
-
 ## Best Effort
-
-The heartbeat should be best-effort.
 
 If one adapter, task, or worker fails, CelloS should:
 
 - record the error,
 - continue independent work where possible,
 - avoid crashing the whole heartbeat unless local state cannot be handled safely.
-
-Examples:
-
-- If PM sync fails, local-only tasks may still run.
-- If one worker task fails, other selected tasks may still complete.
-- If config is partially missing, CelloS should use defaults where safe and report what could not be loaded.
 
 ## Polling First
 
@@ -101,100 +35,9 @@ heartbeat polls PM state -> detects changes -> updates local CelloS state
 
 Webhooks can later trigger heartbeats sooner, but polling remains the baseline.
 
-## Sync And Evaluation
+## Scheduler Order
 
-The heartbeat has two distinct phases:
-
-### Sync
-
-Sync reads external state and updates local state.
-
-Responsibilities:
-
-- Read known PM-linked tasks.
-- Discover new in-scope PM tasks.
-- Detect human edits, comments, moves, approvals, cancellations, and relationship changes.
-- Update local task records and PM sync metadata.
-- Mark durable attention metadata when something requires CelloS action.
-
-### Evaluation
-
-Evaluation decides what CelloS should do with local state.
-
-Responsibilities:
-
-- Inspect tasks with `attention_required`.
-- Inspect approved executable tasks whose dependencies are satisfied.
-- Decide whether to plan, revise, create tasks, execute work, test work, or report status.
-- Select a bounded amount of work for the current heartbeat.
-
-In short:
-
-```text
-sync notices what changed
-evaluation decides what to do
-```
-
-## Attention Metadata
-
-Task status and task attention are separate.
-
-Status answers:
-
-```text
-Where is this task in its lifecycle?
-```
-
-Attention answers:
-
-```text
-Should CelloS inspect or act on this task?
-```
-
-Attention is stored as durable task metadata. See `roles-and-lifecycle.md` for the canonical attention model.
-
-Common attention reasons:
-
-```text
-new_task
-human_changed_task
-human_commented
-approved
-dependency_done
-child_change_requested
-stale_in_progress
-external_state_changed
-```
-
-## Processing Metadata
-
-Each task should store enough metadata to avoid repeated work.
-
-Useful fields:
-
-```text
-last_processed_at
-last_human_change_at
-last_ai_change_at
-last_observed_external_change_at
-last_processed_external_change_at
-last_processed_input_hash
-```
-
-Meaning:
-
-- `last_processed_at`: when CelloS last acted on the task.
-- `last_human_change_at`: when a human last edited, commented, or moved the task meaningfully.
-- `last_ai_change_at`: when CelloS last edited, commented, or moved the task.
-- `last_observed_external_change_at`: newest relevant timestamp seen in the PM tool.
-- `last_processed_external_change_at`: newest PM change CelloS has already handled.
-- `last_processed_input_hash`: hash of the content/scope CelloS last processed.
-
-These can live in the task model and PM sync metadata.
-
-## Heartbeat Order
-
-One heartbeat should run in this order:
+One heartbeat runs in this order:
 
 1. Load configuration.
 2. Open the local database.
@@ -219,8 +62,6 @@ Background worker processes then:
 6. Push state and result updates back to PM tools when adapters exist.
 
 Each background agent run creates a `task_attempts` record. The attempt captures the selected agent, connector, mode, prompt snapshot, result/error summary, and worker log path.
-
-Known PM-linked tasks should be synced before discovering new candidates. Active workflows should keep moving before new work is imported.
 
 ## Selection Rules
 
@@ -290,10 +131,10 @@ When a worker finishes, CelloS records:
 
 If PM update push fails after local state is recorded, the next heartbeat should be able to retry the PM sync.
 
-## Open Questions
+## See Also
 
-- Should `attention_required` be cleared before a worker starts, after local success, or only after PM sync succeeds?
-- How should dependency completion create attention for downstream tasks?
-- How should child `change_requested` tasks create attention for parent tasks?
-- Should one heartbeat prioritize planning/revision work before execution work?
-- What worker timeout and stale-task rules are safe for long-running tasks?
+- `cellos/services/scheduler.py` — `SchedulerService.run_once()` implementation
+- `cellos/services/worker_service.py` — worker runtime
+- `cellos/services/worker_spawner.py` — subprocess spawning
+- `docs/architecture.md` — runtime flows and module responsibilities
+- `docs/roles-and-lifecycle.md` — task lifecycle and attention signals

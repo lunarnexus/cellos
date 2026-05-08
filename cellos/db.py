@@ -6,33 +6,42 @@ from typing import Any
 
 import aiosqlite
 
-from cellos.models import (
-    AttentionReason,
-    CommentAuthorType,
-    Task,
-    TaskAttempt,
-    TaskAttemptStatus,
-    TaskComment,
-    TaskResult,
-    TaskStatus,
-    TaskType,
-    utc_now,
+from cellos.domain.attention import AttentionReason
+from cellos.domain.attempts import TaskAttempt, TaskAttemptStatus
+from cellos.domain.comments import TaskComment
+from cellos.domain.enums import CommentAuthorType, TaskStatus, TaskType
+from cellos.domain.results import TaskResult
+from cellos.domain.tasks import Task
+from cellos.domain.time import utc_now
+from cellos.persistence.schema import (
+    REQUIRED_TABLES,
+    DatabaseNotInitialized,
+    ensure_initialized,
+    init_db,
 )
-
-
-REQUIRED_TABLES = {
-    "tasks",
-    "task_dependencies",
-    "task_results",
-    "task_events",
-    "task_comments",
-    "task_attempts",
-}
-
-
-class DatabaseNotInitialized(RuntimeError):
-    def __init__(self, path: Path):
-        super().__init__(f"CelloS database is not initialized at {path}. Run `cellos init` first.")
+from cellos.persistence.serialization import attempt_row, json_payload, task_row
+from cellos.persistence.event_repository import list_task_events, record_task_event
+from cellos.persistence.comment_repository import add_task_comment as _add_task_comment, list_task_comments as _list_task_comments
+from cellos.persistence.attempt_repository import complete_task_attempt as _complete_task_attempt, list_task_attempts as _list_task_attempts, start_task_attempt as _start_task_attempt
+from cellos.persistence.task_repository import (
+    create_task as _create_task,
+    dependencies_satisfied as _dependencies_satisfied,
+    fetchone as _fetchone,
+    get_task as _get_task,
+    list_approved_unblocked_tasks as _list_approved_unblocked_tasks,
+    list_tasks as _list_tasks,
+    list_tasks_depending_on as _list_tasks_depending_on,
+    list_tasks_ready_for_planning as _list_tasks_ready_for_planning,
+    list_tasks_requiring_attention as _list_tasks_requiring_attention,
+    replace_dependencies as _replace_dependencies,
+    update_task as _update_task,
+    update_task_status as _update_task_status,
+)
+from cellos.persistence.result_repository import (
+    save_task_result as _save_task_result,
+    _wake_satisfied_blocked_dependents as _wake_satisfied_blocked_dependents_repo,
+    _add_dependency_result_comments as _add_dependency_result_comments_repo,
+)
 
 
 class CellosDatabase:
@@ -58,301 +67,59 @@ class CellosDatabase:
         return self._conn
 
     async def init_db(self) -> None:
-        await self.conn.executescript(
-            """
-            CREATE TABLE IF NOT EXISTS tasks (
-                id TEXT PRIMARY KEY,
-                parent_id TEXT,
-                role TEXT NOT NULL,
-                task_type TEXT NOT NULL,
-                status TEXT NOT NULL,
-                attention_required INTEGER NOT NULL,
-                assigned_worker_id TEXT,
-                created_at TEXT NOT NULL,
-                updated_at TEXT NOT NULL,
-                payload TEXT NOT NULL
-            );
-
-            CREATE TABLE IF NOT EXISTS task_dependencies (
-                task_id TEXT NOT NULL,
-                depends_on_task_id TEXT NOT NULL,
-                PRIMARY KEY (task_id, depends_on_task_id),
-                FOREIGN KEY (task_id) REFERENCES tasks(id) ON DELETE CASCADE,
-                FOREIGN KEY (depends_on_task_id) REFERENCES tasks(id) ON DELETE CASCADE
-            );
-
-            CREATE TABLE IF NOT EXISTS task_results (
-                task_id TEXT PRIMARY KEY,
-                success INTEGER NOT NULL,
-                created_at TEXT NOT NULL,
-                payload TEXT NOT NULL,
-                FOREIGN KEY (task_id) REFERENCES tasks(id) ON DELETE CASCADE
-            );
-
-            CREATE TABLE IF NOT EXISTS task_events (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                task_id TEXT NOT NULL,
-                event_type TEXT NOT NULL,
-                message TEXT NOT NULL,
-                created_at TEXT NOT NULL,
-                payload TEXT NOT NULL DEFAULT '{}',
-                FOREIGN KEY (task_id) REFERENCES tasks(id) ON DELETE CASCADE
-            );
-
-            CREATE TABLE IF NOT EXISTS task_comments (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                task_id TEXT NOT NULL,
-                author_type TEXT NOT NULL,
-                author_id TEXT NOT NULL,
-                message TEXT NOT NULL,
-                created_at TEXT NOT NULL,
-                payload TEXT NOT NULL DEFAULT '{}',
-                FOREIGN KEY (task_id) REFERENCES tasks(id) ON DELETE CASCADE
-            );
-
-            CREATE TABLE IF NOT EXISTS task_attempts (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                task_id TEXT NOT NULL,
-                mode TEXT NOT NULL,
-                agent_id TEXT NOT NULL,
-                connector TEXT NOT NULL,
-                status TEXT NOT NULL,
-                prompt_snapshot TEXT NOT NULL,
-                result_summary TEXT NOT NULL DEFAULT '',
-                result_payload TEXT NOT NULL DEFAULT '{}',
-                error TEXT,
-                log_path TEXT NOT NULL DEFAULT '',
-                started_at TEXT NOT NULL,
-                completed_at TEXT,
-                payload TEXT NOT NULL DEFAULT '{}',
-                FOREIGN KEY (task_id) REFERENCES tasks(id) ON DELETE CASCADE
-            );
-            """
-        )
-        await self.conn.commit()
+        await init_db(self.conn)
 
     async def ensure_initialized(self) -> None:
-        placeholders = ", ".join("?" for _ in REQUIRED_TABLES)
-        cursor = await self.conn.execute(
-            f"SELECT name FROM sqlite_master WHERE type = 'table' AND name IN ({placeholders})",
-            tuple(sorted(REQUIRED_TABLES)),
-        )
-        rows = await cursor.fetchall()
-        found_tables = {row["name"] for row in rows}
-        if found_tables != REQUIRED_TABLES:
-            raise DatabaseNotInitialized(self.path)
+        await ensure_initialized(self.conn, self.path)
 
     async def create_task(self, task: Task) -> None:
-        await self.conn.execute(
-            """
-            INSERT INTO tasks (
-                id, parent_id, role, task_type, status, attention_required,
-                assigned_worker_id, created_at, updated_at, payload
-            )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            self._task_row(task),
-        )
+        await _create_task(self.conn, task)
         await self._replace_dependencies(task)
         await self.record_task_event(task.id, "created", "Task created")
         await self.conn.commit()
 
     async def update_task(self, task: Task) -> Task:
-        updated = task.model_copy(update={"updated_at": utc_now()})
-        await self.conn.execute(
-            """
-            UPDATE tasks
-            SET parent_id = ?, role = ?, task_type = ?, status = ?,
-                attention_required = ?, assigned_worker_id = ?,
-                created_at = ?, updated_at = ?, payload = ?
-            WHERE id = ?
-            """,
-            (*self._task_row(updated)[1:], updated.id),
-        )
+        updated = await _update_task(self.conn, task)
         await self._replace_dependencies(updated)
         await self.conn.commit()
         return updated
 
     async def get_task(self, task_id: str) -> Task | None:
-        row = await self._fetchone("SELECT payload FROM tasks WHERE id = ?", (task_id,))
-        return Task.model_validate_json(row["payload"]) if row else None
+        return await _get_task(self.conn, task_id)
 
     async def list_tasks(self, status: TaskStatus | None = None) -> list[Task]:
-        if status is None:
-            cursor = await self.conn.execute("SELECT payload FROM tasks ORDER BY created_at")
-        else:
-            cursor = await self.conn.execute(
-                "SELECT payload FROM tasks WHERE status = ? ORDER BY created_at",
-                (status.value,),
-            )
-        rows = await cursor.fetchall()
-        return [Task.model_validate_json(row["payload"]) for row in rows]
+        return await _list_tasks(self.conn, status=status)
 
     async def list_tasks_requiring_attention(self, limit: int | None = None) -> list[Task]:
-        sql = "SELECT payload FROM tasks WHERE attention_required = 1 ORDER BY updated_at"
-        params: list[Any] = []
-        if limit is not None:
-            sql += " LIMIT ?"
-            params.append(limit)
-        cursor = await self.conn.execute(sql, params)
-        rows = await cursor.fetchall()
-        return [Task.model_validate_json(row["payload"]) for row in rows]
+        return await _list_tasks_requiring_attention(self.conn, limit=limit)
 
     async def list_tasks_ready_for_planning(self, limit: int | None = None) -> list[Task]:
-        sql = """
-            SELECT t.payload
-            FROM tasks t
-            WHERE (t.status = ?
-               OR (t.status = ? AND t.attention_required = 1))
-              AND NOT EXISTS (
-                SELECT 1
-                FROM task_dependencies d
-                JOIN tasks dep ON dep.id = d.depends_on_task_id
-                WHERE d.task_id = t.id AND dep.status != ?
-              )
-            ORDER BY t.created_at
-        """
-        params: list[Any] = [TaskStatus.DRAFT.value, TaskStatus.NEEDS_APPROVAL.value, TaskStatus.DONE.value]
-        if limit is not None:
-            sql += " LIMIT ?"
-            params.append(limit)
-        cursor = await self.conn.execute(sql, params)
-        rows = await cursor.fetchall()
-        return [Task.model_validate_json(row["payload"]) for row in rows]
+        return await _list_tasks_ready_for_planning(self.conn, limit=limit)
 
     async def list_approved_unblocked_tasks(self, limit: int | None = None) -> list[Task]:
-        sql = """
-            SELECT t.payload
-            FROM tasks t
-            WHERE t.status = ?
-              AND NOT EXISTS (
-                SELECT 1
-                FROM task_dependencies d
-                JOIN tasks dep ON dep.id = d.depends_on_task_id
-                WHERE d.task_id = t.id AND dep.status != ?
-              )
-            ORDER BY t.created_at
-        """
-        params: list[Any] = [TaskStatus.APPROVED.value, TaskStatus.DONE.value]
-        if limit is not None:
-            sql += " LIMIT ?"
-            params.append(limit)
-        cursor = await self.conn.execute(sql, params)
-        rows = await cursor.fetchall()
-        return [Task.model_validate_json(row["payload"]) for row in rows]
+        return await _list_approved_unblocked_tasks(self.conn, limit=limit)
 
     async def list_tasks_depending_on(self, task_id: str) -> list[Task]:
-        cursor = await self.conn.execute(
-            """
-            SELECT t.payload
-            FROM tasks t
-            JOIN task_dependencies d ON d.task_id = t.id
-            WHERE d.depends_on_task_id = ?
-            ORDER BY t.created_at
-            """,
-            (task_id,),
-        )
-        rows = await cursor.fetchall()
-        return [Task.model_validate_json(row["payload"]) for row in rows]
+        return await _list_tasks_depending_on(self.conn, task_id)
 
     async def dependencies_satisfied(self, task: Task) -> bool:
-        if not task.dependencies:
-            return True
-        placeholders = ", ".join("?" for _ in task.dependencies)
-        cursor = await self.conn.execute(
-            f"SELECT COUNT(*) AS incomplete FROM tasks WHERE id IN ({placeholders}) AND status != ?",
-            (*task.dependencies, TaskStatus.DONE.value),
-        )
-        row = await cursor.fetchone()
-        return bool(row is not None and row["incomplete"] == 0)
+        return await _dependencies_satisfied(self.conn, task)
 
     async def list_task_events(self, task_id: str | None = None, limit: int | None = None) -> list[dict[str, Any]]:
-        sql = """
-            SELECT id, task_id, event_type, message, created_at, payload
-            FROM task_events
-        """
-        params: list[Any] = []
-        if task_id is not None:
-            sql += " WHERE task_id = ?"
-            params.append(task_id)
-        sql += " ORDER BY id"
-        if limit is not None:
-            sql += " LIMIT ?"
-            params.append(limit)
-        cursor = await self.conn.execute(sql, params)
-        rows = await cursor.fetchall()
-        return [
-            {
-                "id": row["id"],
-                "task_id": row["task_id"],
-                "event_type": row["event_type"],
-                "message": row["message"],
-                "created_at": row["created_at"],
-                "payload": json.loads(row["payload"]),
-            }
-            for row in rows
-        ]
+        return await list_task_events(self.conn, task_id=task_id, limit=limit)
 
     async def add_task_comment(self, comment: TaskComment) -> TaskComment:
-        cursor = await self.conn.execute(
-            """
-            INSERT INTO task_comments (task_id, author_type, author_id, message, created_at, payload)
-            VALUES (?, ?, ?, ?, ?, json(?))
-            """,
-            (
-                comment.task_id,
-                comment.author_type.value,
-                comment.author_id,
-                comment.message,
-                comment.created_at.isoformat(),
-                _json(comment.metadata),
-            ),
-        )
-        saved = comment.model_copy(update={"id": cursor.lastrowid})
-        await self.record_task_event(comment.task_id, "comment_added", f"{comment.author_type.value}: {comment.message}")
+        saved = await _add_task_comment(self.conn, comment)
+        await record_task_event(self.conn, comment.task_id, "comment_added", f"{comment.author_type.value}: {comment.message}")
         await self.conn.commit()
         return saved
 
     async def list_task_comments(self, task_id: str, limit: int | None = None) -> list[dict[str, Any]]:
-        sql = """
-            SELECT id, task_id, author_type, author_id, message, created_at, payload
-            FROM task_comments
-            WHERE task_id = ?
-            ORDER BY id
-        """
-        params: list[Any] = [task_id]
-        if limit is not None:
-            sql += " LIMIT ?"
-            params.append(limit)
-        cursor = await self.conn.execute(sql, params)
-        rows = await cursor.fetchall()
-        return [
-            {
-                "id": row["id"],
-                "task_id": row["task_id"],
-                "author_type": row["author_type"],
-                "author_id": row["author_id"],
-                "message": row["message"],
-                "created_at": row["created_at"],
-                "payload": json.loads(row["payload"]),
-            }
-            for row in rows
-        ]
+        return await _list_task_comments(self.conn, task_id=task_id, limit=limit)
 
     async def start_task_attempt(self, attempt: TaskAttempt) -> TaskAttempt:
-        cursor = await self.conn.execute(
-            """
-            INSERT INTO task_attempts (
-                task_id, mode, agent_id, connector, status, prompt_snapshot,
-                result_summary, result_payload, error, log_path, started_at,
-                completed_at, payload
-            )
-            VALUES (?, ?, ?, ?, ?, ?, ?, json(?), ?, ?, ?, ?, json(?))
-            """,
-            self._attempt_row(attempt),
-        )
-        saved = attempt.model_copy(update={"id": cursor.lastrowid})
-        await self.record_task_event(attempt.task_id, "attempt_started", f"{attempt.mode} attempt started")
+        saved = await _start_task_attempt(self.conn, attempt)
+        await record_task_event(self.conn, attempt.task_id, "attempt_started", f"{attempt.mode} attempt started")
         await self.conn.commit()
         return saved
 
@@ -364,114 +131,27 @@ class CellosDatabase:
         result_payload: dict[str, Any] | None = None,
         error: str | None = None,
     ) -> None:
-        completed_at = utc_now()
-        await self.conn.execute(
-            """
-            UPDATE task_attempts
-            SET status = ?, result_summary = ?, result_payload = json(?), error = ?, completed_at = ?
-            WHERE id = ?
-            """,
-            (
-                status.value,
-                result_summary,
-                _json(result_payload or {}),
-                error,
-                completed_at.isoformat(),
-                attempt_id,
-            ),
-        )
-        row = await self._fetchone("SELECT task_id, mode FROM task_attempts WHERE id = ?", (attempt_id,))
+        await _complete_task_attempt(self.conn, attempt_id, status, result_summary, result_payload, error)
+        row = await _fetchone(self.conn, "SELECT task_id, mode FROM task_attempts WHERE id = ?", (attempt_id,))
         if row is not None:
-            await self.record_task_event(row["task_id"], "attempt_completed", f"{row['mode']} attempt {status.value}")
+            await record_task_event(self.conn, row["task_id"], "attempt_completed", f"{row['mode']} attempt {status.value}")
         await self.conn.commit()
 
     async def list_task_attempts(self, task_id: str, limit: int | None = None) -> list[dict[str, Any]]:
-        sql = """
-            SELECT id, task_id, mode, agent_id, connector, status, prompt_snapshot,
-                   result_summary, result_payload, error, log_path, started_at,
-                   completed_at, payload
-            FROM task_attempts
-            WHERE task_id = ?
-            ORDER BY id
-        """
-        params: list[Any] = [task_id]
-        if limit is not None:
-            sql += " LIMIT ?"
-            params.append(limit)
-        cursor = await self.conn.execute(sql, params)
-        rows = await cursor.fetchall()
-        return [
-            {
-                "id": row["id"],
-                "task_id": row["task_id"],
-                "mode": row["mode"],
-                "agent_id": row["agent_id"],
-                "connector": row["connector"],
-                "status": row["status"],
-                "prompt_snapshot": row["prompt_snapshot"],
-                "result_summary": row["result_summary"],
-                "result_payload": json.loads(row["result_payload"]),
-                "error": row["error"],
-                "log_path": row["log_path"],
-                "started_at": row["started_at"],
-                "completed_at": row["completed_at"],
-                "payload": json.loads(row["payload"]),
-            }
-            for row in rows
-        ]
+        return await _list_task_attempts(self.conn, task_id=task_id, limit=limit)
 
     async def update_task_status(self, task_id: str, status: TaskStatus) -> Task:
         task = await self.get_task(task_id)
         if task is None:
             raise KeyError(f"Task not found: {task_id}")
 
-        updates: dict[str, Any] = {"status": status, "updated_at": utc_now()}
-        if status == TaskStatus.IN_PROGRESS and task.started_at is None:
-            updates["started_at"] = utc_now()
-        if status in {
-            TaskStatus.DONE,
-            TaskStatus.FAILED,
-            TaskStatus.CHANGE_REQUESTED,
-            TaskStatus.CANCELLED,
-        }:
-            updates["completed_at"] = utc_now()
-
-        updated = await self.update_task(task.model_copy(update=updates))
+        updated = await _update_task_status(self.conn, task_id, status, task)
         await self.record_task_event(task_id, "status_changed", f"Task marked {status.value}")
         await self.conn.commit()
         return updated
 
     async def save_task_result(self, result: TaskResult) -> None:
-        await self.conn.execute(
-            """
-            INSERT INTO task_results (task_id, success, created_at, payload)
-            VALUES (?, ?, ?, ?)
-            ON CONFLICT(task_id) DO UPDATE SET
-                success = excluded.success,
-                created_at = excluded.created_at,
-                payload = excluded.payload
-            """,
-            (
-                result.task_id,
-                int(result.success),
-                result.created_at.isoformat(),
-                result.model_dump_json(),
-            ),
-        )
-        task = await self.get_task(result.task_id)
-        if task is not None:
-            if result.change_request is not None:
-                status = TaskStatus.CHANGE_REQUESTED
-            else:
-                status = TaskStatus.DONE if result.success else TaskStatus.FAILED
-            await self.update_task(task.model_copy(update={"result": result, "status": status}))
-        if result.success:
-            completed_task = await self.get_task(result.task_id)
-            if completed_task is not None:
-                await self._add_dependency_result_comments(completed_task, result)
-            await self._wake_satisfied_blocked_dependents(result.task_id)
-        await self.record_task_event(result.task_id, "result_saved", result.summary)
-        await self.conn.commit()
+        await _save_task_result(self.conn, result, self)
 
     async def record_task_event(
         self,
@@ -480,95 +160,19 @@ class CellosDatabase:
         message: str,
         payload: dict[str, Any] | None = None,
     ) -> None:
-        await self.conn.execute(
-            """
-            INSERT INTO task_events (task_id, event_type, message, created_at, payload)
-            VALUES (?, ?, ?, ?, json(?))
-            """,
-            (task_id, event_type, message, utc_now().isoformat(), _json(payload or {})),
-        )
+        await record_task_event(self.conn, task_id, event_type, message, payload)
 
     async def _replace_dependencies(self, task: Task) -> None:
-        await self.conn.execute("DELETE FROM task_dependencies WHERE task_id = ?", (task.id,))
-        await self.conn.executemany(
-            """
-            INSERT OR IGNORE INTO task_dependencies (task_id, depends_on_task_id)
-            VALUES (?, ?)
-            """,
-            [(task.id, dependency_id) for dependency_id in task.dependencies],
-        )
+        await _replace_dependencies(self.conn, task)
 
     async def _wake_satisfied_blocked_dependents(self, completed_task_id: str) -> None:
-        for dependent in await self.list_tasks_depending_on(completed_task_id):
-            if dependent.status != TaskStatus.BLOCKED:
-                continue
-            if not await self.dependencies_satisfied(dependent):
-                continue
-            updated = dependent.model_copy(update={"status": TaskStatus.DRAFT}).requires_attention(
-                AttentionReason.DEPENDENCY_DONE,
-                "Dependency completed; task is ready for replanning",
-            )
-            await self.update_task(updated)
-            await self.record_task_event(dependent.id, "dependency_done", f"Dependency completed: {completed_task_id}")
+        await _wake_satisfied_blocked_dependents_repo(self.conn, completed_task_id, self)
 
     async def _add_dependency_result_comments(self, completed_task: Task, result: TaskResult) -> None:
-        for dependent in await self.list_tasks_depending_on(completed_task.id):
-            if completed_task.task_type == TaskType.RESEARCH:
-                title = f"Research Results from {completed_task.id} - {completed_task.title}"
-                kind = "research_result"
-            else:
-                title = f"Dependency Result from {completed_task.id} - {completed_task.title}"
-                kind = "dependency_result"
-            await self.add_task_comment(
-                TaskComment(
-                    task_id=dependent.id,
-                    author_type=CommentAuthorType.SYSTEM,
-                    author_id="cellos",
-                    message=f"{title}\n\n{result.summary}",
-                    metadata={
-                        "kind": kind,
-                        "dependency_task_id": completed_task.id,
-                        "dependency_task_type": completed_task.task_type.value,
-                    },
-                )
-            )
+        await _add_dependency_result_comments_repo(self.conn, completed_task, result, self)
 
-    async def _fetchone(self, sql: str, params: tuple[Any, ...]) -> aiosqlite.Row | None:
-        cursor = await self.conn.execute(sql, params)
-        return await cursor.fetchone()
-
-    @staticmethod
-    def _task_row(task: Task) -> tuple[Any, ...]:
-        return (
-            task.id,
-            task.parent_id,
-            task.role.value,
-            task.task_type.value,
-            task.status.value,
-            int(task.attention.required),
-            task.assigned_worker_id,
-            task.created_at.isoformat(),
-            task.updated_at.isoformat(),
-            task.model_dump_json(),
-        )
-
-    @staticmethod
-    def _attempt_row(attempt: TaskAttempt) -> tuple[Any, ...]:
-        return (
-            attempt.task_id,
-            attempt.mode,
-            attempt.agent_id,
-            attempt.connector,
-            attempt.status.value,
-            attempt.prompt_snapshot,
-            attempt.result_summary,
-            _json(attempt.result_payload),
-            attempt.error,
-            attempt.log_path,
-            attempt.started_at.isoformat(),
-            attempt.completed_at.isoformat() if attempt.completed_at is not None else None,
-            _json(attempt.metadata),
-        )
+    async def _fetchone(self, sql: str, params: tuple[Any, ...]):
+        return await _fetchone(self.conn, sql, params)
 
 
 def _json(payload: dict[str, Any]) -> str:

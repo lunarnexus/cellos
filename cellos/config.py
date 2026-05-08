@@ -72,11 +72,22 @@ class CellosConfig(BaseModel):
     agent_catalog: AgentCatalogConfig = Field(default_factory=lambda: AgentCatalogConfig(available={}))
     prompt_profiles: PromptProfilesConfig = Field(default_factory=PromptProfilesConfig)
 
-    def get_default_agent(self) -> AgentConfig:
+    def get_agent(self, agent_id: str | None = None) -> tuple[str, AgentConfig]:
+        resolved_agent_id = agent_id or self.agents.default
         try:
-            return self.agent_catalog.available[self.agents.default]
+            return resolved_agent_id, self.agent_catalog.available[resolved_agent_id]
         except KeyError as exc:
-            raise ValueError(f"Default agent is not in the available agent catalog: {self.agents.default}") from exc
+            if agent_id is None:
+                raise ValueError(
+                    f"Default agent is not in the available agent catalog: {self.agents.default}"
+                ) from exc
+            raise ValueError(
+                f"Task agent is not in the available agent catalog: {resolved_agent_id}"
+            ) from exc
+
+    def get_default_agent(self) -> AgentConfig:
+        _, agent = self.get_agent()
+        return agent
 
 
 def load_config(path: str | Path = DEFAULT_CONFIG_PATH) -> CellosConfig:

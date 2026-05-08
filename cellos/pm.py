@@ -6,7 +6,9 @@ from typing import Any, Protocol
 
 from pydantic import BaseModel, Field
 
-from cellos.models import AttentionReason, Task, TaskStatus
+from cellos.domain.attention import AttentionReason
+from cellos.domain.tasks import Task
+from cellos.domain.enums import TaskStatus
 
 
 class PmChangeKind(StrEnum):

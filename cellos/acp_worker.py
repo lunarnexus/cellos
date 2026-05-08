@@ -5,7 +5,8 @@ from pathlib import Path
 from cellos.acp import exec_task, prepare_agent_invocation
 from cellos.config import AgentConfig, PromptProfilesConfig
 from cellos.connectors.base import PromptEnvelope
-from cellos.models import Task, TaskResult
+from cellos.domain.tasks import Task
+from cellos.domain.results import TaskResult
 from cellos.prompt_builder import build_task_prompt
 
 

@@ -1,54 +1,44 @@
 """Command line interface for CelloS."""
 
 import asyncio
-import subprocess
-import sys
-from dataclasses import dataclass
 from pathlib import Path
-from typing import Awaitable, TypeVar
 from uuid import uuid4
 
 import click
 from rich.console import Console
-from rich.table import Table
 
-from cellos.acp_worker import AcpWorker
-from cellos.config import CellosConfig, ConfigError, DEFAULT_CONFIG_PATH, ensure_config, load_config
-from cellos.db import CellosDatabase, DatabaseNotInitialized
-from cellos.models import (
-    AgentRole,
-    AttentionReason,
-    CommentAuthorType,
-    Task,
-    TaskAttempt,
-    TaskAttemptStatus,
-    TaskComment,
-    TaskResult,
-    TaskStatus,
-    TaskType,
+from cellos.cli_app import (
+    DEFAULT_DB_PATH,
+    DEFAULT_WORKDIR,
+    _open_app,
+    _resolve_db_path,
+    _resolve_workdir,
+    _run_cli,
 )
-from cellos.prompt_builder import build_task_prompt
-from cellos.task_actions import parse_create_task_actions_with_errors, task_from_create_action
+from cellos.cli_formatting import detail_formatter, events_formatter, status_formatter
+from cellos.config import DEFAULT_CONFIG_PATH
+from cellos.domain.enums import AgentRole, TaskStatus, TaskType
+from cellos.domain.tasks import Task
+from cellos.services.scheduler import SchedulerService
+from cellos.services.task_service import (
+    EmptyTaskUpdateError,
+    InvalidTaskApprovalError,
+    TaskNotFoundError,
+    TaskService,
+)
+from cellos.services.worker_service import WorkerService
 
-
-DEFAULT_DB_PATH = Path(".cellos") / "cellos.sqlite"
-DEFAULT_WORKDIR = Path.home()
 console = Console()
-T = TypeVar("T")
 
 
-@dataclass
-class CellosApp:
-    config: CellosConfig
-    db: CellosDatabase
-    workdir: Path
-
-
-@dataclass
-class RunScheduleResult:
-    attention_tasks: list[Task]
-    planning_tasks: list[Task]
-    execution_tasks: list[Task]
+# Re-exports for backward compatibility and tests
+__all__ = [
+    "DEFAULT_DB_PATH",
+    "DEFAULT_WORKDIR",
+    "_resolve_db_path",
+    "_resolve_workdir",
+    "main",
+]
 
 
 @click.group(context_settings={"help_option_names": ["-h", "--help"]})
@@ -61,14 +51,25 @@ def main() -> None:
 @click.option("--db", "db_path", type=click.Path(path_type=Path), default=None)
 @click.option("--config", "config_path", type=click.Path(path_type=Path), default=DEFAULT_CONFIG_PATH)
 @click.option("--hard-reset", is_flag=True, help="Reset local DB and overwrite config from defaults.")
-def init(workdir: Path | None, db_path: Path | None, config_path: Path, hard_reset: bool) -> None:
+def init(workdir, db_path, config_path, hard_reset):
     """Initialize local CelloS state."""
     resolved_workdir = _resolve_workdir(workdir)
     resolved_db_path = _resolve_db_path(db_path, resolved_workdir)
     if hard_reset and resolved_db_path.exists():
         resolved_db_path.unlink()
+    from cellos.config import ensure_config
+
     copied_config = ensure_config(config_path, overwrite=hard_reset)
-    asyncio.run(_init(resolved_db_path))
+
+    async def _init():
+        from cellos.db import CellosDatabase
+
+        db = CellosDatabase(resolved_db_path)
+        await db.connect()
+        await db.init_db()
+        await db.close()
+
+    asyncio.run(_init())
     console.print(f"Initialized database at [bold]{resolved_db_path}[/bold]")
     console.print(f"Initialized config at [bold]{copied_config}[/bold]")
     console.print(f"Initialized agent catalog at [bold]{copied_config.parent / 'agentcatalog.json'}[/bold]")
@@ -81,27 +82,14 @@ def init(workdir: Path | None, db_path: Path | None, config_path: Path, hard_res
 @click.option("--type", "task_type", type=click.Choice([item.value for item in TaskType]), default=TaskType.PROPOSAL.value)
 @click.option("--status", type=click.Choice([item.value for item in TaskStatus]), default=TaskStatus.DRAFT.value)
 @click.option("--prompt", default="", help="Task prompt or approved scope.")
-@click.option("--description", default="", help="Additional task description.")
 @click.option("--depends", "depends_on", multiple=True, help="Task ID this task depends on. May be repeated.")
 @click.option("--parent", "parent_id", default=None, help="Parent task ID.")
 @click.option("--timeout", type=int, default=None, help="Per-task worker timeout in seconds.")
+@click.option("--agent", "agent_id", default=None, help="Agent catalog ID to run this task with.")
 @click.option("--workdir", type=click.Path(path_type=Path), default=None)
 @click.option("--db", "db_path", type=click.Path(path_type=Path), default=None)
 @click.option("--config", "config_path", type=click.Path(path_type=Path), default=DEFAULT_CONFIG_PATH)
-def add_task(
-    title: str,
-    role: str,
-    task_type: str,
-    status: str,
-    prompt: str,
-    description: str,
-    depends_on: tuple[str, ...],
-    parent_id: str | None,
-    timeout: int | None,
-    workdir: Path | None,
-    db_path: Path | None,
-    config_path: Path,
-) -> None:
+def add_task(title, role, task_type, status, prompt, depends_on, parent_id, timeout, agent_id, workdir, db_path, config_path):
     """Add a task to the local CelloS database."""
     task = Task(
         id=uuid4().hex[:8],
@@ -110,10 +98,10 @@ def add_task(
         task_type=TaskType(task_type),
         status=TaskStatus(status),
         prompt=prompt,
-        description=description,
         parent_id=parent_id,
         dependencies=list(depends_on),
         timeout_seconds=timeout,
+        agent_id=agent_id,
     )
     _run_cli(_add_task(db_path, config_path, workdir, task))
     console.print(f"Added [bold]{task.id}[/bold]: {task.title}")
@@ -123,7 +111,7 @@ def add_task(
 @click.option("--workdir", type=click.Path(path_type=Path), default=None)
 @click.option("--db", "db_path", type=click.Path(path_type=Path), default=None)
 @click.option("--config", "config_path", type=click.Path(path_type=Path), default=DEFAULT_CONFIG_PATH)
-def status(workdir: Path | None, db_path: Path | None, config_path: Path) -> None:
+def status(workdir, db_path, config_path):
     """Show current task status."""
     _run_cli(_status(db_path, config_path, workdir))
 
@@ -134,7 +122,7 @@ def status(workdir: Path | None, db_path: Path | None, config_path: Path) -> Non
 @click.option("--workdir", type=click.Path(path_type=Path), default=None)
 @click.option("--db", "db_path", type=click.Path(path_type=Path), default=None)
 @click.option("--config", "config_path", type=click.Path(path_type=Path), default=DEFAULT_CONFIG_PATH)
-def events(task_id: str | None, limit: int, workdir: Path | None, db_path: Path | None, config_path: Path) -> None:
+def events(task_id, limit, workdir, db_path, config_path):
     """Show stored task events."""
     _run_cli(_events(db_path, config_path, workdir, task_id, limit))
 
@@ -145,7 +133,7 @@ def events(task_id: str | None, limit: int, workdir: Path | None, db_path: Path 
 @click.option("--workdir", type=click.Path(path_type=Path), default=None)
 @click.option("--db", "db_path", type=click.Path(path_type=Path), default=None)
 @click.option("--config", "config_path", type=click.Path(path_type=Path), default=DEFAULT_CONFIG_PATH)
-def detail(task_id: str, event_limit: int, workdir: Path | None, db_path: Path | None, config_path: Path) -> None:
+def detail(task_id, event_limit, workdir, db_path, config_path):
     """Show task details."""
     _run_cli(_detail(db_path, config_path, workdir, task_id, event_limit))
 
@@ -154,28 +142,26 @@ def detail(task_id: str, event_limit: int, workdir: Path | None, db_path: Path |
 @click.argument("task_id")
 @click.option("--title", default=None)
 @click.option("--prompt", default=None)
-@click.option("--description", default=None)
 @click.option("--status", type=click.Choice([item.value for item in TaskStatus]), default=None)
 @click.option("--parent", "parent_id", default=None)
 @click.option("--depends", "add_dependencies", multiple=True, help="Add a task dependency. May be repeated.")
 @click.option("--remove-dep", "remove_dependencies", multiple=True, help="Remove a task dependency. May be repeated.")
+@click.option("--agent", "agent_id", default=None, help="Agent catalog ID to run this task with.")
+@click.option("--clear-agent", is_flag=True, help="Clear task-specific agent and use default.")
+@click.option("--comment", "comment_message", default=None, help="Add a conversation message. Format: 'human: message' or 'system: message'.")
 @click.option("--workdir", type=click.Path(path_type=Path), default=None)
 @click.option("--db", "db_path", type=click.Path(path_type=Path), default=None)
 @click.option("--config", "config_path", type=click.Path(path_type=Path), default=DEFAULT_CONFIG_PATH)
-def update(
-    task_id: str,
-    title: str | None,
-    prompt: str | None,
-    description: str | None,
-    status: str | None,
-    parent_id: str | None,
-    add_dependencies: tuple[str, ...],
-    remove_dependencies: tuple[str, ...],
-    workdir: Path | None,
-    db_path: Path | None,
-    config_path: Path,
-) -> None:
+def update(task_id, title, prompt, status, parent_id, add_dependencies, remove_dependencies, agent_id, clear_agent, comment_message, workdir, db_path, config_path):
     """Update a task."""
+    if agent_id is not None and clear_agent:
+        raise click.ClickException("Use either --agent or --clear-agent, not both.")
+    if comment_message is not None and any([title, prompt, status, parent_id, add_dependencies, remove_dependencies, agent_id, clear_agent]):
+        raise click.ClickException("--comment cannot be combined with other update flags.")
+    if comment_message is not None:
+        _run_cli(_add_conversation(db_path, config_path, workdir, task_id, comment_message))
+        console.print(f"Conversation added to [bold]{task_id}[/bold]")
+        return
     task = _run_cli(
         _update(
             db_path,
@@ -184,11 +170,12 @@ def update(
             task_id,
             title,
             prompt,
-            description,
             status,
             parent_id,
             add_dependencies,
             remove_dependencies,
+            agent_id,
+            clear_agent,
         )
     )
     console.print(f"Updated [bold]{task.id}[/bold]: {task.title}")
@@ -201,14 +188,7 @@ def update(
 @click.option("--workdir", type=click.Path(path_type=Path), default=None)
 @click.option("--db", "db_path", type=click.Path(path_type=Path), default=None)
 @click.option("--config", "config_path", type=click.Path(path_type=Path), default=DEFAULT_CONFIG_PATH)
-def comment_task(
-    task_id: str,
-    message: str,
-    author_id: str,
-    workdir: Path | None,
-    db_path: Path | None,
-    config_path: Path,
-) -> None:
+def comment_task(task_id, message, author_id, workdir, db_path, config_path):
     """Add a human comment to a task."""
     _run_cli(_comment(db_path, config_path, workdir, task_id, message, author_id))
     console.print(f"Commented on [bold]{task_id}[/bold]")
@@ -219,7 +199,7 @@ def comment_task(
 @click.option("--workdir", type=click.Path(path_type=Path), default=None)
 @click.option("--db", "db_path", type=click.Path(path_type=Path), default=None)
 @click.option("--config", "config_path", type=click.Path(path_type=Path), default=DEFAULT_CONFIG_PATH)
-def approve(task_id: str, workdir: Path | None, db_path: Path | None, config_path: Path) -> None:
+def approve(task_id, workdir, db_path, config_path):
     """Approve a planned task for execution."""
     task = _run_cli(_approve(db_path, config_path, workdir, task_id))
     console.print(f"Approved [bold]{task.id}[/bold]: {task.title}")
@@ -230,7 +210,7 @@ def approve(task_id: str, workdir: Path | None, db_path: Path | None, config_pat
 @click.option("--db", "db_path", type=click.Path(path_type=Path), default=None)
 @click.option("--config", "config_path", type=click.Path(path_type=Path), default=DEFAULT_CONFIG_PATH)
 @click.option("--concurrent-tasks", type=int, default=None)
-def run(workdir: Path | None, db_path: Path | None, config_path: Path, concurrent_tasks: int | None) -> None:
+def run(workdir, db_path, config_path, concurrent_tasks):
     """Run one local CelloS heartbeat."""
     result = _run_cli(_run(db_path, config_path, workdir, concurrent_tasks))
     if not result.attention_tasks and not result.planning_tasks and not result.execution_tasks:
@@ -250,119 +230,46 @@ def run(workdir: Path | None, db_path: Path | None, config_path: Path, concurren
 @click.option("--workdir", type=click.Path(path_type=Path), default=None)
 @click.option("--db", "db_path", type=click.Path(path_type=Path), default=None)
 @click.option("--config", "config_path", type=click.Path(path_type=Path), default=DEFAULT_CONFIG_PATH)
-def worker(task_id: str, mode: str, workdir: Path | None, db_path: Path | None, config_path: Path) -> None:
+def worker(task_id, mode, workdir, db_path, config_path):
     """Run one task worker process."""
     _run_cli(_worker(task_id, mode, db_path, config_path, workdir))
 
 
-async def _init(db_path: Path) -> None:
-    db = CellosDatabase(db_path)
-    await db.connect()
-    await db.init_db()
-    await db.close()
+# -- Async helpers (thin wrappers over services) --
 
 
-def _run_cli(coro: Awaitable[T]) -> T:
-    try:
-        return asyncio.run(coro)
-    except (ConfigError, DatabaseNotInitialized) as exc:
-        raise click.ClickException(str(exc)) from exc
-
-
-def _resolve_workdir(workdir: Path | None) -> Path:
-    if workdir is not None:
-        return workdir.expanduser().resolve()
-    current = Path.cwd()
-    if (current / DEFAULT_DB_PATH).exists():
-        return current.resolve()
-    return DEFAULT_WORKDIR.resolve()
-
-
-def _resolve_db_path(db_path: Path | None, workdir: Path) -> Path:
-    if db_path is not None:
-        return db_path.expanduser().resolve()
-    return workdir / DEFAULT_DB_PATH
-
-
-async def _open_app(db_path: Path | None, config_path: Path, workdir: Path | None = None) -> CellosApp:
-    resolved_workdir = _resolve_workdir(workdir)
-    resolved_db_path = _resolve_db_path(db_path, resolved_workdir)
-    config = load_config(config_path)
-    db = CellosDatabase(resolved_db_path)
-    await db.connect()
-    try:
-        await db.ensure_initialized()
-    except Exception:
-        await db.close()
-        raise
-    return CellosApp(config=config, db=db, workdir=resolved_workdir)
-
-
-async def _add_task(db_path: Path | None, config_path: Path, workdir: Path | None, task: Task) -> None:
+async def _add_task(db_path, config_path, workdir, task):
     app = await _open_app(db_path, config_path, workdir)
     try:
-        await app.db.create_task(task)
+        if task.agent_id is not None:
+            try:
+                app.config.get_agent(task.agent_id)
+            except ValueError as exc:
+                raise click.ClickException(str(exc)) from exc
+        await TaskService(app.db).create_task(task)
     finally:
         await app.db.close()
 
 
-async def _status(db_path: Path | None, config_path: Path, workdir: Path | None) -> None:
+async def _status(db_path, config_path, workdir):
     app = await _open_app(db_path, config_path, workdir)
     try:
         tasks = await app.db.list_tasks()
     finally:
         await app.db.close()
-
-    table = Table(title="CelloS Tasks")
-    table.add_column("ID", no_wrap=True)
-    table.add_column("Status")
-    table.add_column("Role")
-    table.add_column("Type")
-    table.add_column("Title")
-    table.add_column("Result")
-    for task in tasks:
-        result = task.result.summary if task.result is not None else ""
-        table.add_row(task.id, task.status.value, task.role.value, task.task_type.value, task.title, result)
-    console.print(table)
+    status_formatter(tasks)
 
 
-async def _events(
-    db_path: Path | None,
-    config_path: Path,
-    workdir: Path | None,
-    task_id: str | None,
-    limit: int,
-) -> None:
+async def _events(db_path, config_path, workdir, task_id, limit):
     app = await _open_app(db_path, config_path, workdir)
     try:
         events = await app.db.list_task_events(task_id=task_id, limit=limit)
     finally:
         await app.db.close()
-
-    table = Table(title="CelloS Events")
-    table.add_column("ID", no_wrap=True)
-    table.add_column("Task", no_wrap=True)
-    table.add_column("Type")
-    table.add_column("Message")
-    table.add_column("Created")
-    for event in events:
-        table.add_row(
-            str(event["id"]),
-            event["task_id"],
-            event["event_type"],
-            event["message"],
-            event["created_at"],
-        )
-    console.print(table)
+    events_formatter(events)
 
 
-async def _detail(
-    db_path: Path | None,
-    config_path: Path,
-    workdir: Path | None,
-    task_id: str,
-    event_limit: int,
-) -> None:
+async def _detail(db_path, config_path, workdir, task_id, event_limit):
     app = await _open_app(db_path, config_path, workdir)
     try:
         task = await app.db.get_task(task_id)
@@ -373,397 +280,90 @@ async def _detail(
         attempts = await app.db.list_task_attempts(task_id=task_id, limit=10)
     finally:
         await app.db.close()
-
-    console.print(f"[bold]{task.title}[/bold]")
-    console.print(f"ID: {task.id}")
-    console.print(f"Status: {task.status.value}")
-    console.print(f"Role: {task.role.value}")
-    console.print(f"Type: {task.task_type.value}")
-    if task.parent_id:
-        console.print(f"Parent: {task.parent_id}")
-    if task.dependencies:
-        console.print(f"Dependencies: {', '.join(task.dependencies)}")
-    console.print("")
-    console.print("[bold]Prompt[/bold]")
-    console.print(task.prompt or "")
-    if task.description:
-        console.print("")
-        console.print("[bold]Description[/bold]")
-        console.print(task.description)
-    if task.result is not None:
-        console.print("")
-        console.print("[bold]Result[/bold]")
-        console.print(task.result.summary)
-    if comments:
-        console.print("")
-        console.print("[bold]Recent Comments[/bold]")
-        for comment in comments:
-            author = comment["author_id"] or comment["author_type"]
-            console.print(f"- {author}: {comment['message']}")
-    if attempts:
-        console.print("")
-        console.print("[bold]Attempts[/bold]")
-        for attempt in attempts:
-            summary = attempt["result_summary"] or attempt["error"] or attempt["log_path"]
-            console.print(
-                f"- #{attempt['id']} {attempt['mode']} {attempt['status']} "
-                f"via {attempt['agent_id']} ({attempt['connector']}): {summary}"
-            )
-    if events:
-        console.print("")
-        console.print("[bold]Recent Events[/bold]")
-        for event in events:
-            console.print(f"- {event['event_type']}: {event['message']}")
+    detail_formatter(task, comments, attempts, events)
 
 
-async def _update(
-    db_path: Path | None,
-    config_path: Path,
-    workdir: Path | None,
-    task_id: str,
-    title: str | None,
-    prompt: str | None,
-    description: str | None,
-    status: str | None,
-    parent_id: str | None,
-    add_dependencies: tuple[str, ...],
-    remove_dependencies: tuple[str, ...],
-) -> Task:
-    if (
-        title is None
-        and prompt is None
-        and description is None
-        and status is None
-        and parent_id is None
-        and not add_dependencies
-        and not remove_dependencies
-    ):
-        raise click.ClickException("Nothing to update.")
+async def _update(db_path, config_path, workdir, task_id, title, prompt, status, parent_id, add_dependencies, remove_dependencies, agent_id, clear_agent):
     app = await _open_app(db_path, config_path, workdir)
     try:
-        task = await app.db.get_task(task_id)
-        if task is None:
-            raise click.ClickException(f"Task not found: {task_id}")
-
-        updates: dict[str, object] = {}
-        content_changed = False
-        if title is not None:
-            updates["title"] = title
-            content_changed = content_changed or title != task.title
-        if prompt is not None:
-            updates["prompt"] = prompt
-            content_changed = content_changed or prompt != task.prompt
-        if description is not None:
-            updates["description"] = description
-            content_changed = content_changed or description != task.description
-        if status is not None:
-            updates["status"] = TaskStatus(status)
-        relationship_changed = False
-        if parent_id is not None:
-            updates["parent_id"] = parent_id
-            relationship_changed = parent_id != task.parent_id
-        if add_dependencies or remove_dependencies:
-            dependencies = list(task.dependencies)
-            for dependency_id in add_dependencies:
-                if dependency_id not in dependencies:
-                    dependencies.append(dependency_id)
-            for dependency_id in remove_dependencies:
-                if dependency_id in dependencies:
-                    dependencies.remove(dependency_id)
-            updates["dependencies"] = dependencies
-            relationship_changed = dependencies != task.dependencies
-
-        updated_task = task.model_copy(update=updates)
-        if (content_changed or relationship_changed) and updated_task.status != TaskStatus.APPROVED:
-            updated_task = updated_task.requires_attention(
-                AttentionReason.HUMAN_CHANGED_TASK,
-                "Human updated task content or relationships",
-            )
-        updated = await app.db.update_task(updated_task)
-        await app.db.record_task_event(task.id, "updated", "Task updated")
-        await app.db.conn.commit()
-        return updated
-    finally:
-        await app.db.close()
-
-
-async def _comment(
-    db_path: Path | None,
-    config_path: Path,
-    workdir: Path | None,
-    task_id: str,
-    message: str,
-    author_id: str,
-) -> None:
-    app = await _open_app(db_path, config_path, workdir)
-    try:
-        task = await app.db.get_task(task_id)
-        if task is None:
-            raise click.ClickException(f"Task not found: {task_id}")
-        await app.db.add_task_comment(
-            TaskComment(
-                task_id=task.id,
-                author_type=CommentAuthorType.HUMAN,
-                author_id=author_id,
-                message=message,
-            )
-        )
-        if task.status != TaskStatus.APPROVED:
-            updated = task.requires_attention(AttentionReason.HUMAN_COMMENTED, message)
-            await app.db.update_task(updated)
-        await app.db.conn.commit()
-    finally:
-        await app.db.close()
-
-
-async def _approve(db_path: Path | None, config_path: Path, workdir: Path | None, task_id: str) -> Task:
-    app = await _open_app(db_path, config_path, workdir)
-    try:
-        task = await app.db.get_task(task_id)
-        if task is None:
-            raise click.ClickException(f"Task not found: {task_id}")
-        if task.status not in {TaskStatus.DRAFT, TaskStatus.NEEDS_APPROVAL}:
-            raise click.ClickException(
-                f"Task {task.id} cannot be approved from status {task.status.value}."
-            )
-        updated = await app.db.update_task(task.clear_attention().model_copy(update={"status": TaskStatus.APPROVED}))
-        await app.db.record_task_event(task.id, "approved", "Task approved")
-        await app.db.conn.commit()
-        return updated
-    finally:
-        await app.db.close()
-
-
-def _build_worker(config: CellosConfig, workdir: Path):
-    if config.worker.backend == "acp":
-        agent_id = config.agents.default
-        try:
-            agent = config.get_default_agent()
-        except ValueError as exc:
-            raise click.ClickException(str(exc)) from exc
-        debug_log_path = config.worker.debug_log_path
-        if debug_log_path is not None and not Path(debug_log_path).is_absolute():
-            debug_log_path = str(workdir / debug_log_path)
-        return AcpWorker(
+        if agent_id is not None:
+            try:
+                app.config.get_agent(agent_id)
+            except ValueError as exc:
+                raise click.ClickException(str(exc)) from exc
+        return await TaskService(app.db).update_task(
+            task_id,
+            title=title,
+            prompt=prompt,
+            status=TaskStatus(status) if status is not None else None,
+            parent_id=parent_id,
+            add_dependencies=add_dependencies,
+            remove_dependencies=remove_dependencies,
             agent_id=agent_id,
-            agent=agent,
-            prompt_profiles=config.prompt_profiles,
-            timeout_seconds=config.scheduler.worker_timeout_seconds,
-            debug_log_path=debug_log_path,
+            clear_agent=clear_agent,
         )
-    raise click.ClickException(f"Unsupported worker backend: {config.worker.backend}")
-
-
-async def _run(db_path: Path | None, config_path: Path, workdir: Path | None, concurrent_tasks: int | None):
-    app = await _open_app(db_path, config_path, workdir)
-    resolved_concurrent_tasks = concurrent_tasks or app.config.scheduler.concurrent_tasks
-    try:
-        planning_candidates = await app.db.list_tasks_ready_for_planning(limit=resolved_concurrent_tasks)
-        planning_ids = {task.id for task in planning_candidates}
-        remaining_after_planning = max(resolved_concurrent_tasks - len(planning_candidates), 0)
-        attention_tasks = [
-            task
-            for task in await app.db.list_tasks_requiring_attention(limit=resolved_concurrent_tasks)
-            if task.id not in planning_ids
-        ][:remaining_after_planning]
-        remaining_slots = max(remaining_after_planning - len(attention_tasks), 0)
-        approved_tasks = await app.db.list_approved_unblocked_tasks(limit=remaining_slots)
-        planning_tasks: list[Task] = []
-        execution_tasks: list[Task] = []
-        for task in planning_candidates:
-            scheduled = await _schedule_worker(app, task, db_path, config_path, "planning")
-            if scheduled is not None:
-                planning_tasks.append(scheduled)
-        for task in approved_tasks:
-            scheduled = await _schedule_worker(app, task, db_path, config_path, "execution")
-            if scheduled is not None:
-                execution_tasks.append(scheduled)
-        return RunScheduleResult(
-            attention_tasks=attention_tasks,
-            planning_tasks=planning_tasks,
-            execution_tasks=execution_tasks,
-        )
+    except EmptyTaskUpdateError as exc:
+        raise click.ClickException(str(exc)) from exc
+    except TaskNotFoundError as exc:
+        raise click.ClickException(str(exc)) from exc
     finally:
         await app.db.close()
 
 
-async def _schedule_worker(
-    app: CellosApp,
-    task: Task,
-    db_path: Path | None,
-    config_path: Path,
-    mode: str,
-) -> Task | None:
-    scheduled = await app.db.update_task_status(task.id, TaskStatus.IN_PROGRESS)
-    await app.db.record_task_event(task.id, "worker_spawned", f"Background {mode} worker spawned")
-    await app.db.conn.commit()
-    try:
-        _spawn_worker(scheduled, db_path, config_path, app.workdir, mode)
-    except Exception as exc:
-        await app.db.save_task_result(
-            TaskResult(
-                task_id=task.id,
-                success=False,
-                summary=f"Worker spawn failed: {exc}",
-                error=str(exc),
-            )
-        )
-        return None
-    return scheduled
-
-
-async def _worker(task_id: str, mode: str, db_path: Path | None, config_path: Path, workdir: Path | None) -> None:
+async def _comment(db_path, config_path, workdir, task_id, message, author_id):
     app = await _open_app(db_path, config_path, workdir)
-    attempt: TaskAttempt | None = None
     try:
-        task = await app.db.get_task(task_id)
-        if task is None:
-            raise click.ClickException(f"Task not found: {task_id}")
-        agent_id = app.config.agents.default
-        agent = app.config.get_default_agent()
-        log_path = app.workdir / ".cellos" / "logs" / f"worker-{task.id}.log"
-        comments = await app.db.list_task_comments(task.id) if mode == "planning" else None
-        prompt_text = build_task_prompt(
-            task,
-            app.config.prompt_profiles,
-            mode=mode,
-            comments=comments,
-        )
-        attempt = await app.db.start_task_attempt(
-            TaskAttempt(
-                task_id=task.id,
-                mode=mode,
-                agent_id=agent_id,
-                connector=agent.connector,
-                prompt_snapshot=prompt_text,
-                log_path=str(log_path),
-            )
-        )
-        await app.db.record_task_event(task.id, "worker_started", f"Background {mode} worker started")
-        await app.db.conn.commit()
-        worker_backend = _build_worker(app.config, app.workdir)
-        try:
-            result = await worker_backend.run_task(task, app.workdir, mode=mode, prompt_text=prompt_text)
-        except Exception as exc:
-            result = TaskResult(
-                task_id=task.id,
-                success=False,
-                summary=f"Task failed: {exc}",
-                error=str(exc),
-            )
-        if mode == "planning" and result.success:
-            await _save_planning_result(app, task, result)
-        else:
-            await _save_execution_result(app, task, result)
-        if attempt.id is not None:
-            await app.db.complete_task_attempt(
-                attempt.id,
-                TaskAttemptStatus.SUCCEEDED if result.success else TaskAttemptStatus.FAILED,
-                result.summary,
-                result.model_dump(mode="json"),
-                result.error,
-            )
+        await TaskService(app.db).add_human_comment(task_id, message, author_id)
+    except TaskNotFoundError as exc:
+        raise click.ClickException(str(exc)) from exc
     finally:
         await app.db.close()
 
 
-async def _save_planning_result(app: CellosApp, task: Task, result: TaskResult) -> None:
-    current = await app.db.get_task(task.id)
-    if current is None:
-        raise click.ClickException(f"Task not found: {task.id}")
-    updated = current.clear_attention().model_copy(
-        update={
-            "prompt": result.summary,
-            "result": result,
-            "status": TaskStatus.NEEDS_APPROVAL,
-        }
-    )
-    await app.db.update_task(updated)
-    await app.db.record_task_event(task.id, "planning_saved", "Planning result saved; task needs approval")
-    await app.db.conn.commit()
+async def _add_conversation(db_path, config_path, workdir, task_id, raw_message):
+    app = await _open_app(db_path, config_path, workdir)
+    try:
+        await TaskService(app.db).add_conversation_message(task_id, raw_message)
+    except TaskNotFoundError as exc:
+        raise click.ClickException(str(exc)) from exc
+    except ValueError as exc:
+        raise click.ClickException(str(exc)) from exc
+    finally:
+        await app.db.close()
 
 
-async def _save_execution_result(app: CellosApp, task: Task, result: TaskResult) -> None:
-    blocking_task_ids: list[str] = []
-    if result.success:
-        actions, action_errors = parse_create_task_actions_with_errors(result.summary)
-        for action_error in action_errors:
-            await app.db.record_task_event(
-                task.id,
-                "invalid_task_action",
-                "Skipped invalid structured task action",
-                {"error": action_error},
-            )
-        for action in actions:
-            child = task_from_create_action(
-                action,
-                task,
-                preapprove_research_tasks=app.config.approvals.preapprove_research_tasks,
-            )
-            await app.db.create_task(child)
-            await app.db.record_task_event(
-                task.id,
-                "child_task_created",
-                f"Created child task {child.id}: {child.title}",
-                {"child_task_id": child.id, "blocks_parent": action.blocks_parent},
-            )
-            if action.blocks_parent:
-                blocking_task_ids.append(child.id)
-
-    await app.db.save_task_result(result)
-    if blocking_task_ids:
-        current = await app.db.get_task(task.id)
-        if current is None:
-            raise click.ClickException(f"Task not found: {task.id}")
-        dependencies = list(current.dependencies)
-        for child_id in blocking_task_ids:
-            if child_id not in dependencies:
-                dependencies.append(child_id)
-        await app.db.update_task(
-            current.model_copy(
-                update={
-                    "status": TaskStatus.BLOCKED,
-                    "dependencies": dependencies,
-                }
-            )
-        )
-        await app.db.record_task_event(
-            task.id,
-            "blocked_on_children",
-            f"Task blocked on child task(s): {', '.join(blocking_task_ids)}",
-            {"child_task_ids": blocking_task_ids},
-        )
-        await app.db.conn.commit()
+async def _approve(db_path, config_path, workdir, task_id):
+    app = await _open_app(db_path, config_path, workdir)
+    try:
+        return await TaskService(app.db).approve_task(task_id)
+    except (TaskNotFoundError, InvalidTaskApprovalError) as exc:
+        raise click.ClickException(str(exc)) from exc
+    finally:
+        await app.db.close()
 
 
-def _spawn_worker(task: Task, db_path: Path | None, config_path: Path, workdir: Path, mode: str) -> None:
-    resolved_db_path = _resolve_db_path(db_path, workdir)
-    log_path = workdir / ".cellos" / "logs" / f"worker-{task.id}.log"
-    log_path.parent.mkdir(parents=True, exist_ok=True)
-    command = [
-        sys.executable,
-        "-m",
-        "cellos.cli",
-        "worker",
-        task.id,
-        "--mode",
-        mode,
-        "--db",
-        str(resolved_db_path),
-        "--config",
-        str(config_path),
-        "--workdir",
-        str(workdir),
-    ]
-    with log_path.open("ab") as log:
-        subprocess.Popen(
-            command,
-            cwd=workdir,
-            stdout=log,
-            stderr=log,
-            stdin=subprocess.DEVNULL,
-            start_new_session=True,
-        )
+async def _run(db_path, config_path, workdir, concurrent_tasks):
+    app = await _open_app(db_path, config_path, workdir)
+    resolved_db_path = _resolve_db_path(db_path, app.workdir)
+    try:
+        return await SchedulerService(
+            db=app.db,
+            config=app.config,
+            workdir=app.workdir,
+            db_path=resolved_db_path,
+            config_path=config_path,
+        ).run_once(concurrent_tasks)
+    finally:
+        await app.db.close()
+
+
+async def _worker(task_id, mode, db_path, config_path, workdir):
+    app = await _open_app(db_path, config_path, workdir)
+    try:
+        await WorkerService(db=app.db, config=app.config, workdir=app.workdir).run_task_worker(task_id, mode)
+    finally:
+        await app.db.close()
+
 
 if __name__ == "__main__":
     main()

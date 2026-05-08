@@ -224,3 +224,78 @@ def test_load_config_resolves_relative_prompt_profiles_next_to_config(tmp_path):
     loaded = load_config(config)
 
     assert loaded.prompt_profiles.modes["planning"].output_sections == ["Objective"]
+
+
+def test_config_compatibility_exports():
+    """Verify cellos.config shim still exports all symbols."""
+    from cellos.config import (
+        ConfigError,
+        ensure_config,
+        load_agent_catalog,
+        load_config,
+        load_prompt_profiles,
+    )
+
+    assert ConfigError is not None
+    assert load_config is not None
+    assert load_agent_catalog is not None
+    assert load_prompt_profiles is not None
+    assert ensure_config is not None
+
+
+def test_get_agent_returns_default_when_none(tmp_path):
+    config = tmp_path / "config.json"
+    catalog = tmp_path / "agentcatalog.json"
+    profiles = tmp_path / "promptprofiles.json"
+    config.write_text(VALID_CONFIG)
+    catalog.write_text(VALID_AGENT_CATALOG)
+    profiles.write_text(VALID_PROMPT_PROFILES)
+
+    loaded = load_config(config)
+
+    resolved_id, agent = loaded.get_agent()
+    assert resolved_id == "fake"
+    assert agent.connector == "fake_acp"
+
+
+def test_get_agent_returns_named_agent(tmp_path):
+    config = tmp_path / "config.json"
+    catalog = tmp_path / "agentcatalog.json"
+    profiles = tmp_path / "promptprofiles.json"
+    config.write_text(VALID_CONFIG)
+    catalog.write_text(VALID_AGENT_CATALOG)
+    profiles.write_text(VALID_PROMPT_PROFILES)
+
+    loaded = load_config(config)
+
+    resolved_id, agent = loaded.get_agent("opencode")
+    assert resolved_id == "opencode"
+    assert agent.connector == "opencode"
+
+
+def test_get_agent_raises_for_missing_named_agent(tmp_path):
+    config = tmp_path / "config.json"
+    catalog = tmp_path / "agentcatalog.json"
+    profiles = tmp_path / "promptprofiles.json"
+    config.write_text(VALID_CONFIG)
+    catalog.write_text(VALID_AGENT_CATALOG)
+    profiles.write_text(VALID_PROMPT_PROFILES)
+
+    loaded = load_config(config)
+
+    with pytest.raises(ValueError, match="Task agent is not in the available agent catalog: nonexistent"):
+        loaded.get_agent("nonexistent")
+
+
+def test_get_default_agent_uses_get_agent(tmp_path):
+    config = tmp_path / "config.json"
+    catalog = tmp_path / "agentcatalog.json"
+    profiles = tmp_path / "promptprofiles.json"
+    config.write_text(VALID_CONFIG)
+    catalog.write_text(VALID_AGENT_CATALOG)
+    profiles.write_text(VALID_PROMPT_PROFILES)
+
+    loaded = load_config(config)
+
+    agent = loaded.get_default_agent()
+    assert agent.connector == "fake_acp"

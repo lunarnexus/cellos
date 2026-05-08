@@ -8,7 +8,8 @@ from uuid import uuid4
 
 from pydantic import BaseModel, Field, ValidationError
 
-from cellos.models import AgentRole, Task, TaskStatus, TaskType
+from cellos.domain.enums import AgentRole, TaskStatus, TaskType
+from cellos.domain.tasks import Task
 
 
 class CreateTaskAction(BaseModel):
@@ -17,7 +18,6 @@ class CreateTaskAction(BaseModel):
     role: AgentRole
     task_type: TaskType
     prompt: str
-    description: str = ""
     status: TaskStatus | None = None
     dependencies: list[str] = Field(default_factory=list)
     blocks_parent: bool = False
@@ -78,7 +78,6 @@ def task_from_create_action(
         task_type=action.task_type,
         status=status,
         prompt=action.prompt,
-        description=action.description,
         parent_id=parent.id,
         dependencies=list(action.dependencies),
     )

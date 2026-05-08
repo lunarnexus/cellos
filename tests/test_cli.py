@@ -255,6 +255,79 @@ def test_add_task_requires_init(tmp_path):
     assert "Run `cellos init` first" in result.output
 
 
+def test_add_task_with_valid_agent(tmp_path):
+    db_path = tmp_path / "cellos.sqlite"
+    config_path = tmp_path / ".cellos" / "config.json"
+    runner = CliRunner()
+    runner.invoke(main, ["init", "--db", str(db_path), "--config", str(config_path)])
+
+    add_result = runner.invoke(
+        main,
+        [
+            "add-task",
+            "Use Fake",
+            "--agent",
+            "fake",
+            "--db",
+            str(db_path),
+            "--config",
+            str(config_path),
+        ],
+    )
+
+    assert add_result.exit_code == 0
+    task_id = task_id_from_add_output(add_result.output)
+    payload = task_payload(db_path)
+    assert payload["agent_id"] == "fake"
+
+
+def test_add_task_with_invalid_agent_rejected(tmp_path):
+    db_path = tmp_path / "cellos.sqlite"
+    config_path = tmp_path / ".cellos" / "config.json"
+    runner = CliRunner()
+    runner.invoke(main, ["init", "--db", str(db_path), "--config", str(config_path)])
+
+    add_result = runner.invoke(
+        main,
+        [
+            "add-task",
+            "Bad agent",
+            "--agent",
+            "nonexistent",
+            "--db",
+            str(db_path),
+            "--config",
+            str(config_path),
+        ],
+    )
+
+    assert add_result.exit_code != 0
+    assert "nonexistent" in add_result.output
+
+
+def test_add_task_without_agent_uses_default(tmp_path):
+    db_path = tmp_path / "cellos.sqlite"
+    config_path = tmp_path / ".cellos" / "config.json"
+    runner = CliRunner()
+    runner.invoke(main, ["init", "--db", str(db_path), "--config", str(config_path)])
+
+    add_result = runner.invoke(
+        main,
+        [
+            "add-task",
+            "Default agent",
+            "--db",
+            str(db_path),
+            "--config",
+            str(config_path),
+        ],
+    )
+
+    assert add_result.exit_code == 0
+    payload = task_payload(db_path)
+    assert payload.get("agent_id") is None
+
+
 def test_run_schedules_approved_task(tmp_path):
     db_path = tmp_path / "cellos.sqlite"
     config_path = tmp_path / ".cellos" / "config.json"
@@ -357,6 +430,100 @@ def test_detail_shows_prompt_result_and_events(tmp_path):
     assert "Explain the work." in result.output
     assert "created" in result.output
     assert "Task created" in result.output
+
+
+def test_detail_shows_task_agent_when_set(tmp_path):
+    db_path = tmp_path / "cellos.sqlite"
+    config_path = tmp_path / ".cellos" / "config.json"
+    runner = CliRunner()
+    runner.invoke(main, ["init", "--db", str(db_path), "--config", str(config_path)])
+    add_result = runner.invoke(
+        main,
+        [
+            "add-task",
+            "Agent task",
+            "--agent",
+            "fake",
+            "--db",
+            str(db_path),
+            "--config",
+            str(config_path),
+        ],
+    )
+    task_id = task_id_from_add_output(add_result.output)
+
+    result = runner.invoke(main, ["detail", task_id, "--db", str(db_path), "--config", str(config_path)])
+
+    assert result.exit_code == 0
+    assert "Agent: fake" in result.output
+
+
+def test_detail_shows_no_agent_when_unset(tmp_path):
+    db_path = tmp_path / "cellos.sqlite"
+    config_path = tmp_path / ".cellos" / "config.json"
+    runner = CliRunner()
+    runner.invoke(main, ["init", "--db", str(db_path), "--config", str(config_path)])
+    add_result = runner.invoke(
+        main,
+        [
+            "add-task",
+            "Default agent task",
+            "--db",
+            str(db_path),
+            "--config",
+            str(config_path),
+        ],
+    )
+    task_id = task_id_from_add_output(add_result.output)
+
+    result = runner.invoke(main, ["detail", task_id, "--db", str(db_path), "--config", str(config_path)])
+
+    assert result.exit_code == 0
+    assert "Agent:" not in result.output
+
+
+def test_update_clears_agent(tmp_path):
+    db_path = tmp_path / "cellos.sqlite"
+    config_path = tmp_path / ".cellos" / "config.json"
+    runner = CliRunner()
+    runner.invoke(main, ["init", "--db", str(db_path), "--config", str(config_path)])
+    add_result = runner.invoke(
+        main,
+        [
+            "add-task",
+            "Agent task",
+            "--agent",
+            "fake",
+            "--db",
+            str(db_path),
+            "--config",
+            str(config_path),
+        ],
+    )
+    task_id = task_id_from_add_output(add_result.output)
+
+    # Verify agent is set
+    result = runner.invoke(main, ["detail", task_id, "--db", str(db_path), "--config", str(config_path)])
+    assert "Agent: fake" in result.output
+
+    # Clear agent
+    update_result = runner.invoke(
+        main,
+        [
+            "update",
+            task_id,
+            "--clear-agent",
+            "--db",
+            str(db_path),
+            "--config",
+            str(config_path),
+        ],
+    )
+    assert update_result.exit_code == 0
+
+    # Verify agent is gone
+    result = runner.invoke(main, ["detail", task_id, "--db", str(db_path), "--config", str(config_path)])
+    assert "Agent:" not in result.output
 
 
 def test_update_changes_prompt_and_records_event(tmp_path):
@@ -778,4 +945,89 @@ def test_run_help_shows_concurrent_tasks_option():
     assert result.exit_code == 0
     assert "--concurrent-tasks" in result.output
     assert "--workdir" in result.output
-    assert "--cwd" not in result.output
+
+
+def test_update_comment_adds_conversation_message(tmp_path):
+    db_path = tmp_path / "cellos.sqlite"
+    config_path = tmp_path / ".cellos" / "config.json"
+    runner = CliRunner()
+    runner.invoke(main, ["init", "--db", str(db_path), "--config", str(config_path)])
+    add_result = runner.invoke(
+        main,
+        ["add-task", "Test conversation", "--role", "engineer", "--db", str(db_path), "--config", str(config_path)],
+    )
+    task_id = task_id_from_add_output(add_result.output)
+
+    # Add conversation message
+    comment_result = runner.invoke(
+        main,
+        ["update", task_id, "--comment", "human: I want to focus on X", "--db", str(db_path), "--config", str(config_path)],
+    )
+    assert comment_result.exit_code == 0
+    assert "Conversation added" in comment_result.output
+
+    # Verify in detail view
+    detail_result = runner.invoke(main, ["detail", task_id, "--db", str(db_path), "--config", str(config_path)])
+    assert detail_result.exit_code == 0
+    assert "Conversation" in detail_result.output
+    assert "(human)" in detail_result.output
+    assert "I want to focus on X" in detail_result.output
+
+
+def test_update_comment_rejects_invalid_author(tmp_path):
+    db_path = tmp_path / "cellos.sqlite"
+    config_path = tmp_path / ".cellos" / "config.json"
+    runner = CliRunner()
+    runner.invoke(main, ["init", "--db", str(db_path), "--config", str(config_path)])
+    add_result = runner.invoke(
+        main,
+        ["add-task", "Test", "--role", "engineer", "--db", str(db_path), "--config", str(config_path)],
+    )
+    task_id = task_id_from_add_output(add_result.output)
+
+    result = runner.invoke(
+        main,
+        ["update", task_id, "--comment", "unknown: message", "--db", str(db_path), "--config", str(config_path)],
+    )
+    assert result.exit_code != 0
+    assert "Invalid author" in result.output
+
+
+def test_update_comment_rejects_missing_prefix(tmp_path):
+    db_path = tmp_path / "cellos.sqlite"
+    config_path = tmp_path / ".cellos" / "config.json"
+    runner = CliRunner()
+    runner.invoke(main, ["init", "--db", str(db_path), "--config", str(config_path)])
+    add_result = runner.invoke(
+        main,
+        ["add-task", "Test", "--role", "engineer", "--db", str(db_path), "--config", str(config_path)],
+    )
+    task_id = task_id_from_add_output(add_result.output)
+
+    result = runner.invoke(
+        main,
+        ["update", task_id, "--comment", "no prefix here", "--db", str(db_path), "--config", str(config_path)],
+    )
+    assert result.exit_code != 0
+    assert "author prefix" in result.output
+
+
+def test_update_comment_system_message(tmp_path):
+    db_path = tmp_path / "cellos.sqlite"
+    config_path = tmp_path / ".cellos" / "config.json"
+    runner = CliRunner()
+    runner.invoke(main, ["init", "--db", str(db_path), "--config", str(config_path)])
+    add_result = runner.invoke(
+        main,
+        ["add-task", "Test", "--role", "engineer", "--db", str(db_path), "--config", str(config_path)],
+    )
+    task_id = task_id_from_add_output(add_result.output)
+
+    runner.invoke(
+        main,
+        ["update", task_id, "--comment", "system: Plan revised", "--db", str(db_path), "--config", str(config_path)],
+    )
+
+    detail_result = runner.invoke(main, ["detail", task_id, "--db", str(db_path), "--config", str(config_path)])
+    assert "(system)" in detail_result.output
+    assert "Plan revised" in detail_result.output

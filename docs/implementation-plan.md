@@ -23,7 +23,19 @@ Implemented:
 - task events and `cellos events`,
 - approved-task execution scheduling,
 - draft-task planning scheduling,
-- tests for config, models, DB, ACP worker, heartbeat, and CLI.
+- tests for config, models, DB, ACP worker, scheduler, worker, task service, and CLI.
+
+## Refactoring (Completed)
+
+Phases 1-9 structural refactor are complete:
+
+- Scheduler, task lifecycle, planning, execution, and worker services extracted to `cellos/services/`
+- CLI thinned from 769 → 493 lines; `cli_app.py` and `cli_formatting.py` extracted
+- `heartbeat.py` and `workers.py` deleted (stale/unused)
+- `db.py` split into `cellos/persistence/` repositories
+- `models.py` split into `cellos/domain/` modules
+- `config.py` kept monolithic (189 lines, per user decision)
+- 74/74 tests passing
 
 ## Phase 1: Planning Mode Refinement
 

@@ -1,7 +1,7 @@
 """Prompt construction for CelloS agent turns."""
 
 from cellos.config import PromptProfilesConfig
-from cellos.models import Task
+from cellos.domain.tasks import Task
 
 
 def build_task_prompt(
@@ -26,8 +26,6 @@ def build_task_prompt(
         parts.append("")
     if task.prompt.strip():
         parts.extend(["Task prompt / approved scope:", task.prompt.strip(), ""])
-    if task.description.strip():
-        parts.extend(["Additional description:", task.description.strip(), ""])
     if mode == "planning" and comments:
         research_results = [_format_comment(comment) for comment in comments if _is_research_result(comment)]
         normal_comments = [_format_comment(comment) for comment in comments if not _is_research_result(comment)]
@@ -35,6 +33,11 @@ def build_task_prompt(
             parts.extend(["Comments:", *normal_comments, ""])
         if research_results:
             parts.extend(["Research Results:", *research_results, ""])
+    if mode == "planning" and task.conversation:
+        parts.append("Conversation:")
+        for msg in task.conversation:
+            parts.append(f"- {msg.author}: {msg.message}")
+        parts.append("")
     if mode_profile is not None and mode_profile.output_sections:
         parts.extend(["Response format:", "Return Markdown using these sections:"])
         parts.extend([f"- {section}" for section in mode_profile.output_sections])

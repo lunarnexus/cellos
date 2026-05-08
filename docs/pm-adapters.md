@@ -25,11 +25,9 @@ The core engine is responsible for:
 - worker scheduling,
 - result handling.
 
-The MVP adapter contract lives in:
+## Adapter Contract
 
-```text
-cellos/pm.py
-```
+The MVP adapter contract lives in `cellos/pm.py`.
 
 Adapters should implement `ProjectManagementAdapter` and exchange `PmTaskSnapshot`, `PmDetectedChange`, `PmTaskUpdate`, `PmCreatedTask`, and `PmSyncResult` objects with the core.
 
@@ -50,90 +48,11 @@ result
 attention signal
 ```
 
-## In-Scope Work
+## Adapter Failures
 
-Each adapter must define how a human marks PM items as visible to CelloS.
+PM adapter failures should be isolated. If a PM sync fails, local-only tasks may still run. The next heartbeat should retry the PM sync.
 
-For Trello this is a case-insensitive `cellos` label. Other PM tools may use tags, labels, custom fields, folders, or projects.
+## See Also
 
-Items outside CelloS scope must be ignored.
-
-## Known Before New
-
-Each heartbeat should sync known PM-linked tasks before discovering new candidates.
-
-Known tasks may have approvals, comments, dependency changes, or cancellation decisions waiting. New discovery should not starve active work.
-
-## Polling Baseline
-
-Adapters must work with polling. Webhooks can be added later as optimizations.
-
-Polling responsibilities:
-
-- fetch known external items,
-- fetch candidate new items,
-- compare external metadata to local sync metadata,
-- mark attention when meaningful changes are detected.
-
-## Sync Metadata
-
-Each PM-linked task should store metadata such as:
-
-```text
-provider
-external_task_id
-external_url
-external_status_id
-last_human_change_at
-last_ai_change_at
-last_observed_external_change_at
-last_processed_external_change_at
-last_processed_input_hash
-```
-
-Adapters may add provider-specific fields as needed.
-
-## Human And AI Changes
-
-Adapters should distinguish human changes from CelloS changes where possible.
-
-Human changes may include:
-
-- description/body edit,
-- comment,
-- status/list move,
-- approval,
-- cancellation,
-- relationship edit.
-
-CelloS changes may include:
-
-- proposal update,
-- status update,
-- result comment,
-- generated task/card creation.
-
-If the PM tool cannot reliably distinguish the actor, the adapter should use conservative metadata and avoid repeated LLM processing unless the content actually changed.
-
-## Approval
-
-Each adapter must define how approval is represented.
-
-Examples:
-
-- moving an item to an approved state,
-- setting a custom approval field,
-- applying an approval label,
-- clicking an approval action.
-
-The core engine only cares that a task is approved. The adapter translates the PM-specific signal.
-
-## Parent And Dependencies
-
-SQLite remains the canonical source for parent/dependency relationships once tasks are imported.
-
-Adapters should mirror relationships into PM tools for human readability. They may also read human-edited relationship hints during sync.
-
-## Error Handling
-
-Adapter failures should be recorded and isolated where possible. A PM sync failure should not prevent unrelated local tasks from running if local state remains safe.
+- `docs/trello.md` — Trello-specific mapping
+- `cellos/pm.py` — adapter contract

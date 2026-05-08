@@ -8,10 +8,10 @@ CelloS should manage task state, approval, dependencies, and scheduling. Agents 
 
 ## Terminology
 
-- Agent: an AI/tooling identity that can do work.
-- Connector: CelloS code that knows how to call a specific agent runtime.
-- ACP layer: the stable CelloS execution entry point in `cellos/acp.py`.
-- Background process: the implementation detail CelloS uses to run a task asynchronously from the CLI.
+- **Agent**: an AI/tooling identity that can do work.
+- **Connector**: CelloS code that knows how to call a specific agent runtime.
+- **ACP layer**: the stable CelloS execution entry point in `cellos/acp.py`.
+- **Background process**: the implementation detail CelloS uses to run a task asynchronously from the CLI.
 
 Use `agent` in user-facing docs and UI wherever possible. `worker` may still appear in internal command names or code while the MVP is evolving.
 
@@ -50,155 +50,46 @@ Agent catalog:
 }
 ```
 
-By default, `cellos init` creates:
+## Connector Architecture
 
-```text
-~/.cellos/config.json
-~/.cellos/agentcatalog.json
-~/.cellos/promptprofiles.json
+Connectors implement the interface between CelloS and an agent runtime. Each connector knows:
+
+- how to invoke the agent (command, arguments, environment),
+- how to send prompts and receive responses,
+- how to handle timeouts and errors.
+
+The connector layer isolates CelloS from agent-specific details. New agents are added by writing a new connector, not by modifying the core engine.
+
+## Runtime Behavior
+
+When `cellos run` schedules a task:
+
+1. `SchedulerService` selects work and marks it `in_progress`.
+2. `WorkerSpawner` starts a detached subprocess: `python -m cellos.cli worker TASK_ID --mode planning|execution`.
+3. The subprocess loads the task, builds a prompt, and calls the configured connector.
+4. The connector invokes the agent runtime (e.g., OpenCode, Codex).
+5. The agent produces output, which is captured as a `TaskResult`.
+6. `PlanningService` or `ExecutionService` saves the result and updates the task.
+7. The subprocess exits.
+
+Each background agent run creates a `task_attempts` record. The attempt captures the selected agent, connector, mode, prompt snapshot, result/error summary, and worker log path.
+
+## Debugging
+
+Set `worker.debug_log_path` in config to capture raw ACP protocol logs:
+
+```json
+{
+  "worker": {
+    "backend": "acp",
+    "debug_log_path": ".cellos/logs/acp-debug.log"
+  }
+}
 ```
 
-The project ships examples:
+## See Also
 
-```text
-cellos.config.example.json
-agentcatalog.example.json
-promptprofiles.example.json
-```
-
-Relative `catalog_path` and `profiles_path` values resolve next to the config file.
-
-The default agent is only a fallback. Later, the Coordinator should select or propose agents at runtime based on task needs, available capabilities, and human approval rules.
-
-Each task attempt records the selected agent, connector, prompt snapshot, result or error summary, and log path for auditability.
-
-## Connectors
-
-`cellos/acp.py` is the stable entry point for CelloS ACP execution. It resolves a configured agent to a connector and asks the connector to prepare an agent invocation.
-
-The connector interface is modeled after the useful boundaries in `acpx`: an agent catalog, explicit working directory, prompt payload, launch mechanics, and normalized result metadata. CelloS does not delegate orchestration to `acpx`; it borrows interface ideas and keeps lifecycle control in CelloS.
-
-Connector vocabulary:
-
-- `PromptEnvelope`: the CelloS-owned prompt text plus mode and metadata.
-- `AgentInvocation`: an intent to ask a selected agent to handle one prompt.
-- `PreparedAgentInvocation`: connector-prepared runtime details for the agent turn.
-- `resolve_launch_command()`: connector hook that returns the process command used to start an ACP agent runtime.
-- `prepare_invocation()`: connector hook that adapts an `AgentInvocation` into a `PreparedAgentInvocation`.
-
-`resolve_launch_command()` is runtime plumbing. It should not build or rewrite the task prompt. Prompt construction remains CelloS-owned so approval rules, role instructions, and audit behavior stay consistent across agents.
-
-Prompt profiles live in `promptprofiles.json`. They define role instructions, mode instructions, response sections, and final reporting rules. The generated prompt for a task attempt is stored with the task result/history, but profile templates do not live in the database.
-
-Initial connectors:
-
-- `fake_acp`: local fake agent for tests and smoke tests.
-- `opencode`: local OpenCode ACP agent.
-
-Future connectors may include:
-
-- `acpx`,
-- OpenClaw,
-- Hermes Agent,
-- direct connectors for other ACP-compatible agents.
-
-`acpx` should be treated as a connector option, not as the CelloS orchestrator. CelloS owns lifecycle, approvals, task state, scheduling, dependencies, audit trail, and PM sync.
-
-## MVP Execution Model
-
-For MVP, each task attempt uses one agent session:
-
-```text
-prepare invocation -> launch agent runtime -> initialize -> create session -> send prompt -> collect result -> close/stop runtime
-```
-
-This keeps task attempts isolated and reduces context carryover.
-
-If similar work must be retried after failure or change request, CelloS should create a fresh attempt with a fresh prompt and concise lessons from the previous attempt.
-
-## Attempt Logs
-
-Each planning or execution run creates a task attempt record.
-
-Attempt records include:
-
-- task id,
-- mode,
-- selected agent id,
-- connector,
-- status,
-- prompt snapshot,
-- result summary,
-- raw result payload where available,
-- error,
-- worker log path,
-- started/completed timestamps.
-
-Attempt records are the first layer of audit history and failure-learning context. Parent or coordinating agents can inspect attempt history when replanning after failed child work, but attempt history is not automatically included in every worker prompt. If an agent crashes before producing a graceful report, the attempt still points to the worker log for diagnosis.
-
-## ACP Flow
-
-Generic flow:
-
-```text
-CelloS -> initialize
-Agent -> capabilities
-CelloS -> session/new
-Agent -> session id
-CelloS -> session/prompt
-Agent -> session/update events
-Agent -> final prompt result
-CelloS -> session/close
-```
-
-## Prompt Construction
-
-The prompt should include:
-
-- role,
-- task objective,
-- approved scope,
-- constraints,
-- dependencies or relevant results,
-- expected output format,
-- change request/reporting rules.
-
-Agents should receive focused context, not the entire project.
-
-## Result Extraction
-
-CelloS should collect worker message chunks as the human-readable result summary. It should ignore reasoning/thought chunks unless explicitly needed for debug.
-
-For structured outputs, CelloS may parse fenced or embedded JSON blocks, but human-readable text remains important for auditability.
-
-## Non-JSON Stdout
-
-Some agent CLIs print banners or plugin messages to stdout before valid ACP JSON. ACP clients may skip and debug-log non-JSON stdout when configured.
-
-This is transport noise, not the same as the worker's actual task answer.
-
-## Timeouts
-
-`worker_timeout_seconds` is an execution timeout for one task attempt. Some tasks may need longer per-task timeouts later.
-
-Timeout handling should:
-
-- cancel/stop the agent runtime where possible,
-- record failure or stale state,
-- preserve stderr/debug logs,
-- avoid blocking unrelated heartbeat work.
-
-## Permissions
-
-Agents may request permission through ACP or through their own local tooling. CelloS must not silently grant dangerous actions. Approval policy is part of the task lifecycle and future permission handling.
-
-## Future Work
-
-Future designs may add:
-
-- long-lived agent sessions,
-- active agent status checks,
-- role-specific agent profiles,
-- multiple backend types,
-- richer permission handling,
-- usage/cost reporting.
+- `cellos/acp.py` — ACP execution entry point
+- `cellos/acp_worker.py` — Worker runtime that calls ACP
+- `cellos/connectors/` — Connector implementations
+- `docs/architecture.md` — runtime flows

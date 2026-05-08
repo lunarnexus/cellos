@@ -1,19 +1,12 @@
 import pytest
 
 from cellos.db import CellosDatabase, DatabaseNotInitialized
-from cellos.models import (
-    AgentRole,
-    AttentionReason,
-    ChangeRequestReport,
-    CommentAuthorType,
-    Task,
-    TaskAttempt,
-    TaskAttemptStatus,
-    TaskComment,
-    TaskResult,
-    TaskStatus,
-    TaskType,
-)
+from cellos.domain.attempts import TaskAttempt, TaskAttemptStatus
+from cellos.domain.attention import AttentionReason
+from cellos.domain.comments import TaskComment
+from cellos.domain.enums import AgentRole, CommentAuthorType, TaskStatus, TaskType
+from cellos.domain.results import ChangeRequestReport, TaskResult
+from cellos.domain.tasks import Task
 
 
 @pytest.fixture

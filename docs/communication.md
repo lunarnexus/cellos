@@ -54,102 +54,39 @@ Suggested Markdown shape:
 ## Approval Request
 ```
 
-The PM card/task description should contain the current proposal or approved plan. Comments should contain discussion, revision requests, status updates, and historical notes.
-
-## Approval Request
-
-An approval request asks the human to approve a specific scope.
-
-It should be explicit:
-
-```md
-Approve this task to:
-- create the listed child tasks, or
-- perform the listed research, or
-- make the listed implementation changes, or
-- run the listed verification steps.
-```
-
-Approval is not open-ended. If the scope changes materially, CelloS must request approval again.
-
-## Research Report
-
-A research report should include:
-
-- question investigated,
-- sources or evidence,
-- findings,
-- uncertainties,
-- recommendation,
-- follow-up questions if needed.
-
-Researchers should not create implementation plans unless the task explicitly asks for that.
-
-## Work Report
-
-An Engineer work report should include:
-
-- what was changed or executed,
-- files/systems touched,
-- commands run if relevant,
-- result,
-- remaining risks,
-- follow-up tasks or verification suggestions.
-
-## Test Report
-
-A Tester report should include:
-
-- what was tested,
-- method used,
-- pass/fail result,
-- evidence,
-- defects or concerns,
-- recommended next action.
-
 ## Change Request Report
 
-Use a change request when a task cannot be completed as approved.
-
-Canonical shape:
-
-```md
-## Change Request Report
-
-### Blocker Summary
-
-### Why The Approved Task Cannot Be Completed
-
-### Evidence / Attempted Steps
-
-### Recommended Next Action
-
-### Human Approval Needed
-```
-
-The child task enters `change_requested`. The parent receives attention and decides what to do next.
-
-## Status Update
-
-Status updates should be short. They belong in PM comments or task events, not in the main proposal unless they change the current plan.
-
-Examples:
+A task in `change_requested` should include a structured report:
 
 ```text
-CelloS drafted a proposal and is waiting for approval.
-CelloS started approved work.
-CelloS completed the task and recorded the result.
-CelloS requested a change because the approved scope is insufficient.
+Change Request Report
+
+Blocker summary:
+Why the approved task cannot be completed:
+Evidence / attempted steps:
+Recommended next action:
+Human approval needed:
 ```
 
-## Human Comments
+The report should be concise enough for the parent role to use as context without loading the full failed session.
 
-Human comments are treated as possible attention signals. CelloS should not assume every comment is an instruction, but a new human comment means the task may need evaluation.
+## Reports
 
-Adapters preserve comments as collaboration history. Planning prompts include task comments so the planner can revise the plan with current human context. Execution prompts do not include comments by default; if a comment changes approved execution scope, the approved plan should be updated first.
+Research, work, and test reports should include:
 
-## Machine-Readable Data
+- what was done,
+- what was found,
+- what succeeded or failed,
+- what remains to be done.
 
-Human-readable Markdown is the primary MVP format. CelloS may later add machine-readable blocks for task proposals, dependency lists, or result schemas.
+Keep reports focused. Higher-level roles should be able to scan reports without reading every detail.
 
-If machine-readable blocks are added, they must not make normal human editing fragile.
+## Comments
+
+Human comments are stored separately from the task prompt/plan. A comment on an unapproved task marks durable attention, which makes the task eligible for replanning. Planning prompts include task comments and research-result system comments. Execution prompts stay focused on the approved plan.
+
+## See Also
+
+- `docs/roles-and-lifecycle.md` — task lifecycle and change request flow
+- `docs/prompting.md` — prompt construction
+- `cellos/services/task_service.py` — comment handling
