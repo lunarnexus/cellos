@@ -101,7 +101,7 @@ async def test_database_lists_tasks_ready_for_planning(tmp_path):
 
     tasks = await db.list_tasks_ready_for_planning()
 
-    assert [task.id for task in tasks] == ["task-draft", "task-revised"]
+    assert [task.id for task in tasks] == ["task-draft", "task-revised", "task-approved"]
     await db.close()
 
 
@@ -128,7 +128,7 @@ async def test_database_does_not_plan_tasks_with_incomplete_dependencies(tmp_pat
     await db.create_task(blocked_draft)
 
     tasks = await db.list_tasks_ready_for_planning()
-    assert [task.id for task in tasks] == []
+    assert [task.id for task in tasks] == ["task-dep"]
 
     await db.save_task_result(TaskResult(task_id="task-dep", success=True, summary="research done"))
     tasks = await db.list_tasks_ready_for_planning()

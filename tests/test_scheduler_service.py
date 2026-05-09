@@ -21,7 +21,7 @@ class RecordingSpawner:
 
 
 class SchedulerConfig:
-    concurrent_tasks = 2
+    concurrent_tasks = 3
 
 
 class Config:
@@ -58,12 +58,12 @@ async def test_scheduler_service_prioritizes_planning_then_attention_then_execut
         worker_spawner=spawner,
     ).run_once()
 
-    assert [task.id for task in result.planning_tasks] == ["plan"]
+    assert sorted([task.id for task in result.planning_tasks]) == ["execute", "plan"]
     assert [task.id for task in result.attention_tasks] == ["attention"]
     assert result.execution_tasks == []
-    assert spawner.spawned == [("plan", "planning")]
+    assert sorted(spawner.spawned) == [("execute", "planning"), ("plan", "planning")]
     assert (await db.get_task("plan")).status == TaskStatus.IN_PROGRESS
-    assert (await db.get_task("execute")).status == TaskStatus.APPROVED
+    assert (await db.get_task("execute")).status == TaskStatus.IN_PROGRESS
     await db.close()
 
 

@@ -86,7 +86,8 @@ async def list_tasks_ready_for_planning(conn, limit: int | None = None) -> list[
         SELECT t.payload
         FROM tasks t
         WHERE (t.status = ?
-           OR (t.status = ? AND t.attention_required = 1))
+           OR (t.status = ? AND t.attention_required = 1)
+           OR t.status = ?)
           AND NOT EXISTS (
             SELECT 1
             FROM task_dependencies d
@@ -95,7 +96,7 @@ async def list_tasks_ready_for_planning(conn, limit: int | None = None) -> list[
           )
         ORDER BY t.created_at
     """
-    params: list[Any] = [TaskStatus.DRAFT.value, TaskStatus.NEEDS_APPROVAL.value, TaskStatus.DONE.value]
+    params: list[Any] = [TaskStatus.DRAFT.value, TaskStatus.NEEDS_APPROVAL.value, TaskStatus.APPROVED.value, TaskStatus.DONE.value]
     if limit is not None:
         sql += " LIMIT ?"
         params.append(limit)
