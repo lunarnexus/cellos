@@ -27,6 +27,7 @@ class SchedulerConfig(BaseModel):
 class WorkerConfig(BaseModel):
     backend: Literal["acp"]
     debug_log_path: str | None = None
+    debug_logging: bool = True
 
 
 class AgentConfig(BaseModel):

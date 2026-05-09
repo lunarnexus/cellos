@@ -5,7 +5,8 @@
   },
   "worker": {
     "backend": "acp",
-    "debug_log_path": ".cellos/logs/acp-debug.log"
+    "debug_log_path": ".cellos/logs/acp-debug.log",
+    "debug_logging": true
   },
   "agents": {
     "default": "opencode",

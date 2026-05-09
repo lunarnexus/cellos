@@ -57,6 +57,13 @@ def init(workdir, db_path, config_path, hard_reset):
     resolved_db_path = _resolve_db_path(db_path, resolved_workdir)
     if hard_reset and resolved_db_path.exists():
         resolved_db_path.unlink()
+    if hard_reset:
+        logs_dir = resolved_workdir / ".cellos" / "logs"
+        if logs_dir.is_dir():
+            log_files = list(logs_dir.glob("worker-*.log"))
+            for f in log_files:
+                f.unlink()
+            console.print(f"Cleared [dim]{len(log_files)}[/dim] worker log(s)")
     from cellos.config import ensure_config
 
     copied_config = ensure_config(config_path, overwrite=hard_reset)

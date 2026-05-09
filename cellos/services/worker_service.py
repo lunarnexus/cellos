@@ -77,11 +77,25 @@ class WorkerService:
                 result.error,
             )
 
+        # Write attempt details to per-task log file
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        with log_path.open("a") as f:
+            f.write(f"=== Attempt #{attempt.id} ({mode}) ===\n")
+            f.write(f"Prompt:\n{prompt_text}\n\n")
+            f.write(f"Result: {'SUCCESS' if result.success else 'FAILED'}\n")
+            f.write(f"Summary: {result.summary}\n")
+            if result.error:
+                f.write(f"Error: {result.error}\n")
+            f.write("\n")
+
     def _build_worker(self, agent_id: str, agent: AgentConfig):
         if self.config.worker.backend == "acp":
-            debug_log_path = self.config.worker.debug_log_path
-            if debug_log_path is not None and not Path(debug_log_path).is_absolute():
-                debug_log_path = str(self.workdir / debug_log_path)
+            if self.config.worker.debug_logging and self.config.worker.debug_log_path is not None:
+                debug_log_path = self.config.worker.debug_log_path
+                if not Path(debug_log_path).is_absolute():
+                    debug_log_path = str(self.workdir / debug_log_path)
+            else:
+                debug_log_path = None
             return AcpWorker(
                 agent_id=agent_id,
                 agent=agent,
