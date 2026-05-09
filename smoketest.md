@@ -97,7 +97,7 @@ cellos detail <TASK_ID>
 Expected:
 
 - Task status changed (e.g., `in_progress` or `needs_approval`)
-- Worker log exists at `.cellos/logs/worker-<TASK_ID>.log`
+- Worker log exists at `.cellos/logs/worker-<TASK_ID>.log` with attempt details (prompt, result, summary)
 
 ## 9. End-to-end lifecycle test
 
@@ -109,7 +109,7 @@ Uses the `fake_acp` connector (configured by default). Requires no external agen
 
 ```bash
 cellos add-task "Research prerequisites" --role researcher --prompt "CREATE_RESEARCH_CHILD_ACTION: Research the prerequisites for the main task and report findings."
-PARENT_ID=$(cellos status --quiet 2>/dev/null | tail -1 | awk '{print $1}')
+PARENT_ID=$(cellos status | tail -1 | awk '{print $1}')
 echo "PARENT_ID=$PARENT_ID"
 ```
 
@@ -147,7 +147,7 @@ Expected:
 ### 9e. Approve the child task
 
 ```bash
-CHILD_ID=$(cellos status --quiet 2>/dev/null | grep researcher | tail -1 | awk '{print $1}')
+CHILD_ID=$(cellos status | grep researcher | tail -1 | awk '{print $1}')
 cellos approve $CHILD_ID
 ```
 
@@ -210,7 +210,7 @@ Expected: complete audit trail from creation through execution.
 
 ```bash
 cellos add-task "Test invalid action" --role engineer --prompt "CREATE_INVALID_CHILD_ACTION: This should produce an invalid action."
-INVALID_ID=$(cellos status --quiet 2>/dev/null | tail -1 | awk '{print $1}')
+INVALID_ID=$(cellos status | tail -1 | awk '{print $1}')
 cellos approve $INVALID_ID
 cellos run
 sleep 5
@@ -227,7 +227,7 @@ Per-task ACP agent assignment via `--agent` and `--clear-agent`.
 
 ```bash
 cellos add-task "Agent test task" --agent fake --config ~/.cellos/config.json
-AGENT_TASK_ID=$(cellos status --quiet 2>/dev/null | tail -1 | awk '{print $1}')
+AGENT_TASK_ID=$(cellos status | tail -1 | awk '{print $1}')
 ```
 
 Expected: task created with `agent_id` set to `fake`.
@@ -293,9 +293,9 @@ Expected: "Recent Comments" section shows the comment with author `human`.
 
 ```bash
 cellos add-task "Dependent task"
-DEP_TASK_ID=$(cellos status --quiet 2>/dev/null | tail -1 | awk '{print $1}')
+DEP_TASK_ID=$(cellos status | tail -1 | awk '{print $1}')
 cellos add-task "Dependency task"
-DEP_ON_ID=$(cellos status --quiet 2>/dev/null | tail -1 | awk '{print $1}')
+DEP_ON_ID=$(cellos status | tail -1 | awk '{print $1}')
 ```
 
 ### 12b. Add dependency after creation
@@ -324,7 +324,7 @@ Approving a task that is not in `needs_approval` should fail.
 
 ```bash
 cellos add-task "Draft for invalid approval"
-DRAFT_ID=$(cellos status --quiet 2>/dev/null | tail -1 | awk '{print $1}')
+DRAFT_ID=$(cellos status | tail -1 | awk '{print $1}')
 cellos approve $DRAFT_ID 2>&1
 ```
 

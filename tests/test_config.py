@@ -7,7 +7,7 @@ from cellos.config import ConfigError, ensure_config, load_agent_catalog, load_c
 
 VALID_CONFIG = (
     '{"scheduler": {"concurrent_tasks": 2, "worker_timeout_seconds": 60}, '
-    '"worker": {"backend": "acp", "debug_log_path": ".cellos/logs/acp-debug.log"}, '
+    '"worker": {"backend": "acp", "debug_log_path": ".cellos/logs/acp-debug.log", "debug_logging": true}, '
     '"agents": {"default": "fake", "catalog_path": "agentcatalog.json"}, '
     '"prompts": {"profiles_path": "promptprofiles.json"}}'
 )
@@ -72,7 +72,7 @@ def test_ensure_config_does_not_overwrite_existing_without_flag(tmp_path):
     config.parent.mkdir()
     config.write_text(
         '{"scheduler": {"concurrent_tasks": 7, "worker_timeout_seconds": 90}, '
-        '"worker": {"backend": "acp", "debug_log_path": ".cellos/logs/acp-debug.log"}, '
+        '"worker": {"backend": "acp", "debug_log_path": ".cellos/logs/acp-debug.log", "debug_logging": true}, '
         '"agents": {"default": "fake", "catalog_path": "agentcatalog.json"}}'
     )
     catalog.write_text('{"available": {"fake": {"connector": "fake_acp"}}}')
@@ -106,7 +106,7 @@ def test_ensure_config_overwrites_existing_with_flag(tmp_path):
     config.parent.mkdir()
     config.write_text(
         '{"scheduler": {"concurrent_tasks": 7, "worker_timeout_seconds": 90}, '
-        '"worker": {"backend": "acp", "debug_log_path": ".cellos/logs/acp-debug.log"}, '
+        '"worker": {"backend": "acp", "debug_log_path": ".cellos/logs/acp-debug.log", "debug_logging": true}, '
         '"agents": {"default": "fake", "catalog_path": "agentcatalog.json"}}'
     )
     catalog.write_text('{"available": {"fake": {"connector": "fake_acp"}}}')

@@ -161,7 +161,11 @@ def test_execution_prompt_does_not_execute_child_tasks(prompt_profiles):
     assert "return only the create_task actions plus a brief summary" in prompt
 
 
-def test_prepare_opencode_agent_invocation(tmp_path):
+def test_prepare_opencode_agent_invocation(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        "cellos.connectors.opencode._resolve_opencode_path",
+        lambda: "/mock/path/opencode",
+    )
     prepared = prepare_agent_invocation(
         agent_id="opencode",
         agent=AgentConfig(connector="opencode"),
@@ -171,7 +175,7 @@ def test_prepare_opencode_agent_invocation(tmp_path):
 
     assert prepared.agent_id == "opencode"
     assert prepared.connector == "opencode"
-    assert prepared.launch_command == ["opencode", "acp"]
+    assert prepared.launch_command == ["/mock/path/opencode", "acp"]
     assert prepared.prompt.text == "Plan the task."
     assert prepared.prompt.mode == "planning"
 
@@ -239,3 +243,54 @@ async def test_acp_worker_runs_task_with_fake_server(tmp_path, prompt_profiles):
     assert result.output["selected_agent_id"] == "fake-test"
     assert result.output["connector"] == "opencode"
     assert result.output["agent_metadata"]["agent_runtime"] == "opencode"
+
+
+def test_resolve_opencode_path_found(tmp_path, monkeypatch):
+    """When a known path exists, it is returned."""
+    fake_bin = tmp_path / ".opencode" / "bin" / "opencode"
+    fake_bin.parent.mkdir(parents=True)
+    fake_bin.touch(mode=0o755)
+    monkeypatch.setattr("cellos.connectors.opencode._DEFAULT_PATHS", [fake_bin])
+    monkeypatch.delenv("PATH", raising=False)
+
+    from cellos.connectors.opencode import _resolve_opencode_path
+
+    assert _resolve_opencode_path() == str(fake_bin)
+
+
+def test_resolve_opencode_path_fallback_to_which(tmp_path, monkeypatch):
+    """When no known path exists, shutil.which is used."""
+    monkeypatch.setattr("cellos.connectors.opencode._DEFAULT_PATHS", [])
+    import sys
+    mod = sys.modules["cellos.connectors.opencode"]
+    orig_which = mod.shutil.which
+    mod.shutil.which = lambda name: "/usr/bin/opencode"
+    try:
+        from cellos.connectors.opencode import _resolve_opencode_path
+        assert _resolve_opencode_path() == "/usr/bin/opencode"
+    finally:
+        mod.shutil.which = orig_which
+
+
+def test_resolve_opencode_path_none(tmp_path, monkeypatch):
+    """When nothing is found, None is returned."""
+    monkeypatch.setattr("cellos.connectors.opencode._DEFAULT_PATHS", [])
+    import sys
+    mod = sys.modules["cellos.connectors.opencode"]
+    orig_which = mod.shutil.which
+    mod.shutil.which = lambda name: None
+    try:
+        from cellos.connectors.opencode import _resolve_opencode_path
+        assert _resolve_opencode_path() is None
+    finally:
+        mod.shutil.which = orig_which
+
+
+def test_resolve_launch_command_no_path(monkeypatch):
+    """When opencode binary is not found, a clear error is raised."""
+    monkeypatch.setattr("cellos.connectors.opencode._resolve_opencode_path", lambda: None)
+
+    from cellos.connectors.opencode import resolve_launch_command
+
+    with pytest.raises(FileNotFoundError, match="opencode binary not found"):
+        resolve_launch_command()

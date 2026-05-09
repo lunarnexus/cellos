@@ -22,7 +22,7 @@ def write_fake_config(config_path: Path) -> None:
         json.dumps(
             {
                 "scheduler": {"concurrent_tasks": 4, "worker_timeout_seconds": 30},
-                "worker": {"backend": "acp", "debug_log_path": ".cellos/logs/acp-debug.log"},
+                "worker": {"backend": "acp", "debug_log_path": ".cellos/logs/acp-debug.log", "debug_logging": True},
                 "agents": {"default": "fake", "catalog_path": "agentcatalog.json"},
                 "prompts": {"profiles_path": "promptprofiles.json"},
             }
