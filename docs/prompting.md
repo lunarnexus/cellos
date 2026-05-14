@@ -27,6 +27,8 @@ Final instructions
 
 Planning prompts include task comments and research results because planning needs the available discussion and completed research to produce a better plan. Execution prompts stay narrower and do not automatically include comments, parent task history, attempt logs, dependency logs, or broad project history. If execution context matters, the approved plan should include it.
 
+Task intake details, the working plan, the approved execution scope, and the ongoing conversation are related but not identical. CelloS should keep them conceptually separate even when some current implementations still store parts of that information together.
+
 ## Planning Mode
 
 Planning mode is read-only.
@@ -34,9 +36,11 @@ Planning mode is read-only.
 Planning agents may:
 
 - clarify the objective,
+- ask clarifying questions in task comments/conversation,
 - decompose complicated work,
 - propose child tasks,
 - propose prerequisite research tasks,
+- revise earlier decomposition when research changes the shape of the problem,
 - define acceptance criteria,
 - identify risks and unknowns.
 

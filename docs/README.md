@@ -7,7 +7,7 @@ This folder contains the canonical CelloS design docs. Treat these docs as the c
 - `architecture.md`: module responsibilities, runtime flows, "where do I change X?"
 - `product.md`: product vision, principles, goals, non-goals, and future features.
 - `roles-and-lifecycle.md`: canonical roles, task lifecycle, approvals, change requests, and attention metadata.
-- `heartbeat.md`: scheduler behavior: selection rules, concurrency, result handling.
+- `architecture.md` and `refactoring-spec.md`: scheduler/service structure and runtime flow.
 - `prompting.md`: prompt stack, planning/execution boundaries, and structured task creation.
 - `communication.md`: proposals, reports, approval requests, comments, and task communication artifacts.
 - `pm-adapters.md`: PM-neutral adapter contract.

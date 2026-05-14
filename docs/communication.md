@@ -83,7 +83,11 @@ Keep reports focused. Higher-level roles should be able to scan reports without 
 
 ## Comments
 
+Comments and conversation are the clarification channel between the human and the planning role. They are where the Architect can ask questions, the human can answer or revise direction, and CelloS can accumulate the discussion needed to improve the next plan.
+
 Human comments are stored separately from the task prompt/plan. A comment on an unapproved task marks durable attention, which makes the task eligible for replanning. Planning prompts include task comments and research-result system comments. Execution prompts stay focused on the approved plan.
+
+Task intake details, the current plan/proposal, comments/conversation, and execution results should remain conceptually separate even when some UI surfaces present them together.
 
 ## See Also
 

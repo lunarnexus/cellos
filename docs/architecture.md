@@ -5,7 +5,6 @@
 | Doc | What it covers |
 |---|---|
 | `roles-and-lifecycle.md` | Canonical roles, task lifecycle, approval model, attention signals |
-| `heartbeat.md` | Scheduler behavior: selection rules, concurrency, result handling |
 | `acp.md` | Agent execution via ACP-compatible backends |
 | `prompting.md` | Prompt stack, planning/execution boundaries, structured task creation |
 | `communication.md` | Proposals, reports, approval requests, comments |
@@ -51,8 +50,8 @@ CLI command -> CellosApp bootstrap -> WorkerService.run_task_worker()
 | Planning result handling | `cellos/services/planning_service.py` |
 | Execution result / child tasks | `cellos/services/execution_service.py` |
 | SQL and persistence | `cellos/db.py` facade → `cellos/persistence/` repos |
-| Domain DTOs / enums | `cellos/models.py` (monolithic until Phase 9) |
-| Config loading / init | `cellos/config.py` (monolithic until Phase 9) |
+| Domain DTOs / enums | `cellos/models.py` (canonical monolithic schema/types module) |
+| Config loading / init | `cellos/config.py` (canonical monolithic config module) |
 | Prompt construction | `cellos/prompt_builder.py` |
 | Task action parsing | `cellos/task_actions.py` |
 | ACP agent execution | `cellos/acp.py`, `cellos/acp_worker.py` |
@@ -60,12 +59,13 @@ CLI command -> CellosApp bootstrap -> WorkerService.run_task_worker()
 
 ## Where Do I Change X?
 
-- **Scheduling rules?** → `cellos/services/scheduler.py` + `docs/heartbeat.md`
+- **Scheduling rules?** → `cellos/services/scheduler.py` + `docs/refactoring-spec.md`
 - **Task lifecycle / approval?** → `cellos/services/task_service.py` + `docs/roles-and-lifecycle.md`
 - **Worker backend / prompt?** → `cellos/services/worker_service.py` + `cellos/prompt_builder.py`
 - **CLI output format?** → `cellos/cli_formatting.py`
 - **DB schema / queries?** → `cellos/persistence/` repos (facade in `cellos/db.py`)
 - **Config structure?** → `cellos/config.py`
+- **Schema/types?** → `cellos/models.py`
 - **Agent connector?** → `cellos/connectors/<name>.py`
 
 ## Task-Specific Agents
@@ -92,7 +92,7 @@ cellos update TASK_ID --clear-agent
 
 ### Where to change
 
-- **Task model field** → `cellos/domain/tasks.py`
+- **Task model field** → `cellos/models.py`
 - **Agent resolution** → `cellos/config.py` (`get_agent`)
 - **CLI flags** → `cellos/cli.py` (`add-task`, `update`)
 - **Service validation** → `cellos/services/task_service.py`

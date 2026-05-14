@@ -22,13 +22,26 @@ The roles stay explicit because future versions should be able to customize prom
 
 Owns top-level project intake and direction. Interprets human requests, creates/revises project plans, decides when to request research, routes work to Architects, handles change requests from Architects, escalates to the human when project direction requires judgment. Not the runtime scheduler — that is deterministic code.
 
+For MVP, top-level task intake should capture at least:
+
+- a title,
+- details or supporting context,
+- success criteria,
+- failure, avoidance, or constraint criteria.
+
 ### Researcher
 
 Gathers information and reports findings. Proposes a research approach, performs approved research, summarizes findings clearly, identifies uncertainties and follow-up questions. Should not create implementation plans, perform filesystem edits, or create new executable tasks unless explicitly approved.
 
 ### Architect
 
-Turns approved goals and research into a concrete design or work breakdown. Creates/revises technical plans, decomposes approved work into smaller tasks, defines task boundaries/dependencies/acceptance criteria, handles change requests from Engineers and Testers, escalates to the Coordinator when scope or goals need to change. Task creation is a write action — the Architect may create tasks only when explicitly approved.
+Turns approved goals and research into a concrete design or work breakdown. Creates/revises technical plans, decomposes approved work into smaller tasks, defines task boundaries/dependencies/acceptance criteria, handles change requests from Engineers and Testers, and escalates to the Coordinator when scope or goals need to change.
+
+The Architect should usually decompose work unless the task is obviously small and direct. Research may show that a planned task still needs deeper decomposition, more dependencies, or follow-on tasks.
+
+The Architect may ask clarifying questions in task comments/conversation while still producing a plan. Clarification should refine the current plan, not block all planning until every unknown is resolved.
+
+Task creation is a write action — the Architect may create tasks only when explicitly approved.
 
 ### Engineer
 
@@ -108,6 +121,8 @@ The human may: approve the proposal, edit the proposal directly, comment with re
 
 Only after approval may the task perform the approved action.
 
+For MVP, research tasks, engineer/execution tasks, and tester/verification tasks all require a plan and approval before execution. Auto-approval policies are deferred until later.
+
 ## Task Creation Rules
 
 Creating tasks is a write action. Task creation is allowed only when:
@@ -116,6 +131,8 @@ Creating tasks is a write action. Task creation is allowed only when:
 2. The approved proposal explicitly authorizes creating the specific tasks or class of tasks.
 
 If an Architect wants to create new tasks not covered by the approved proposal, it must request approval first. This prevents uncontrolled task explosions and preserves an audit trail.
+
+Subtasks are still normal tasks. They may have a parent, dependencies, and a specialized role or agent assignment. A created subtask may itself need planning, approval, or further decomposition before execution.
 
 ## Change Request Flow
 
@@ -183,7 +200,7 @@ attention_since: timestamp
 
 This gives CelloS a clear queue of tasks that need thought or action without using multiple primary statuses.
 
-The exact attention detection and clearing rules are defined in `SchedulerService` (`cellos/services/scheduler.py`) and in `docs/heartbeat.md`.
+The exact attention detection and clearing rules are defined in `SchedulerService` (`cellos/services/scheduler.py`) and the service-oriented runtime notes in `docs/refactoring-spec.md`.
 
 ## Open Questions For Later
 

@@ -32,6 +32,12 @@ Meaningful actions require approval. Planning can draft proposals, but task crea
 
 Worker agents should receive only the context needed for their task. Failed or changed work should usually start a fresh attempt with a focused prompt, not keep extending a bloated session.
 
+This is a core design assumption, not a minor optimization. CelloS exists partly because LLMs are brittle: they overload easily, lose track of constraints, and perform better when work is decomposed into smaller, cleaner tasks with narrower prompts.
+
+### Decompose By Default
+
+The planning system should usually decompose work unless the task is obviously small and direct. Research may reveal that an apparently simple task needs a deeper breakdown, additional dependencies, or more specialized follow-on tasks. The Architect should bias toward smaller reviewable units of work rather than optimistic one-shot execution.
+
 ### Deterministic Orchestration
 
 The scheduler, state machine, dependency checks, approval checks, and PM sync logic should be deterministic code. AI roles reason inside approved task boundaries.
@@ -39,6 +45,8 @@ The scheduler, state machine, dependency checks, approval checks, and PM sync lo
 ### PM Tools Are Interfaces
 
 Trello, Asana, Jira, Notion, and similar tools are user interfaces and sync surfaces. They should not own CelloS orchestration logic.
+
+The current CLI is primarily a debugging and testing interface. The intended long-term operational interface is a PM tool or equivalent project-management surface.
 
 ### Best Effort And Recoverable
 

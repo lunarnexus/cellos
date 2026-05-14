@@ -104,8 +104,8 @@ cellos/
 │   └── task_repository.py    # task CRUD, status updates, list queries
 │
 ├── db.py                     # thin facade delegating to persistence/ repos (184 lines, was 575)
-├── models.py                 # monolithic; split in Phase 9
-├── config.py                 # monolithic; split in Phase 9
+├── models.py                 # canonical monolithic schema/types module
+├── config.py                 # canonical monolithic config module
 ├── prompt_builder.py         # already focused
 ├── task_actions.py           # already focused
 ├── acp_worker.py             # already focused
@@ -305,7 +305,7 @@ Responsibilities:
 - parse structured task creation actions,
 - record invalid task action events,
 - create child tasks when allowed,
-- apply research preapproval policy,
+- enforce approval requirements for research, engineer, and tester child tasks,
 - block parent on blocking child tasks,
 - record child creation and parent blocking events.
 
@@ -389,23 +389,16 @@ cellos/infrastructure/db/
 
 The current `cellos/persistence/` layout is the stable repository boundary. Only consider restructuring into `infrastructure/db/` if a clear benefit emerges.
 
-## Model and Config Refactor Later (Phase 9)
+## Model and Config State (Phase 9 decision)
 
-Do not split `models.py` or `config.py` during heartbeat/CLI extraction unless necessary.
+Phase 9 is considered complete with a revised outcome:
 
-Later model target:
+- `models.py` remains the canonical monolithic home for schema/types.
+- `config.py` remains the canonical monolithic home for configuration.
+- `cellos/domain/*` remains only as a compatibility shim layer for existing imports.
 
-```text
-cellos/domain/
-├── enums.py
-├── task.py
-├── results.py
-├── attention.py
-├── comments.py
-└── attempts.py
-```
-
-Later config target must account for Python import conflicts with `cellos/config.py`. Either use conservative names first or perform a coordinated package migration later.
+This keeps the type surface small-context friendly without spreading simple schema
+data across many files.
 
 ## Documentation Cleanup Target
 
@@ -550,30 +543,31 @@ python3 -m pytest tests/test_db.py tests/test_worker_service.py tests/test_sched
 python3 -m pytest -q
 ```
 
-### Phase 9: Split models and config
+### Phase 9: Re-evaluate models/config structure
 
-Status: partially implemented.
+Status: implemented.
 
-#### Phase 9A: Split domain models (implemented)
+#### Phase 9A: Domain split evaluated, then collapsed back to monolithic models (implemented)
 
-Created `cellos/domain/` package with submodules for each model category. `cellos/models.py` is a compatibility shim that re-exports everything.
-
-Target structure:
+Final structure:
 
 ```text
 cellos/
-  models.py                    # compatibility re-export shim
+  models.py                    # canonical monolithic schema/types module
   domain/
     __init__.py
-    time.py                    # utc_now
-    enums.py                   # all StrEnum classes
-    attention.py               # AttentionMetadata, ProcessingMetadata
-    results.py                 # ChangeRequestReport, TaskResult
-    comments.py                # TaskComment
-    attempts.py                # TaskAttempt
-    tasks.py                   # TaskDependency, Task
-    workers.py                 # Worker
+    time.py                    # compatibility shim
+    enums.py                   # compatibility shim
+    attention.py               # compatibility shim
+    results.py                 # compatibility shim
+    comments.py                # compatibility shim
+    attempts.py                # compatibility shim
+    tasks.py                   # compatibility shim
+    workers.py                 # compatibility shim
 ```
+
+Decision: the split domain files added indirection without enough benefit. `models.py`
+is small and cohesive enough to remain the canonical home for schema/types.
 
 Test gate passed:
 
@@ -582,15 +576,15 @@ python3 -m pytest tests/test_models.py -q
 python3 -m pytest -q
 ```
 
-#### Phase 9B: Split configuration (skipped)
+#### Phase 9B: Keep configuration monolithic (implemented decision)
 
 Decision: keep `cellos/config.py` as one file. Prompts already live in external JSON files. Splitting config into multiple Python modules adds cognitive overhead without meaningful benefit — someone needs to open multiple files to understand how config works, and the file is only 189 lines.
 
 Future: if `cellos/config.py` grows past ~300 lines, reconsider. Until then, it stays monolithic.
 
-#### Phase 9C: Migrate production imports (implemented)
+#### Phase 9C: Migrate production imports to `cellos.models` (implemented)
 
-Updated 19 production source files to import from `cellos.domain.*` instead of `cellos.models`. Config imports unchanged (9B skipped).
+Updated 19 production source files to import from `cellos.models` instead of `cellos.domain.*`. Config imports unchanged (9B skipped).
 
 Files updated:
 
@@ -620,25 +614,25 @@ Import mapping:
 
 ```text
 AgentRole, TaskStatus, TaskType, AttentionReason, CommentAuthorType
-  → cellos.domain.enums
+  → cellos.models
 
 Task, TaskDependency
-  → cellos.domain.tasks
+  → cellos.models
 
 TaskResult, ChangeRequestReport
-  → cellos.domain.results
+  → cellos.models
 
 TaskComment
-  → cellos.domain.comments
+  → cellos.models
 
 TaskAttempt, TaskAttemptStatus
-  → cellos.domain.attempts
+  → cellos.models
 
 utc_now
-  → cellos.domain.time
+  → cellos.models
 ```
 
-`cellos/models.py` remains as a compatibility shim re-exporting everything from `cellos.domain`. Tests may import from either location.
+`cellos/domain/*` remains as a compatibility shim layer re-exporting from `cellos.models`. Tests may import from either location, but `cellos.models` is canonical.
 
 Test gate:
 
@@ -647,11 +641,11 @@ python3 -m pytest -q
 72 passed
 ```
 
-Zero production files import from `cellos.models` after this phase.
+Zero production files need to import from `cellos.domain.*` after this phase.
 
-#### Phase 9D: Test import modernization (implemented)
+#### Phase 9D: Keep domain imports only as compatibility shims in tests where useful (implemented)
 
-Updated 9 test files to import from `cellos.domain.*` instead of `cellos.models`. Added compatibility tests to verify `cellos.models` shim still exports all symbols.
+Updated 9 test files to import from `cellos.models` as the canonical source. Kept a narrow compatibility check to verify `cellos.domain.*` shims still resolve correctly.
 
 Files updated:
 
@@ -674,7 +668,7 @@ tests/test_config.py  — still imports from cellos.config (compatibility test a
 
 Compatibility tests added:
 
-- `tests/test_models.py::test_models_compatibility_exports` — verifies all 17 symbols exportable from `cellos.models`
+- `tests/test_models.py::test_domain_compatibility_exports_still_work` — verifies compatibility shim imports still resolve
 - `tests/test_config.py::test_config_compatibility_exports` — verifies all 5 config functions exportable from `cellos.config`
 
 Test gate:
@@ -694,7 +688,7 @@ Reduced total docs from 2,578 to 1,885 lines (-693 lines, -27%).
 
 Changes:
 
-- `docs/heartbeat.md`: 301 → 140 lines. Removed verbose config examples, polling/webhooks discussion, processing metadata details. Kept: scheduler behavior summary, selection rules, planning vs execution modes, concurrency.
+- Removed stale `docs/heartbeat.md`. Scheduler behavior now lives in `docs/architecture.md`, `docs/roles-and-lifecycle.md`, `docs/acp.md`, and the service-oriented runtime notes in this spec.
 - `docs/roles-and-lifecycle.md`: 332 → 194 lines. Condensed role descriptions, added status table, streamlined change request flow.
 - `docs/acp.md`: 204 → 95 lines. Removed verbose config examples, kept: ACP architecture, connector model, agent catalog, runtime behavior.
 - `docs/communication.md`: 155 → 92 lines. Trimmed verbose artifact format examples, kept: artifact types, proposal structure, change request format.
@@ -716,7 +710,7 @@ Changes:
 #### Phase 10D: Unchanged
 
 - `docs/product.md` (79 lines) — product vision, kept as-is.
-- `docs/refactoring-spec.md` (715 lines) — structural refactor plan, kept as-is.
+- `docs/refactoring-spec.md` — structural refactor plan, updated to reflect the final monolithic `models.py` decision.
 
 Test gate:
 
