@@ -5,7 +5,7 @@ import sys
 from pathlib import Path
 from typing import Literal
 
-from cellos.domain.tasks import Task
+from cellos.models import Task
 
 WorkerMode = Literal["planning", "execution"]
 

@@ -1,7 +1,6 @@
 """Prompt construction for CelloS agent turns."""
-
 from cellos.config import PromptProfilesConfig
-from cellos.domain.tasks import Task
+from cellos.models import Task
 
 
 def build_task_prompt(
@@ -24,6 +23,14 @@ def build_task_prompt(
     if mode_profile is not None and mode_profile.instructions:
         parts.extend(mode_profile.instructions)
         parts.append("")
+    if task.details.strip():
+        parts.extend(["Task details:", task.details.strip(), ""])
+    if task.success_criteria.strip():
+        parts.extend(["Success criteria:", task.success_criteria.strip(), ""])
+    if task.failure_criteria.strip():
+        parts.extend(["Failure / avoidance criteria:", task.failure_criteria.strip(), ""])
+    if task.plan.strip():
+        parts.extend(["Current plan:", task.plan.strip(), ""])
     if task.prompt.strip():
         parts.extend(["Task prompt / approved scope:", task.prompt.strip(), ""])
     if mode == "planning" and comments:

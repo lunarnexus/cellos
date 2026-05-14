@@ -3,11 +3,7 @@
 from collections.abc import Sequence
 
 from cellos.db import CellosDatabase
-from cellos.domain.attention import AttentionReason
-from cellos.domain.comments import TaskComment
-from cellos.domain.conversation import ConversationMessage
-from cellos.domain.tasks import Task
-from cellos.domain.enums import TaskStatus, CommentAuthorType
+from cellos.models import AttentionReason, CommentAuthorType, ConversationMessage, Task, TaskComment, TaskStatus
 
 
 class TaskServiceError(Exception):
@@ -39,6 +35,10 @@ class TaskService:
         task_id: str,
         *,
         title: str | None = None,
+        details: str | None = None,
+        success_criteria: str | None = None,
+        failure_criteria: str | None = None,
+        plan: str | None = None,
         prompt: str | None = None,
         status: TaskStatus | None = None,
         parent_id: str | None = None,
@@ -49,6 +49,10 @@ class TaskService:
     ) -> Task:
         if (
             title is None
+            and details is None
+            and success_criteria is None
+            and failure_criteria is None
+            and plan is None
             and prompt is None
             and status is None
             and parent_id is None
@@ -68,6 +72,18 @@ class TaskService:
         if title is not None:
             updates["title"] = title
             content_changed = content_changed or title != task.title
+        if details is not None:
+            updates["details"] = details
+            content_changed = content_changed or details != task.details
+        if success_criteria is not None:
+            updates["success_criteria"] = success_criteria
+            content_changed = content_changed or success_criteria != task.success_criteria
+        if failure_criteria is not None:
+            updates["failure_criteria"] = failure_criteria
+            content_changed = content_changed or failure_criteria != task.failure_criteria
+        if plan is not None:
+            updates["plan"] = plan
+            content_changed = content_changed or plan != task.plan
         if prompt is not None:
             updates["prompt"] = prompt
             content_changed = content_changed or prompt != task.prompt
@@ -123,21 +139,20 @@ class TaskService:
     async def add_conversation_message(self, task_id: str, raw_message: str) -> None:
         """Add a message to the task's conversation log.
 
-        The raw_message must have an author prefix: "human: ..." or "system: ...".
+        The raw_message must have an author prefix: "human: ...", "agent: ...", or "system: ...".
         The prefix is parsed and stripped; only the content after ": " is stored.
         """
         task = await self.db.get_task(task_id)
         if task is None:
             raise TaskNotFoundError(f"Task not found: {task_id}")
 
-        # Parse author prefix
         if ": " not in raw_message:
-            raise ValueError("Conversation message must have an author prefix: 'human: ...' or 'system: ...'")
+            raise ValueError("Conversation message must have an author prefix: 'human: ...', 'agent: ...', or 'system: ...'")
 
         author_str, message = raw_message.split(": ", 1)
         author = author_str.strip().lower()
-        if author not in ("human", "system"):
-            raise ValueError(f"Invalid author '{author}'. Must be 'human' or 'system'.")
+        if author not in ("human", "agent", "system"):
+            raise ValueError(f"Invalid author '{author}'. Must be 'human', 'agent', or 'system'.")
 
         msg = ConversationMessage(author=author, message=message)
         updated_task = task.model_copy(update={"conversation": [*task.conversation, msg]})
@@ -147,13 +162,14 @@ class TaskService:
                 "Human added conversation message",
             )
         await self.db.update_task(updated_task)
+        await self.db.record_task_event(task.id, "conversation_added", f"Conversation message added by {author}")
         await self.db.conn.commit()
 
     async def approve_task(self, task_id: str) -> Task:
         task = await self.db.get_task(task_id)
         if task is None:
             raise TaskNotFoundError(f"Task not found: {task_id}")
-        if task.status not in {TaskStatus.DRAFT, TaskStatus.NEEDS_APPROVAL}:
+        if task.status != TaskStatus.NEEDS_APPROVAL:
             raise InvalidTaskApprovalError(f"Task {task.id} cannot be approved from status {task.status.value}.")
         updated = await self.db.update_task(task.clear_attention().model_copy(update={"status": TaskStatus.APPROVED}))
         await self.db.record_task_event(task.id, "approved", "Task approved")

@@ -1,20 +1,23 @@
-from cellos.domain.attempts import TaskAttempt, TaskAttemptStatus
-from cellos.domain.attention import AttentionMetadata, ProcessingMetadata
-from cellos.domain.comments import TaskComment
-from cellos.domain.enums import (
+from cellos.models import (
     AgentRole,
     AttentionReason,
+    AttentionMetadata,
     CommentAuthorType,
+    ConversationMessage,
+    ProcessingMetadata,
+    Task,
+    TaskAttempt,
     TaskAttemptStatus,
     TaskStatus,
+    TaskComment,
+    TaskDependency,
+    TaskResult,
     TaskType,
+    Worker,
     WorkerStatus,
+    ChangeRequestReport,
+    utc_now,
 )
-from cellos.domain.results import ChangeRequestReport, TaskResult
-from cellos.domain.tasks import Task, TaskDependency
-from cellos.domain.time import utc_now
-from cellos.domain.workers import Worker
-
 
 def test_task_defaults_match_canonical_lifecycle():
     task = Task(id="task-1", title="Draft plan", role=AgentRole.COORDINATOR)
@@ -23,6 +26,10 @@ def test_task_defaults_match_canonical_lifecycle():
     assert task.task_type == TaskType.PROPOSAL
     assert task.attention.required is False
     assert task.dependencies == []
+    assert task.details == ""
+    assert task.success_criteria == ""
+    assert task.failure_criteria == ""
+    assert task.plan == ""
 
 
 def test_task_migrates_legacy_proposal_field_to_prompt():
@@ -73,28 +80,7 @@ def test_change_request_result_records_structured_report():
     assert result.change_request.human_approval_needed is True
 
 
-def test_models_compatibility_exports():
-    """Verify cellos.models shim still exports all symbols."""
-    from cellos.models import (
-        AgentRole,
-        AttentionMetadata,
-        AttentionReason,
-        ChangeRequestReport,
-        CommentAuthorType,
-        ProcessingMetadata,
-        Task,
-        TaskAttempt,
-        TaskAttemptStatus,
-        TaskComment,
-        TaskDependency,
-        TaskResult,
-        TaskStatus,
-        TaskType,
-        Worker,
-        WorkerStatus,
-        utc_now,
-    )
-
+def test_models_exports_all_canonical_symbols():
     assert Task is not None
     assert TaskStatus.APPROVED == "approved"
     assert AgentRole.ENGINEER == "engineer"
@@ -110,6 +96,14 @@ def test_models_compatibility_exports():
     assert WorkerStatus is not None
     assert CommentAuthorType is not None
     assert TaskAttemptStatus is not None
+
+
+def test_domain_compatibility_exports_still_work():
+    from cellos.domain.tasks import Task as DomainTask
+    from cellos.domain.enums import TaskStatus as DomainTaskStatus
+
+    assert DomainTask is Task
+    assert DomainTaskStatus is TaskStatus
 
 
 def test_task_agent_id_defaults_to_none():
@@ -150,3 +144,18 @@ def test_task_model_validate_json_with_agent_id():
 
     loaded = Task.model_validate_json(json_str)
     assert loaded.agent_id == "qwen"
+
+
+def test_task_migrates_description_and_constraints_fields():
+    task = Task.model_validate(
+        {
+            "id": "task-1",
+            "title": "Build",
+            "role": "engineer",
+            "description": "Implement the feature.",
+            "constraints": "Do not change the API.",
+        }
+    )
+
+    assert task.details == "Implement the feature."
+    assert task.failure_criteria == "Do not change the API."

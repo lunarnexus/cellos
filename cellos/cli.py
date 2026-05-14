@@ -17,8 +17,7 @@ from cellos.cli_app import (
 )
 from cellos.cli_formatting import detail_formatter, events_formatter, status_formatter
 from cellos.config import DEFAULT_CONFIG_PATH
-from cellos.domain.enums import AgentRole, TaskStatus, TaskType
-from cellos.domain.tasks import Task
+from cellos.models import AgentRole, Task, TaskStatus, TaskType
 from cellos.services.scheduler import SchedulerService
 from cellos.services.task_service import (
     EmptyTaskUpdateError,
@@ -88,7 +87,11 @@ def init(workdir, db_path, config_path, hard_reset):
 @click.option("--role", type=click.Choice([item.value for item in AgentRole]), default=AgentRole.ENGINEER.value)
 @click.option("--type", "task_type", type=click.Choice([item.value for item in TaskType]), default=TaskType.PROPOSAL.value)
 @click.option("--status", type=click.Choice([item.value for item in TaskStatus]), default=TaskStatus.DRAFT.value)
-@click.option("--prompt", default="", help="Task prompt or approved scope.")
+@click.option("--details", default="", help="Task details, constraints, or supporting context.")
+@click.option("--success-criteria", default="", help="How success should be evaluated.")
+@click.option("--failure-criteria", default="", help="Failure, avoidance, or constraint criteria.")
+@click.option("--plan", default="", help="Current plan or approved plan text.")
+@click.option("--prompt", default="", help="Task prompt or approved execution scope.")
 @click.option("--depends", "depends_on", multiple=True, help="Task ID this task depends on. May be repeated.")
 @click.option("--parent", "parent_id", default=None, help="Parent task ID.")
 @click.option("--timeout", type=int, default=None, help="Per-task worker timeout in seconds.")
@@ -96,14 +99,18 @@ def init(workdir, db_path, config_path, hard_reset):
 @click.option("--workdir", type=click.Path(path_type=Path), default=None)
 @click.option("--db", "db_path", type=click.Path(path_type=Path), default=None)
 @click.option("--config", "config_path", type=click.Path(path_type=Path), default=DEFAULT_CONFIG_PATH)
-def add_task(title, role, task_type, status, prompt, depends_on, parent_id, timeout, agent_id, workdir, db_path, config_path):
+def add_task(title, role, task_type, status, details, success_criteria, failure_criteria, plan, prompt, depends_on, parent_id, timeout, agent_id, workdir, db_path, config_path):
     """Add a task to the local CelloS database."""
     task = Task(
         id=uuid4().hex[:8],
         title=title,
+        details=details,
+        success_criteria=success_criteria,
+        failure_criteria=failure_criteria,
         role=AgentRole(role),
         task_type=TaskType(task_type),
         status=TaskStatus(status),
+        plan=plan,
         prompt=prompt,
         parent_id=parent_id,
         dependencies=list(depends_on),
@@ -148,6 +155,10 @@ def detail(task_id, event_limit, workdir, db_path, config_path):
 @main.command()
 @click.argument("task_id")
 @click.option("--title", default=None)
+@click.option("--details", default=None)
+@click.option("--success-criteria", default=None)
+@click.option("--failure-criteria", default=None)
+@click.option("--plan", default=None)
 @click.option("--prompt", default=None)
 @click.option("--status", type=click.Choice([item.value for item in TaskStatus]), default=None)
 @click.option("--parent", "parent_id", default=None)
@@ -155,15 +166,15 @@ def detail(task_id, event_limit, workdir, db_path, config_path):
 @click.option("--remove-dep", "remove_dependencies", multiple=True, help="Remove a task dependency. May be repeated.")
 @click.option("--agent", "agent_id", default=None, help="Agent catalog ID to run this task with.")
 @click.option("--clear-agent", is_flag=True, help="Clear task-specific agent and use default.")
-@click.option("--comment", "comment_message", default=None, help="Add a conversation message. Format: 'human: message' or 'system: message'.")
+@click.option("--comment", "comment_message", default=None, help="Add a conversation message. Format: 'human: message', 'agent: message', or 'system: message'.")
 @click.option("--workdir", type=click.Path(path_type=Path), default=None)
 @click.option("--db", "db_path", type=click.Path(path_type=Path), default=None)
 @click.option("--config", "config_path", type=click.Path(path_type=Path), default=DEFAULT_CONFIG_PATH)
-def update(task_id, title, prompt, status, parent_id, add_dependencies, remove_dependencies, agent_id, clear_agent, comment_message, workdir, db_path, config_path):
+def update(task_id, title, details, success_criteria, failure_criteria, plan, prompt, status, parent_id, add_dependencies, remove_dependencies, agent_id, clear_agent, comment_message, workdir, db_path, config_path):
     """Update a task."""
     if agent_id is not None and clear_agent:
         raise click.ClickException("Use either --agent or --clear-agent, not both.")
-    if comment_message is not None and any([title, prompt, status, parent_id, add_dependencies, remove_dependencies, agent_id, clear_agent]):
+    if comment_message is not None and any([title, details, success_criteria, failure_criteria, plan, prompt, status, parent_id, add_dependencies, remove_dependencies, agent_id, clear_agent]):
         raise click.ClickException("--comment cannot be combined with other update flags.")
     if comment_message is not None:
         _run_cli(_add_conversation(db_path, config_path, workdir, task_id, comment_message))
@@ -176,6 +187,10 @@ def update(task_id, title, prompt, status, parent_id, add_dependencies, remove_d
             workdir,
             task_id,
             title,
+            details,
+            success_criteria,
+            failure_criteria,
+            plan,
             prompt,
             status,
             parent_id,
@@ -290,7 +305,7 @@ async def _detail(db_path, config_path, workdir, task_id, event_limit):
     detail_formatter(task, comments, attempts, events)
 
 
-async def _update(db_path, config_path, workdir, task_id, title, prompt, status, parent_id, add_dependencies, remove_dependencies, agent_id, clear_agent):
+async def _update(db_path, config_path, workdir, task_id, title, details, success_criteria, failure_criteria, plan, prompt, status, parent_id, add_dependencies, remove_dependencies, agent_id, clear_agent):
     app = await _open_app(db_path, config_path, workdir)
     try:
         if agent_id is not None:
@@ -301,6 +316,10 @@ async def _update(db_path, config_path, workdir, task_id, title, prompt, status,
         return await TaskService(app.db).update_task(
             task_id,
             title=title,
+            details=details,
+            success_criteria=success_criteria,
+            failure_criteria=failure_criteria,
+            plan=plan,
             prompt=prompt,
             status=TaskStatus(status) if status is not None else None,
             parent_id=parent_id,

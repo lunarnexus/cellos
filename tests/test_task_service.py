@@ -1,9 +1,7 @@
 import pytest
 
 from cellos.db import CellosDatabase
-from cellos.domain.attention import AttentionReason
-from cellos.domain.enums import AgentRole, TaskStatus
-from cellos.domain.tasks import Task
+from cellos.models import AgentRole, AttentionReason, Task, TaskStatus
 from cellos.services.task_service import EmptyTaskUpdateError, TaskService
 
 
@@ -21,7 +19,15 @@ async def test_task_service_create_update_comment_and_approve(tmp_path):
     task = Task(id="task-1", title="Original", role=AgentRole.ENGINEER)
 
     created = await service.create_task(task)
-    updated = await service.update_task("task-1", prompt="New plan", status=TaskStatus.NEEDS_APPROVAL)
+    updated = await service.update_task(
+        "task-1",
+        details="Important context",
+        success_criteria="Works end to end",
+        failure_criteria="Do not break API",
+        plan="New plan",
+        prompt="New scope",
+        status=TaskStatus.NEEDS_APPROVAL,
+    )
     await service.add_human_comment("task-1", "Please revise", "james")
     commented = await db.get_task("task-1")
     approved = await service.approve_task("task-1")
@@ -29,7 +35,11 @@ async def test_task_service_create_update_comment_and_approve(tmp_path):
     events = await db.list_task_events(task_id="task-1")
 
     assert created.id == "task-1"
-    assert updated.prompt == "New plan"
+    assert updated.details == "Important context"
+    assert updated.success_criteria == "Works end to end"
+    assert updated.failure_criteria == "Do not break API"
+    assert updated.plan == "New plan"
+    assert updated.prompt == "New scope"
     assert updated.attention.required is True
     assert updated.attention.reason == AttentionReason.HUMAN_CHANGED_TASK
     assert commented.attention.reason == AttentionReason.HUMAN_COMMENTED
@@ -161,6 +171,23 @@ async def test_task_service_add_system_conversation_message(tmp_path):
     assert len(task.conversation) == 1
     assert task.conversation[0].author == "system"
     assert task.conversation[0].message == "Plan revised"
+    await db.close()
+
+
+@pytest.mark.anyio
+async def test_task_service_add_agent_conversation_message(tmp_path):
+    db = CellosDatabase(tmp_path / "cellos.sqlite")
+    await db.connect()
+    await db.init_db()
+    service = TaskService(db)
+    await service.create_task(Task(id="task-1", title="Original", role=AgentRole.ENGINEER))
+
+    await service.add_conversation_message("task-1", "agent: I need clarification")
+    task = await db.get_task("task-1")
+
+    assert len(task.conversation) == 1
+    assert task.conversation[0].author == "agent"
+    assert task.conversation[0].message == "I need clarification"
     await db.close()
 
 

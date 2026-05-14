@@ -8,8 +8,7 @@ from cellos.acp import prepare_agent_invocation
 from cellos.acp_worker import AcpWorker
 from cellos.config import AgentConfig, load_prompt_profiles
 from cellos.connectors.base import PromptEnvelope
-from cellos.domain.enums import AgentRole, TaskStatus, TaskType
-from cellos.domain.tasks import Task
+from cellos.models import AgentRole, Task, TaskStatus, TaskType
 from cellos.prompt_builder import build_task_prompt
 
 

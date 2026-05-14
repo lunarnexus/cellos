@@ -1,9 +1,7 @@
 """Planning result persistence service."""
 
 from cellos.db import CellosDatabase
-from cellos.domain.tasks import Task
-from cellos.domain.results import TaskResult
-from cellos.domain.enums import TaskStatus
+from cellos.models import Task, TaskResult, TaskStatus
 
 
 async def save_planning_result(db: CellosDatabase, task: Task, result: TaskResult) -> None:
@@ -12,6 +10,7 @@ async def save_planning_result(db: CellosDatabase, task: Task, result: TaskResul
         raise ValueError(f"Task not found: {task.id}")
     updated = current.clear_attention().model_copy(
         update={
+            "plan": result.summary,
             "prompt": result.summary,
             "result": result,
             "status": TaskStatus.NEEDS_APPROVAL,

@@ -1,5 +1,4 @@
-from cellos.domain.enums import AgentRole, TaskStatus, TaskType
-from cellos.domain.tasks import Task
+from cellos.models import AgentRole, Task, TaskStatus, TaskType
 from cellos.task_actions import parse_create_task_actions, parse_create_task_actions_with_errors, task_from_create_action
 
 

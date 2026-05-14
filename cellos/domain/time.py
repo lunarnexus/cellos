@@ -1,8 +1,5 @@
-"""Time utilities for CelloS domain models."""
+"""Compatibility shim for `cellos.models.utc_now`."""
 
-from datetime import datetime, timezone
+from cellos.models import utc_now
 
-
-def utc_now() -> datetime:
-    """Return a timezone-aware UTC timestamp."""
-    return datetime.now(timezone.utc)
+__all__ = ["utc_now"]

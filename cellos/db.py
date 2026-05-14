@@ -6,13 +6,7 @@ from typing import Any
 
 import aiosqlite
 
-from cellos.domain.attention import AttentionReason
-from cellos.domain.attempts import TaskAttempt, TaskAttemptStatus
-from cellos.domain.comments import TaskComment
-from cellos.domain.enums import CommentAuthorType, TaskStatus, TaskType
-from cellos.domain.results import TaskResult
-from cellos.domain.tasks import Task
-from cellos.domain.time import utc_now
+from cellos.models import CommentAuthorType, Task, TaskAttempt, TaskAttemptStatus, TaskComment, TaskResult, TaskStatus, TaskType, utc_now
 from cellos.persistence.schema import (
     REQUIRED_TABLES,
     DatabaseNotInitialized,

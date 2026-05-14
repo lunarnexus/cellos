@@ -1,9 +1,7 @@
 """Execution result persistence service."""
 
 from cellos.db import CellosDatabase
-from cellos.domain.tasks import Task
-from cellos.domain.results import TaskResult
-from cellos.domain.enums import TaskStatus
+from cellos.models import Task, TaskResult, TaskStatus, TaskType
 from cellos.task_actions import parse_create_task_actions_with_errors, task_from_create_action
 
 
@@ -49,10 +47,11 @@ async def save_execution_result(
         for child_id in blocking_task_ids:
             if child_id not in dependencies:
                 dependencies.append(child_id)
+        blocked_status = TaskStatus.NEEDS_APPROVAL if current.task_type == TaskType.RESEARCH else TaskStatus.BLOCKED
         await db.update_task(
             current.model_copy(
                 update={
-                    "status": TaskStatus.BLOCKED,
+                    "status": blocked_status,
                     "dependencies": dependencies,
                 }
             )

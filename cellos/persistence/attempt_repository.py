@@ -6,8 +6,7 @@ from typing import Any
 import aiosqlite
 
 from cellos.persistence.serialization import attempt_row, json_payload
-from cellos.domain.attempts import TaskAttempt, TaskAttemptStatus
-from cellos.domain.time import utc_now
+from cellos.models import TaskAttempt, TaskAttemptStatus, utc_now
 
 
 async def start_task_attempt(

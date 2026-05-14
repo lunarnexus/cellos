@@ -1,12 +1,7 @@
 import pytest
 
 from cellos.db import CellosDatabase, DatabaseNotInitialized
-from cellos.domain.attempts import TaskAttempt, TaskAttemptStatus
-from cellos.domain.attention import AttentionReason
-from cellos.domain.comments import TaskComment
-from cellos.domain.enums import AgentRole, CommentAuthorType, TaskStatus, TaskType
-from cellos.domain.results import ChangeRequestReport, TaskResult
-from cellos.domain.tasks import Task
+from cellos.models import AgentRole, AttentionReason, ChangeRequestReport, CommentAuthorType, Task, TaskAttempt, TaskAttemptStatus, TaskComment, TaskResult, TaskStatus, TaskType
 
 
 @pytest.fixture
@@ -101,7 +96,7 @@ async def test_database_lists_tasks_ready_for_planning(tmp_path):
 
     tasks = await db.list_tasks_ready_for_planning()
 
-    assert [task.id for task in tasks] == ["task-draft", "task-revised", "task-approved"]
+    assert [task.id for task in tasks] == ["task-draft", "task-revised"]
     await db.close()
 
 
@@ -128,7 +123,7 @@ async def test_database_does_not_plan_tasks_with_incomplete_dependencies(tmp_pat
     await db.create_task(blocked_draft)
 
     tasks = await db.list_tasks_ready_for_planning()
-    assert [task.id for task in tasks] == ["task-dep"]
+    assert [task.id for task in tasks] == []
 
     await db.save_task_result(TaskResult(task_id="task-dep", success=True, summary="research done"))
     tasks = await db.list_tasks_ready_for_planning()

@@ -8,8 +8,7 @@ from uuid import uuid4
 
 from pydantic import BaseModel, Field, ValidationError
 
-from cellos.domain.enums import AgentRole, TaskStatus, TaskType
-from cellos.domain.tasks import Task
+from cellos.models import AgentRole, Task, TaskStatus, TaskType
 
 
 class CreateTaskAction(BaseModel):

@@ -6,7 +6,7 @@ from typing import Any
 import aiosqlite
 
 from cellos.persistence.serialization import json_payload
-from cellos.domain.time import utc_now
+from cellos.models import utc_now
 
 
 async def record_task_event(

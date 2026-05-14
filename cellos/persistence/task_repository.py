@@ -4,10 +4,7 @@ from typing import Any
 
 import json
 
-from cellos.domain.conversation import ConversationMessage
-from cellos.domain.tasks import Task
-from cellos.domain.enums import TaskStatus
-from cellos.domain.time import utc_now
+from cellos.models import ConversationMessage, Task, TaskStatus, utc_now
 from cellos.persistence.serialization import task_row
 
 
@@ -86,8 +83,7 @@ async def list_tasks_ready_for_planning(conn, limit: int | None = None) -> list[
         SELECT t.payload
         FROM tasks t
         WHERE (t.status = ?
-           OR (t.status = ? AND t.attention_required = 1)
-           OR t.status = ?)
+           OR (t.status = ? AND t.attention_required = 1))
           AND NOT EXISTS (
             SELECT 1
             FROM task_dependencies d
@@ -96,7 +92,7 @@ async def list_tasks_ready_for_planning(conn, limit: int | None = None) -> list[
           )
         ORDER BY t.created_at
     """
-    params: list[Any] = [TaskStatus.DRAFT.value, TaskStatus.NEEDS_APPROVAL.value, TaskStatus.APPROVED.value, TaskStatus.DONE.value]
+    params: list[Any] = [TaskStatus.DRAFT.value, TaskStatus.NEEDS_APPROVAL.value, TaskStatus.DONE.value]
     if limit is not None:
         sql += " LIMIT ?"
         params.append(limit)

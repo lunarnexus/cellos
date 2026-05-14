@@ -6,9 +6,7 @@ from typing import Literal
 from cellos.acp_worker import AcpWorker
 from cellos.config import AgentConfig, CellosConfig
 from cellos.db import CellosDatabase
-from cellos.domain.tasks import Task
-from cellos.domain.attempts import TaskAttempt, TaskAttemptStatus
-from cellos.domain.results import TaskResult
+from cellos.models import Task, TaskAttempt, TaskAttemptStatus, TaskResult
 from cellos.prompt_builder import build_task_prompt
 from cellos.services.execution_service import save_execution_result
 from cellos.services.planning_service import save_planning_result
@@ -59,8 +57,8 @@ class WorkerService:
                 summary=f"Task failed: {exc}",
                 error=str(exc),
             )
-        if mode == "planning" and result.success:
-            await save_planning_result(self.db, task, result)
+        if mode == "planning":
+            await self._save_planning_outcome(task, result)
         else:
             await save_execution_result(
                 self.db,
@@ -77,7 +75,6 @@ class WorkerService:
                 result.error,
             )
 
-        # Write attempt details to per-task log file
         log_path.parent.mkdir(parents=True, exist_ok=True)
         with log_path.open("a") as f:
             f.write(f"=== Attempt #{attempt.id} ({mode}) ===\n")
@@ -87,6 +84,14 @@ class WorkerService:
             if result.error:
                 f.write(f"Error: {result.error}\n")
             f.write("\n")
+
+    async def _save_planning_outcome(self, task: Task, result: TaskResult) -> None:
+        if result.success:
+            await save_planning_result(self.db, task, result)
+            return
+        await self.db.save_task_result(result)
+        await self.db.record_task_event(task.id, "planning_failed", result.summary)
+        await self.db.conn.commit()
 
     def _build_worker(self, agent_id: str, agent: AgentConfig):
         if self.config.worker.backend == "acp":

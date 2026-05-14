@@ -1,9 +1,7 @@
 import pytest
 
 from cellos.db import CellosDatabase
-from cellos.domain.attention import AttentionReason
-from cellos.domain.enums import AgentRole, TaskStatus
-from cellos.domain.tasks import Task
+from cellos.models import AgentRole, AttentionReason, Task, TaskStatus
 from cellos.services.scheduler import SchedulerService
 
 
@@ -58,10 +56,10 @@ async def test_scheduler_service_prioritizes_planning_then_attention_then_execut
         worker_spawner=spawner,
     ).run_once()
 
-    assert sorted([task.id for task in result.planning_tasks]) == ["execute", "plan"]
+    assert [task.id for task in result.planning_tasks] == ["plan"]
     assert [task.id for task in result.attention_tasks] == ["attention"]
-    assert result.execution_tasks == []
-    assert sorted(spawner.spawned) == [("execute", "planning"), ("plan", "planning")]
+    assert [task.id for task in result.execution_tasks] == ["execute"]
+    assert sorted(spawner.spawned) == [("execute", "execution"), ("plan", "planning")]
     assert (await db.get_task("plan")).status == TaskStatus.IN_PROGRESS
     assert (await db.get_task("execute")).status == TaskStatus.IN_PROGRESS
     await db.close()

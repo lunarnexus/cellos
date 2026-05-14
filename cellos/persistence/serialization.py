@@ -3,8 +3,7 @@
 import json
 from typing import Any
 
-from cellos.domain.tasks import Task
-from cellos.domain.attempts import TaskAttempt
+from cellos.models import Task, TaskAttempt
 
 
 def json_payload(payload: dict[str, Any]) -> str:

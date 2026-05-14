@@ -1,10 +1,6 @@
 """Task result persistence for CelloS."""
 
-from cellos.domain.attention import AttentionReason
-from cellos.domain.comments import TaskComment
-from cellos.domain.enums import CommentAuthorType, TaskStatus, TaskType
-from cellos.domain.results import TaskResult
-from cellos.domain.tasks import Task
+from cellos.models import AttentionReason, CommentAuthorType, Task, TaskComment, TaskResult, TaskStatus, TaskType
 from cellos.persistence.serialization import json_payload
 
 

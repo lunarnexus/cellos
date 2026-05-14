@@ -3,7 +3,7 @@
 from rich.console import Console
 from rich.table import Table
 
-from cellos.domain.tasks import Task
+from cellos.models import Task
 
 console = Console()
 
@@ -68,6 +68,22 @@ def detail_formatter(
     if task.dependencies:
         console.print(f"Dependencies: {', '.join(task.dependencies)}")
     console.print("")
+    if task.details:
+        console.print("[bold]Details[/bold]")
+        console.print(task.details)
+        console.print("")
+    if task.success_criteria:
+        console.print("[bold]Success Criteria[/bold]")
+        console.print(task.success_criteria)
+        console.print("")
+    if task.failure_criteria:
+        console.print("[bold]Failure Criteria[/bold]")
+        console.print(task.failure_criteria)
+        console.print("")
+    if task.plan:
+        console.print("[bold]Plan[/bold]")
+        console.print(task.plan)
+        console.print("")
     console.print("[bold]Prompt[/bold]")
     console.print(task.prompt or "")
     if task.conversation:

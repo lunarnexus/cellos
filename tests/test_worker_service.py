@@ -5,8 +5,7 @@ import pytest
 
 from cellos.config import load_config
 from cellos.db import CellosDatabase
-from cellos.domain.enums import AgentRole, TaskStatus
-from cellos.domain.tasks import Task
+from cellos.models import AgentRole, Task, TaskStatus
 from cellos.services.worker_service import WorkerService
 from tests.test_cli import MINIMAL_PROMPT_PROFILES
 
@@ -50,6 +49,7 @@ async def test_worker_service_runs_planning_worker_and_records_attempt(tmp_path)
     attempts = await db.list_task_attempts("plan")
     events = await db.list_task_events(task_id="plan")
     assert saved.status == TaskStatus.NEEDS_APPROVAL
+    assert saved.plan == "fake ACP completed task"
     assert saved.prompt == "fake ACP completed task"
     assert len(attempts) == 1
     assert attempts[0]["mode"] == "planning"
@@ -79,4 +79,33 @@ async def test_worker_service_runs_execution_worker_and_records_attempt(tmp_path
     assert len(attempts) == 1
     assert attempts[0]["mode"] == "execution"
     assert attempts[0]["status"] == "succeeded"
+    await db.close()
+
+
+@pytest.mark.anyio
+async def test_worker_service_records_failed_planning_as_failed_task(tmp_path):
+    class ExplodingWorker:
+        async def run_task(self, task, cwd, mode="execution", prompt_text=None):
+            raise RuntimeError("planner exploded")
+
+    class FailingWorkerService(WorkerService):
+        def _build_worker(self, agent_id, agent):
+            return ExplodingWorker()
+
+    config_path = tmp_path / ".cellos" / "config.json"
+    write_fake_config(config_path)
+    config = load_config(config_path)
+    db = CellosDatabase(tmp_path / "cellos.sqlite")
+    await db.connect()
+    await db.init_db()
+    await db.create_task(Task(id="plan", title="Plan", role=AgentRole.COORDINATOR, status=TaskStatus.IN_PROGRESS))
+
+    await FailingWorkerService(db=db, config=config, workdir=tmp_path).run_task_worker("plan", "planning")
+
+    saved = await db.get_task("plan")
+    events = await db.list_task_events(task_id="plan")
+    assert saved.status == TaskStatus.FAILED
+    assert saved.result is not None
+    assert saved.result.error == "planner exploded"
+    assert any(event["event_type"] == "planning_failed" for event in events)
     await db.close()

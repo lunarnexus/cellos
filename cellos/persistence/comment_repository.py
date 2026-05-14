@@ -6,7 +6,7 @@ from typing import Any
 import aiosqlite
 
 from cellos.persistence.serialization import json_payload
-from cellos.domain.comments import TaskComment
+from cellos.models import TaskComment
 
 
 async def add_task_comment(

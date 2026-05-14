@@ -6,9 +6,7 @@ from typing import Protocol
 
 from cellos.config import CellosConfig
 from cellos.db import CellosDatabase
-from cellos.domain.tasks import Task
-from cellos.domain.results import TaskResult
-from cellos.domain.enums import TaskStatus
+from cellos.models import Task, TaskResult, TaskStatus
 from cellos.services.worker_spawner import WorkerMode, WorkerSpawner
 
 
