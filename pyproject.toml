@@ -1,38 +1,29 @@
 [build-system]
-requires = ["setuptools>=68.0", "wheel"]
+requires = ["setuptools>=61", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "cellos"
 version = "0.1.0"
-description = "Human-governed AI orchestration framework"
-readme = "docs/README.md"
-requires-python = ">=3.11"
+description = "Human-governed AI orchestration system with deterministic task scheduling and agent routing"
+readme = "README.md"
+requires-python = ">=3.12"
 license = {text = "MIT"}
-authors = [
-    {name = "lunarnexus"}
-]
-classifiers = [
-    "Development Status :: 3 - Alpha",
-    "Intended Audience :: Developers",
-    "License :: OSI Approved :: MIT License",
-    "Programming Language :: Python :: 3",
-    "Programming Language :: Python :: 3.11",
-    "Programming Language :: Python :: 3.12",
-]
-
 dependencies = [
     "aiosqlite>=0.20",
     "pydantic>=2.0",
     "click>=8.0",
-    "rich>=13.0",
+    "rich",
 ]
 
 [project.optional-dependencies]
-dev = ["anyio", "pytest"]
+dev = [
+    "pytest",
+    "pytest-asyncio",
+]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
 
 [project.scripts]
 cellos = "cellos.cli:main"
-
-[tool.setuptools.packages.find]
-include = ["cellos*"]

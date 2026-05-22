@@ -1,27 +1,19 @@
-"""Canonical CelloS schema and type models.
+"""CelloS domain models - enums, DTOs, and core entities."""
 
-This module is the authoritative home for CelloS enums, DTOs, and Pydantic
-models. Legacy `cellos.domain.*` modules remain as compatibility shims.
-"""
+from __future__ import annotations
 
-from datetime import datetime, timezone
+import uuid
+from datetime import datetime
 from enum import StrEnum
-from typing import Any, Literal
-from uuid import uuid4
+from typing import Any, Literal, Optional
 
 from pydantic import BaseModel, Field, model_validator
 
 
-# ---- time helpers ----
-
-def utc_now() -> datetime:
-    """Return a timezone-aware UTC timestamp."""
-    return datetime.now(timezone.utc)
-
-
-# ---- enums ----
+# ─── Enums ──────────────────────────────────────────────────────────────────
 
 class AgentRole(StrEnum):
+    """Agent roles with inferred task types."""
     COORDINATOR = "coordinator"
     RESEARCHER = "researcher"
     ARCHITECT = "architect"
@@ -30,18 +22,20 @@ class AgentRole(StrEnum):
 
 
 class TaskStatus(StrEnum):
+    """Task lifecycle states with transition rules."""
     DRAFT = "draft"
     NEEDS_APPROVAL = "needs_approval"
     APPROVED = "approved"
-    BLOCKED = "blocked"
     IN_PROGRESS = "in_progress"
     DONE = "done"
+    BLOCKED = "blocked"
     FAILED = "failed"
     CHANGE_REQUESTED = "change_requested"
     CANCELLED = "cancelled"
 
 
 class TaskType(StrEnum):
+    """Task classification types."""
     PROPOSAL = "proposal"
     RESEARCH = "research"
     ARCHITECTURE = "architecture"
@@ -49,198 +43,271 @@ class TaskType(StrEnum):
     VERIFICATION = "verification"
 
 
+# Role → task_type inference map
+ROLE_TO_TASK_TYPE: dict[AgentRole, TaskType] = {
+    AgentRole.COORDINATOR: TaskType.PROPOSAL,
+    AgentRole.RESEARCHER: TaskType.RESEARCH,
+    AgentRole.ARCHITECT: TaskType.ARCHITECTURE,
+    AgentRole.ENGINEER: TaskType.IMPLEMENTATION,
+    AgentRole.TESTER: TaskType.VERIFICATION,
+}
+
+
 class AttentionReason(StrEnum):
+    """Reasons for human attention on a task."""
     NEW_TASK = "new_task"
     HUMAN_CHANGED_TASK = "human_changed_task"
-    HUMAN_COMMENTED = "human_commented"
-    APPROVED = "approved"
     DEPENDENCY_DONE = "dependency_done"
     CHILD_CHANGE_REQUESTED = "child_change_requested"
-    STALE_IN_PROGRESS = "stale_in_progress"
-    EXTERNAL_STATE_CHANGED = "external_state_changed"
+    CHILD_FAILED = "child_failed"
+    APPROVED = "approved"
+    EXECUTION_FAILED = "execution_failed"
+    HUMAN_COMMENTED = "human_commented"
+    PLANNING_COMPLETE = "planning_complete"
 
 
 class WorkerStatus(StrEnum):
-    IDLE = "idle"
-    BUSY = "busy"
-    STALE = "stale"
-    STOPPED = "stopped"
+    """Worker subprocess lifecycle states."""
+    PENDING = "pending"
+    RUNNING = "running"
+    COMPLETED = "completed"
     FAILED = "failed"
 
 
 class TaskAttemptStatus(StrEnum):
+    """Task attempt execution states."""
     STARTED = "started"
     SUCCEEDED = "succeeded"
     FAILED = "failed"
-    CANCELLED = "cancelled"
 
 
 class CommentAuthorType(StrEnum):
+    """Comment author classification."""
     HUMAN = "human"
-    AGENT = "agent"
     SYSTEM = "system"
 
 
-# ---- supporting DTOs ----
+# ─── DTOs ──────────────────────────────────────────────────────────────────
 
 class AttentionMetadata(BaseModel):
+    """Tracks whether a task requires human attention and why."""
     required: bool = False
-    reason: AttentionReason | None = None
-    detail: str = ""
-    since: datetime | None = None
+    reason: Optional[AttentionReason] = None
+    detail: Optional[str] = None
+    timestamp: Optional[datetime] = Field(
+        default=None, serialization_alias="timestamp"
+    )
 
     @classmethod
-    def required_attention(cls, reason: AttentionReason, detail: str = "") -> "AttentionMetadata":
-        return cls(required=True, reason=reason, detail=detail, since=utc_now())
-
-    def cleared(self) -> "AttentionMetadata":
-        return AttentionMetadata()
+    def required_attention(cls, reason: AttentionReason, detail: str | None = None) -> AttentionMetadata:
+        """Create attention metadata that signals human review is needed."""
+        return cls(
+            required=True,
+            reason=reason,
+            detail=detail,
+            timestamp=datetime.now(),
+        )
 
 
 class ProcessingMetadata(BaseModel):
-    last_processed_at: datetime | None = None
-    last_human_change_at: datetime | None = None
-    last_ai_change_at: datetime | None = None
-    last_observed_external_change_at: datetime | None = None
-    last_processed_external_change_at: datetime | None = None
-    last_processed_input_hash: str | None = None
-
-
-class ChangeRequestReport(BaseModel):
-    blocker_summary: str
-    why_current_task_cannot_be_completed: str
-    evidence: str = ""
-    recommended_next_action: str = ""
-    human_approval_needed: bool = False
-
-
-class TaskResult(BaseModel):
-    task_id: str
-    success: bool
-    summary: str
-    output: dict[str, Any] = Field(default_factory=dict)
-    error: str | None = None
-    change_request: ChangeRequestReport | None = None
-    created_at: datetime = Field(default_factory=utc_now)
-
-
-class ConversationMessage(BaseModel):
-    """A single message in a task's conversation log."""
-
-    id: str = Field(default_factory=lambda: uuid4().hex[:8])
-    author: Literal["human", "agent", "system"]
-    message: str
-    created_at: datetime = Field(default_factory=utc_now)
-
-
-class TaskComment(BaseModel):
-    id: int | None = None
-    task_id: str
-    author_type: CommentAuthorType
-    author_id: str = ""
-    message: str
-    created_at: datetime = Field(default_factory=utc_now)
-    metadata: dict[str, Any] = Field(default_factory=dict)
-
-
-class TaskAttempt(BaseModel):
-    id: int | None = None
-    task_id: str
-    mode: str
-    agent_id: str
-    connector: str
-    status: TaskAttemptStatus = TaskAttemptStatus.STARTED
-    prompt_snapshot: str = ""
-    result_summary: str = ""
-    result_payload: dict[str, Any] = Field(default_factory=dict)
-    error: str | None = None
-    log_path: str = ""
-    started_at: datetime = Field(default_factory=utc_now)
-    completed_at: datetime | None = None
-    metadata: dict[str, Any] = Field(default_factory=dict)
+    """Sync and change detection metadata for scheduler coordination."""
+    last_processed_at: Optional[datetime] = None
+    last_human_change_at: Optional[datetime] = None
+    last_ai_change_at: Optional[datetime] = None
+    input_hash: Optional[str] = None
 
 
 class TaskDependency(BaseModel):
+    """Dependency relationship between tasks."""
     task_id: str
-    depends_on_task_id: str
+    status_satisfied: bool = False
 
+
+class ConversationMessage(BaseModel):
+    """Structured message in a task's conversation history."""
+    author_type: Literal["human", "agent", "system"]
+    content: str
+    timestamp: datetime
+
+
+class TaskComment(BaseModel):
+    """Human or system comment on a task."""
+    id: str = Field(default_factory=lambda: uuid.uuid4().hex[:12])
+    task_id: str
+    author_type: CommentAuthorType
+    author_id: Optional[str] = None
+    content: str
+    timestamp: datetime = Field(default_factory=datetime.now)
+
+
+class TaskResult(BaseModel):
+    """Execution result from an agent."""
+    success: bool
+    summary: str
+    output: Optional[str] = None
+    timestamp: datetime = Field(default_factory=datetime.now)
+
+
+class ChangeRequestReport(BaseModel):
+    """Child task requesting changes to parent plan."""
+    reason: str
+    requested_changes: list[str]
+    timestamp: datetime = Field(default_factory=datetime.now)
+
+
+# ─── Core Entities ─────────────────────────────────────────────────────────
 
 class Task(BaseModel):
-    id: str
+    """Central entity representing a unit of work in the orchestration system.
+    
+    Tasks flow through states: draft → needs_approval → approved → in_progress → done/failed
+    with attention signals for human review points.
+    """
+    id: str = Field(default_factory=lambda: uuid.uuid4().hex[:12])
     title: str
-    details: str = ""
-    success_criteria: str = ""
-    failure_criteria: str = ""
-    role: AgentRole
+    details: Optional[str] = None
     status: TaskStatus = TaskStatus.DRAFT
-    task_type: TaskType = TaskType.PROPOSAL
-    plan: str = ""
-    prompt: str = ""
-    conversation: list[ConversationMessage] = Field(default_factory=list)
-    parent_id: str | None = None
-    dependencies: list[str] = Field(default_factory=list)
+    role: AgentRole = AgentRole.ENGINEER
+    task_type: TaskType = Field(default_factory=lambda: ROLE_TO_TASK_TYPE[AgentRole.ENGINEER])
+    plan: Optional[str] = None
+    prompt_text: Optional[str] = None
+    
+    parent_id: Optional[str] = None
+    dependencies: list[TaskDependency] = Field(default_factory=list)
+    agent_id: Optional[str] = None
+    
+    success_criteria: Optional[str] = None
+    failure_criteria: Optional[str] = None
+    
     attention: AttentionMetadata = Field(default_factory=AttentionMetadata)
     processing: ProcessingMetadata = Field(default_factory=ProcessingMetadata)
-    assigned_worker_id: str | None = None
-    agent_id: str | None = None
-    timeout_seconds: int | None = None
-    created_at: datetime = Field(default_factory=utc_now)
-    updated_at: datetime = Field(default_factory=utc_now)
-    started_at: datetime | None = None
-    completed_at: datetime | None = None
-    result: TaskResult | None = None
-    metadata: dict[str, Any] = Field(default_factory=dict)
+    conversation: list[ConversationMessage] = Field(default_factory=list)
+    result: Optional[TaskResult] = None
+    comments: list[TaskComment] = Field(default_factory=list)
+    
+    created_at: datetime = Field(default_factory=datetime.now)
+    updated_at: datetime = Field(default_factory=datetime.now)
 
     @model_validator(mode="before")
     @classmethod
-    def migrate_proposal_to_prompt(cls, data: Any) -> Any:
-        if not isinstance(data, dict):
-            return data
-        migrated = dict(data)
-        if "prompt" not in migrated and "proposal" in migrated:
-            migrated["prompt"] = migrated.pop("proposal")
-        if "details" not in migrated and "description" in migrated:
-            migrated["details"] = migrated["description"]
-        if "failure_criteria" not in migrated and "constraints" in migrated:
-            migrated["failure_criteria"] = migrated["constraints"]
-        return migrated
+    def migrate_legacy_fields(cls, data: Any) -> Any:
+        """Backward-compat migration for legacy field names from Cellos/Cellos2."""
+        if isinstance(data, dict):
+            # proposal → prompt_text
+            if "proposal" in data and "prompt_text" not in data:
+                data["prompt_text"] = data.pop("proposal")
+            # description → details
+            if "description" in data and "details" not in data:
+                data["details"] = data.pop("description")
+            # constraints → failure_criteria
+            if "constraints" in data and "failure_criteria" not in data:
+                data["failure_criteria"] = data.pop("constraints")
+        return data
 
-    def requires_attention(self, reason: AttentionReason, detail: str = "") -> "Task":
-        return self.model_copy(update={"attention": AttentionMetadata.required_attention(reason, detail)})
+    @model_validator(mode="before")
+    @classmethod
+    def infer_task_type_from_role(cls, data: Any) -> Any:
+        """Infer task_type from role if not explicitly provided."""
+        if isinstance(data, dict):
+            role = data.get("role")
+            task_type = data.get("task_type")
+            if role and not task_type:
+                # Handle both string and enum values
+                try:
+                    role_enum = AgentRole(role)
+                    data["task_type"] = ROLE_TO_TASK_TYPE[role_enum]
+                except ValueError:
+                    pass
+        return data
 
-    def clear_attention(self) -> "Task":
-        return self.model_copy(update={"attention": self.attention.cleared()})
+    def requires_attention(self, reason: AttentionReason, detail: str | None = None) -> Task:
+        """Return a copy of this task with attention required.
+        
+        Args:
+            reason: Why human attention is needed.
+            detail: Optional additional context for the alert.
+            
+        Returns:
+            New Task instance with attention metadata set.
+        """
+        return self.model_copy(
+            update={
+                "attention": AttentionMetadata.required_attention(reason, detail),
+                "updated_at": datetime.now(),
+            }
+        )
+
+    def clear_attention(self) -> Task:
+        """Return a copy of this task with attention cleared.
+        
+        Returns:
+            New Task instance with attention metadata reset to defaults.
+        """
+        return self.model_copy(
+            update={
+                "attention": AttentionMetadata(),
+                "updated_at": datetime.now(),
+            }
+        )
+
+
+class TaskAttempt(BaseModel):
+    """Record of a single execution attempt on a task."""
+    id: str = Field(default_factory=lambda: uuid.uuid4().hex[:12])
+    task_id: str
+    status: TaskAttemptStatus = TaskAttemptStatus.STARTED
+    mode: Optional[str] = None  # "planning" or "execution"
+    agent_id: Optional[str] = None
+    result_summary: Optional[str] = None
+    error_message: Optional[str] = None
+    started_at: datetime = Field(default_factory=datetime.now)
+    completed_at: Optional[datetime] = None
+
+
+class TaskEvent(BaseModel):
+    """Audit trail event for task lifecycle tracking."""
+    id: str = Field(default_factory=lambda: uuid.uuid4().hex[:12])
+    task_id: str
+    event_type: str  # e.g., "status_changed", "planning_saved"
+    message: str
+    timestamp: datetime = Field(default_factory=datetime.now)
 
 
 class Worker(BaseModel):
-    id: str
-    role: AgentRole
-    status: WorkerStatus = WorkerStatus.IDLE
-    backend: str
-    spawn_command: list[str]
-    current_task_id: str | None = None
-    created_at: datetime = Field(default_factory=utc_now)
-    last_seen_at: datetime = Field(default_factory=utc_now)
-    metadata: dict[str, Any] = Field(default_factory=dict)
+    """Tracks a worker subprocess executing a task."""
+    id: str = Field(default_factory=lambda: uuid.uuid4().hex[:12])
+    task_id: str
+    mode: str  # "planning" or "execution"
+    status: WorkerStatus = WorkerStatus.PENDING
+    pid: Optional[int] = None
+    log_path: Optional[str] = None
+    started_at: datetime = Field(default_factory=datetime.now)
+    completed_at: Optional[datetime] = None
 
 
 __all__ = [
-    "utc_now",
+    # Enums
     "AgentRole",
-    "TaskStatus",
+    "TaskStatus", 
     "TaskType",
     "AttentionReason",
     "WorkerStatus",
     "TaskAttemptStatus",
     "CommentAuthorType",
+    "ROLE_TO_TASK_TYPE",
+    
+    # DTOs
     "AttentionMetadata",
     "ProcessingMetadata",
-    "ChangeRequestReport",
-    "TaskResult",
+    "TaskDependency",
     "ConversationMessage",
     "TaskComment",
-    "TaskAttempt",
-    "TaskDependency",
+    "TaskResult",
+    "ChangeRequestReport",
+    
+    # Core entities
     "Task",
+    "TaskAttempt",
+    "TaskEvent",
     "Worker",
 ]

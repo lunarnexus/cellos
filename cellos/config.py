@@ -1,201 +1,189 @@
-"""CelloS runtime configuration."""
+"""Configuration loading, validation, and defaults for CelloS."""
+
+from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any, Optional
 
-from pydantic import BaseModel, Field, ValidationError
-
-
-DEFAULT_CONFIG_PATH = Path.home() / ".cellos" / "config.json"
-DEFAULT_AGENT_CATALOG_PATH = Path.home() / ".cellos" / "agentcatalog.json"
-DEFAULT_PROMPT_PROFILES_PATH = Path.home() / ".cellos" / "promptprofiles.json"
-EXAMPLE_CONFIG_PATH = Path(__file__).resolve().parent.parent / "cellos.config.example.json"
-EXAMPLE_AGENT_CATALOG_PATH = Path(__file__).resolve().parent.parent / "agentcatalog.example.json"
-EXAMPLE_PROMPT_PROFILES_PATH = Path(__file__).resolve().parent.parent / "promptprofiles.example.json"
+from pydantic import BaseModel, Field
 
 
-class ConfigError(RuntimeError):
-    pass
+# ─── Exceptions ──────────────────────────────────────────────────────────────
 
+class ConfigError(Exception):
+    """Raised when config is invalid or missing."""
+
+
+# ─── Sub-configs ─────────────────────────────────────────────────────────────
 
 class SchedulerConfig(BaseModel):
-    concurrent_tasks: int
-    worker_timeout_seconds: int
+    """Scheduler daemon settings."""
+    concurrent_tasks: int = 4
+    heartbeat_interval_seconds: float = 5.0
 
 
 class WorkerConfig(BaseModel):
-    backend: Literal["acp"]
-    debug_log_path: str | None = None
-    debug_logging: bool = True
+    """Worker execution settings."""
+    backend: str = "acp"
+    timeout_seconds: int = 300
 
 
-class AgentConfig(BaseModel):
-    connector: Literal["fake_acp", "opencode"]
-    description: str = ""
+class AgentCatalogEntry(BaseModel):
+    """Single agent definition in the catalog."""
+    connector: str  # e.g., "opencode", "fake_acp"
+    model: Optional[str] = None
     options: dict[str, Any] = Field(default_factory=dict)
 
 
-class AgentCatalogConfig(BaseModel):
-    available: dict[str, AgentConfig]
+# ─── Prompt Profile Configs ──────────────────────────────────────────────────
 
-
-class AgentRuntimeConfig(BaseModel):
-    default: str
-    catalog_path: str = "agentcatalog.json"
-
-
-class PromptRuntimeConfig(BaseModel):
-    profiles_path: str = "promptprofiles.json"
-
-
-class ApprovalConfig(BaseModel):
-    preapprove_research_tasks: bool = False
-
-
-class PromptModeProfile(BaseModel):
-    instructions: list[str] = Field(default_factory=list)
+class ModeProfile(BaseModel):
+    """Mode-specific prompt configuration (planning or execution)."""
+    instructions: str
     output_sections: list[str] = Field(default_factory=list)
 
 
 class PromptProfilesConfig(BaseModel):
+    """Externalized prompt profiles loaded from promptprofiles.json."""
     role_instructions: dict[str, str] = Field(default_factory=dict)
-    modes: dict[str, PromptModeProfile] = Field(default_factory=dict)
-    final_instructions: list[str] = Field(default_factory=list)
+    modes: dict[str, ModeProfile] = Field(default_factory=dict)
+    final_instructions: str = ""
 
+
+# ─── Approval Config ─────────────────────────────────────────────────────────
+
+class ApprovalConfig(BaseModel):
+    """Approval gate settings."""
+    preapprove_research_tasks: bool = False
+
+
+# ─── Agent Runtime (resolved from catalog + main config) ─────────────────────
+
+class AgentRuntimeConfig(BaseModel):
+    """Resolved agent configuration for runtime use."""
+    default_agent_id: str = "engineer"
+    catalog_path: Optional[str] = None
+
+
+class PromptRuntimeConfig(BaseModel):
+    """Path to prompt profiles file."""
+    profiles_path: Optional[str] = None
+
+
+# ─── Top-level Config ────────────────────────────────────────────────────────
 
 class CellosConfig(BaseModel):
-    scheduler: SchedulerConfig
-    worker: WorkerConfig
-    agents: AgentRuntimeConfig
+    """Top-level configuration combining all config sources."""
+    scheduler: SchedulerConfig = Field(default_factory=SchedulerConfig)
+    worker: WorkerConfig = Field(default_factory=WorkerConfig)
+    agents: AgentRuntimeConfig = Field(default_factory=AgentRuntimeConfig)
     approvals: ApprovalConfig = Field(default_factory=ApprovalConfig)
     prompts: PromptRuntimeConfig = Field(default_factory=PromptRuntimeConfig)
-    agent_catalog: AgentCatalogConfig = Field(default_factory=lambda: AgentCatalogConfig(available={}))
+
+    # Resolved at load time from separate files
+    agent_catalog: dict[str, AgentCatalogEntry] = Field(default_factory=dict)
     prompt_profiles: PromptProfilesConfig = Field(default_factory=PromptProfilesConfig)
 
-    def get_agent(self, agent_id: str | None = None) -> tuple[str, AgentConfig]:
-        resolved_agent_id = agent_id or self.agents.default
-        try:
-            return resolved_agent_id, self.agent_catalog.available[resolved_agent_id]
-        except KeyError as exc:
-            if agent_id is None:
-                raise ValueError(
-                    f"Default agent is not in the available agent catalog: {self.agents.default}"
-                ) from exc
-            raise ValueError(
-                f"Task agent is not in the available agent catalog: {resolved_agent_id}"
-            ) from exc
-
-    def get_default_agent(self) -> AgentConfig:
-        _, agent = self.get_agent()
-        return agent
+    def get_agent(self, agent_id: str | None = None) -> Optional[AgentCatalogEntry]:
+        """Resolve an agent from the catalog by ID or default."""
+        aid = agent_id or self.agents.default_agent_id
+        return self.agent_catalog.get(aid)
 
 
-def load_config(path: str | Path = DEFAULT_CONFIG_PATH) -> CellosConfig:
-    config_path = Path(path).expanduser()
-    if not config_path.exists():
-        raise ConfigError(
-            f"Missing config file: {config_path}. "
-            "Run `cellos init` or copy cellos.config.example.json to ~/.cellos/config.json."
-        )
+# ─── Path resolution helpers ─────────────────────────────────────────────────
+
+def _resolve_path(config_dir: str, relative_or_absolute: Optional[str]) -> Optional[Path]:
+    """Resolve a path that may be relative to config dir or absolute."""
+    if not relative_or_absolute:
+        return None
+    p = Path(relative_or_absolute)
+    if p.is_absolute():
+        return p
+    return Path(config_dir) / p
+
+
+# ─── Load functions ──────────────────────────────────────────────────────────
+
+def _load_json(path: Path) -> dict[str, Any]:
+    """Load and parse a JSON file."""
     try:
-        payload: dict[str, Any] = json.loads(config_path.read_text())
-    except json.JSONDecodeError as exc:
-        raise ConfigError(f"Invalid JSON in config file {config_path}: {exc}") from exc
-    try:
-        config = CellosConfig.model_validate(payload)
-    except ValidationError as exc:
-        raise ConfigError(f"Invalid config file {config_path}: {exc}") from exc
-    catalog_path = resolve_agent_catalog_path(config.agents.catalog_path, config_path)
-    catalog = load_agent_catalog(catalog_path)
-    prompt_profiles_path = resolve_prompt_profiles_path(config.prompts.profiles_path, config_path)
-    prompt_profiles = load_prompt_profiles(prompt_profiles_path)
-    return config.model_copy(update={"agent_catalog": catalog, "prompt_profiles": prompt_profiles})
+        with open(path, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except FileNotFoundError:
+        raise ConfigError(f"Config file not found: {path}")
+    except json.JSONDecodeError as e:
+        raise ConfigError(f"Invalid JSON in {path}: {e}")
 
 
-def load_agent_catalog(path: str | Path = DEFAULT_AGENT_CATALOG_PATH) -> AgentCatalogConfig:
-    catalog_path = Path(path).expanduser()
-    if not catalog_path.exists():
-        raise ConfigError(
-            f"Missing agent catalog file: {catalog_path}. "
-            "Run `cellos init` or copy agentcatalog.example.json to ~/.cellos/agentcatalog.json."
-        )
-    try:
-        payload: dict[str, Any] = json.loads(catalog_path.read_text())
-    except json.JSONDecodeError as exc:
-        raise ConfigError(f"Invalid JSON in agent catalog file {catalog_path}: {exc}") from exc
-    try:
-        return AgentCatalogConfig.model_validate(payload)
-    except ValidationError as exc:
-        raise ConfigError(f"Invalid agent catalog file {catalog_path}: {exc}") from exc
+def load_config(config_dir: str) -> CellosConfig:
+    """Load full configuration from three JSON files in the given directory.
+
+    Args:
+        config_dir: Path to directory containing config.json, agentcatalog.json,
+                    and promptprofiles.json.
+
+    Returns:
+        Fully resolved CellosConfig with catalog and profiles loaded.
+
+    Raises:
+        ConfigError: If required files are missing or invalid.
+    """
+    cfg_path = Path(config_dir) / "config.json"
+    raw_main = _load_json(cfg_path)
+
+    # Build base config from main file
+    config = CellosConfig(**raw_main)
+
+    # Load agent catalog (from path in config, or default location)
+    catalog_rel = raw_main.get("agents", {}).get("catalog_path")
+    catalog_file = _resolve_path(config_dir, catalog_rel) or Path(config_dir) / "agentcatalog.json"
+    if catalog_file.exists():
+        raw_catalog = _load_json(catalog_file)
+        config.agent_catalog = {k: AgentCatalogEntry(**v) for k, v in raw_catalog.items()}
+
+    # Load prompt profiles (from path in config, or default location)
+    profiles_rel = raw_main.get("prompts", {}).get("profiles_path")
+    profiles_file = _resolve_path(config_dir, profiles_rel) or Path(config_dir) / "promptprofiles.json"
+    if profiles_file.exists():
+        raw_profiles = _load_json(profiles_file)
+        config.prompt_profiles = PromptProfilesConfig(**raw_profiles)
+
+    return config
 
 
-def load_prompt_profiles(path: str | Path = DEFAULT_PROMPT_PROFILES_PATH) -> PromptProfilesConfig:
-    profiles_path = Path(path).expanduser()
-    if not profiles_path.exists():
-        raise ConfigError(
-            f"Missing prompt profiles file: {profiles_path}. "
-            "Run `cellos init` or copy promptprofiles.example.json to ~/.cellos/promptprofiles.json."
-        )
-    try:
-        payload: dict[str, Any] = json.loads(profiles_path.read_text())
-    except json.JSONDecodeError as exc:
-        raise ConfigError(f"Invalid JSON in prompt profiles file {profiles_path}: {exc}") from exc
-    try:
-        return PromptProfilesConfig.model_validate(payload)
-    except ValidationError as exc:
-        raise ConfigError(f"Invalid prompt profiles file {profiles_path}: {exc}") from exc
+# ─── Init helpers ─────────────────────────────────────────────────────────────
 
+def ensure_config(config_dir: str, overwrite: bool = False) -> Path:
+    """Copy example config files from the package root to the config directory.
 
-def resolve_agent_catalog_path(catalog_path: str | Path, config_path: str | Path) -> Path:
-    path = Path(catalog_path).expanduser()
-    if path.is_absolute():
-        return path
-    return Path(config_path).expanduser().parent / path
+    Args:
+        config_dir: Directory to write config files into. Created if missing.
+        overwrite: If True, replace existing files. If False, skip if present.
 
+    Returns:
+        Path to the created/verified config directory.
+    """
+    import shutil
 
-def resolve_prompt_profiles_path(profiles_path: str | Path, config_path: str | Path) -> Path:
-    path = Path(profiles_path).expanduser()
-    if path.is_absolute():
-        return path
-    return Path(config_path).expanduser().parent / path
+    dest = Path(config_dir)
+    dest.mkdir(parents=True, exist_ok=True)
 
+    # Source: example files in the package root (same level as cellos/ directory)
+    package_root = Path(__file__).resolve().parent.parent
+    copies = {
+        "cellos.config.json.example": "config.json",
+        "agentcatalog.json.example": "agentcatalog.json",
+        "promptprofiles.json.example": "promptprofiles.json",
+    }
 
-def ensure_config(
-    path: str | Path = DEFAULT_CONFIG_PATH,
-    example_path: str | Path = EXAMPLE_CONFIG_PATH,
-    agent_catalog_path: str | Path | None = None,
-    agent_catalog_example_path: str | Path = EXAMPLE_AGENT_CATALOG_PATH,
-    prompt_profiles_path: str | Path | None = None,
-    prompt_profiles_example_path: str | Path = EXAMPLE_PROMPT_PROFILES_PATH,
-    overwrite: bool = False,
-) -> Path:
-    config_path = Path(path).expanduser()
-    source_path = Path(example_path)
-    catalog_path = (
-        Path(agent_catalog_path).expanduser() if agent_catalog_path is not None else config_path.parent / "agentcatalog.json"
-    )
-    profiles_path = (
-        Path(prompt_profiles_path).expanduser()
-        if prompt_profiles_path is not None
-        else config_path.parent / "promptprofiles.json"
-    )
-    catalog_source_path = Path(agent_catalog_example_path)
-    profiles_source_path = Path(prompt_profiles_example_path)
-    if not source_path.exists():
-        raise ConfigError(f"Missing example config file: {source_path}")
-    if not catalog_source_path.exists():
-        raise ConfigError(f"Missing example agent catalog file: {catalog_source_path}")
-    if not profiles_source_path.exists():
-        raise ConfigError(f"Missing example prompt profiles file: {profiles_source_path}")
+    for src_name, dst_name in copies.items():
+        src = package_root / src_name
+        dst = dest / dst_name
+        if not overwrite and dst.exists():
+            continue
+        if not src.exists():
+            raise ConfigError(f"Example config not found: {src}")
+        shutil.copy2(str(src), str(dst))
 
-    config_path.parent.mkdir(parents=True, exist_ok=True)
-    if overwrite or not config_path.exists():
-        config_path.write_text(source_path.read_text())
-    catalog_path.parent.mkdir(parents=True, exist_ok=True)
-    if overwrite or not catalog_path.exists():
-        catalog_path.write_text(catalog_source_path.read_text())
-    profiles_path.parent.mkdir(parents=True, exist_ok=True)
-    if overwrite or not profiles_path.exists():
-        profiles_path.write_text(profiles_source_path.read_text())
-    return config_path
+    return dest

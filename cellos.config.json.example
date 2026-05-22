@@ -1,0 +1,16 @@
+{
+  "scheduler": {
+    "concurrent_tasks": 1,
+    "heartbeat_interval_seconds": 5.0
+  },
+  "worker": {
+    "backend": "acp",
+    "timeout_seconds": 300
+  },
+  "agents": {
+    "default_agent_id": "engineer"
+  },
+  "approvals": {
+    "preapprove_research_tasks": false
+  }
+}

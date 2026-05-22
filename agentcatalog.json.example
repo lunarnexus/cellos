@@ -1,0 +1,17 @@
+{
+  "coordinator": {
+    "connector": "opencode"
+  },
+  "researcher": {
+    "connector": "opencode"
+  },
+  "architect": {
+    "connector": "opencode"
+  },
+  "engineer": {
+    "connector": "opencode"
+  },
+  "tester": {
+    "connector": "opencode"
+  }
+}
