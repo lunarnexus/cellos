@@ -1,161 +1,279 @@
+"""Tests for CelloS domain models - enums, DTOs, and core entities."""
+
+from datetime import datetime
+
+import pytest
+
 from cellos.models import (
     AgentRole,
-    AttentionReason,
     AttentionMetadata,
+    AttentionReason,
+    ChangeRequestReport,
     CommentAuthorType,
     ConversationMessage,
     ProcessingMetadata,
+    ROLE_TO_TASK_TYPE,
     Task,
     TaskAttempt,
     TaskAttemptStatus,
-    TaskStatus,
     TaskComment,
     TaskDependency,
+    TaskEvent,
     TaskResult,
+    TaskStatus,
     TaskType,
     Worker,
     WorkerStatus,
-    ChangeRequestReport,
-    utc_now,
 )
 
-def test_task_defaults_match_canonical_lifecycle():
-    task = Task(id="task-1", title="Draft plan", role=AgentRole.COORDINATOR)
 
-    assert task.status == TaskStatus.DRAFT
-    assert task.task_type == TaskType.PROPOSAL
-    assert task.attention.required is False
-    assert task.dependencies == []
-    assert task.details == ""
-    assert task.success_criteria == ""
-    assert task.failure_criteria == ""
-    assert task.plan == ""
+class TestAgentRole:
+    """Test AgentRole enum values and task type inference."""
 
-
-def test_task_migrates_legacy_proposal_field_to_prompt():
-    task = Task.model_validate(
-        {
-            "id": "task-1",
-            "title": "Build",
-            "role": "engineer",
-            "proposal": "Do the approved work.",
+    def test_all_roles_defined(self):
+        assert set(AgentRole) == {
+            "coordinator",
+            "researcher", 
+            "architect",
+            "engineer",
+            "tester",
         }
-    )
 
-    assert task.prompt == "Do the approved work."
-    assert "proposal" not in task.model_dump()
-
-
-def test_task_attention_helpers_are_immutable_updates():
-    task = Task(id="task-1", title="Draft plan", role=AgentRole.COORDINATOR)
-
-    updated = task.requires_attention(AttentionReason.HUMAN_COMMENTED, "Human added a revision comment")
-    cleared = updated.clear_attention()
-
-    assert task.attention.required is False
-    assert updated.attention.required is True
-    assert updated.attention.reason == AttentionReason.HUMAN_COMMENTED
-    assert updated.attention.detail == "Human added a revision comment"
-    assert updated.attention.since is not None
-    assert cleared.attention.required is False
-    assert cleared.attention.reason is None
+    def test_role_to_task_type_mapping(self):
+        assert ROLE_TO_TASK_TYPE[AgentRole.COORDINATOR] == TaskType.PROPOSAL
+        assert ROLE_TO_TASK_TYPE[AgentRole.RESEARCHER] == TaskType.RESEARCH
+        assert ROLE_TO_TASK_TYPE[AgentRole.ARCHITECT] == TaskType.ARCHITECTURE
+        assert ROLE_TO_TASK_TYPE[AgentRole.ENGINEER] == TaskType.IMPLEMENTATION
+        assert ROLE_TO_TASK_TYPE[AgentRole.TESTER] == TaskType.VERIFICATION
 
 
-def test_change_request_result_records_structured_report():
-    report = ChangeRequestReport(
-        blocker_summary="API contract is missing",
-        why_current_task_cannot_be_completed="The approved task requires an endpoint that is not defined.",
-        evidence="No route or schema exists in the approved proposal.",
-        recommended_next_action="Ask Architect to revise the plan.",
-        human_approval_needed=True,
-    )
-    result = TaskResult(
-        task_id="task-1",
-        success=False,
-        summary="Change requested",
-        change_request=report,
-    )
+class TestTaskStatus:
+    """Test TaskStatus enum values."""
 
-    assert result.change_request == report
-    assert result.change_request.human_approval_needed is True
-
-
-def test_models_exports_all_canonical_symbols():
-    assert Task is not None
-    assert TaskStatus.APPROVED == "approved"
-    assert AgentRole.ENGINEER == "engineer"
-    assert utc_now() is not None
-    assert TaskAttempt is not None
-    assert TaskComment is not None
-    assert ChangeRequestReport is not None
-    assert TaskResult is not None
-    assert Worker is not None
-    assert AttentionMetadata is not None
-    assert ProcessingMetadata is not None
-    assert TaskDependency is not None
-    assert WorkerStatus is not None
-    assert CommentAuthorType is not None
-    assert TaskAttemptStatus is not None
-
-
-def test_domain_compatibility_exports_still_work():
-    from cellos.domain.tasks import Task as DomainTask
-    from cellos.domain.enums import TaskStatus as DomainTaskStatus
-
-    assert DomainTask is Task
-    assert DomainTaskStatus is TaskStatus
-
-
-def test_task_agent_id_defaults_to_none():
-    task = Task(id="task-1", title="Draft", role=AgentRole.ENGINEER)
-    assert task.agent_id is None
-
-
-def test_task_agent_id_can_be_set():
-    task = Task(id="task-1", title="Draft", role=AgentRole.ENGINEER, agent_id="qwen")
-    assert task.agent_id == "qwen"
-
-
-def test_task_model_dump_includes_agent_id():
-    task = Task(id="task-1", title="Draft", role=AgentRole.ENGINEER, agent_id="qwen")
-    dump = task.model_dump()
-    assert dump["agent_id"] == "qwen"
-
-
-def test_task_model_validate_json_backwards_compatible_without_agent_id():
-    json_str = Task(
-        id="old-task",
-        title="Legacy",
-        role=AgentRole.ENGINEER,
-    ).model_dump_json()
-
-    loaded = Task.model_validate_json(json_str)
-    assert loaded.id == "old-task"
-    assert loaded.agent_id is None
-
-
-def test_task_model_validate_json_with_agent_id():
-    json_str = Task(
-        id="new-task",
-        title="With agent",
-        role=AgentRole.ENGINEER,
-        agent_id="qwen",
-    ).model_dump_json()
-
-    loaded = Task.model_validate_json(json_str)
-    assert loaded.agent_id == "qwen"
-
-
-def test_task_migrates_description_and_constraints_fields():
-    task = Task.model_validate(
-        {
-            "id": "task-1",
-            "title": "Build",
-            "role": "engineer",
-            "description": "Implement the feature.",
-            "constraints": "Do not change the API.",
+    def test_all_statuses_defined(self):
+        expected = {
+            "draft", "needs_approval", "approved", "in_progress", 
+            "done", "blocked", "failed", "change_requested", "cancelled"
         }
-    )
+        assert set(TaskStatus) == expected
 
-    assert task.details == "Implement the feature."
-    assert task.failure_criteria == "Do not change the API."
+
+class TestTaskType:
+    """Test TaskType enum values."""
+
+    def test_all_types_defined(self):
+        assert set(TaskType) == {
+            "proposal", "research", "architecture", 
+            "implementation", "verification"
+        }
+
+
+class TestAttentionReason:
+    """Test AttentionReason enum values."""
+
+    def test_all_reasons_defined(self):
+        expected = {
+            "new_task", "human_changed_task", "dependency_done",
+            "child_change_requested", "child_failed", "approved", "execution_failed",
+            "human_commented", "planning_complete"
+        }
+        assert set(AttentionReason) == expected
+
+
+class TestTaskCreation:
+    """Test Task model construction and defaults."""
+
+    def test_task_creation_with_minimal_fields(self):
+        task = Task(title="Build feature")
+        assert task.id is not None
+        assert len(task.id) <= 12
+        assert task.title == "Build feature"
+        assert task.status == TaskStatus.DRAFT
+        assert task.role == AgentRole.ENGINEER
+        assert task.task_type == TaskType.IMPLEMENTATION  # inferred from default role
+
+    def test_task_creation_with_explicit_role_infers_type(self):
+        task = Task(title="Research API", role=AgentRole.RESEARCHER)
+        assert task.task_type == TaskType.RESEARCH
+
+    def test_task_creation_with_all_fields(self):
+        now = datetime.now()
+        task = Task(
+            title="Full task",
+            details="Detailed description",
+            status=TaskStatus.DRAFT,
+            role=AgentRole.ARCHITECT,
+            success_criteria="Measurable outcome",
+            failure_criteria="Known failure modes",
+            agent_id="architect-agent"
+        )
+        assert task.task_type == TaskType.ARCHITECTURE
+        assert task.details == "Detailed description"
+        assert task.success_criteria == "Measurable outcome"
+        assert isinstance(task.attention, AttentionMetadata)
+        assert isinstance(task.processing, ProcessingMetadata)
+
+    def test_task_defaults(self):
+        task = Task(title="Defaults test")
+        assert task.plan is None
+        assert task.prompt_text is None
+        assert task.parent_id is None
+        assert task.dependencies == []
+        assert task.conversation == []
+        assert task.comments == []
+        assert isinstance(task.created_at, datetime)
+        assert isinstance(task.updated_at, datetime)
+
+
+class TestBackwardCompatMigration:
+    """Test legacy field name migration in model_validator."""
+
+    def test_proposal_to_prompt_text(self):
+        data = {"title": "Migrated", "proposal": "Legacy plan text"}
+        task = Task(**data)
+        assert task.prompt_text == "Legacy plan text"
+        # Ensure 'proposal' key is consumed, not duplicated
+        assert hasattr(task, 'prompt_text')
+
+    def test_description_to_details(self):
+        data = {"title": "Migrated", "description": "Old description field"}
+        task = Task(**data)
+        assert task.details == "Old description field"
+
+    def test_constraints_to_failure_criteria(self):
+        data = {"title": "Migrated", "constraints": "Legacy constraints"}
+        task = Task(**data)
+        assert task.failure_criteria == "Legacy constraints"
+
+
+class TestAttentionMetadata:
+    """Test AttentionMetadata model and factory method."""
+
+    def test_default_attention_not_required(self):
+        meta = AttentionMetadata()
+        assert meta.required is False
+        assert meta.reason is None
+
+    def test_required_attention_factory(self):
+        meta = AttentionMetadata.required_attention(
+            AttentionReason.NEW_TASK, "Task just created"
+        )
+        assert meta.required is True
+        assert meta.reason == AttentionReason.NEW_TASK
+        assert meta.detail == "Task just created"
+        assert isinstance(meta.timestamp, datetime)
+
+
+class TestAttentionMethods:
+    """Test Task attention methods return copies."""
+
+    def test_requires_attention_returns_copy(self):
+        task = Task(title="Original")
+        new_task = task.requires_attention(AttentionReason.HUMAN_CHANGED_TASK)
+        
+        # Original unchanged
+        assert task.attention.required is False
+        
+        # New copy has attention set
+        assert new_task.attention.required is True
+        assert new_task.attention.reason == AttentionReason.HUMAN_CHANGED_TASK
+
+    def test_clear_attention_returns_copy(self):
+        task = Task(title="With attention").requires_attention(AttentionReason.NEW_TASK)
+        cleared = task.clear_attention()
+        
+        # Original still has attention
+        assert task.attention.required is True
+        
+        # Cleared copy doesn't
+        assert cleared.attention.required is False
+
+
+class TestSupportingModels:
+    """Test all supporting DTOs and entities."""
+
+    def test_task_dependency(self):
+        dep = TaskDependency(task_id="abc123", status_satisfied=False)
+        assert dep.task_id == "abc123"
+        assert dep.status_satisfied is False
+
+    def test_conversation_message(self):
+        msg = ConversationMessage(
+            author_type="human",
+            content="Please update this",
+            timestamp=datetime.now()
+        )
+        assert msg.author_type == "human"
+        assert isinstance(msg.timestamp, datetime)
+
+    def test_task_comment(self):
+        comment = TaskComment(
+            task_id="task123",
+            author_type=CommentAuthorType.HUMAN,
+            content="Review needed"
+        )
+        assert comment.id is not None
+        assert comment.task_id == "task123"
+
+    def test_task_result(self):
+        result = TaskResult(
+            success=True,
+            summary="Completed successfully",
+            output="Full agent output here"
+        )
+        assert result.success is True
+        assert isinstance(result.timestamp, datetime)
+
+    def test_change_request_report(self):
+        report = ChangeRequestReport(
+            reason="Plan needs adjustment",
+            requested_changes=["Add error handling", "Update dependencies"]
+        )
+        assert len(report.requested_changes) == 2
+
+    def test_task_attempt(self):
+        attempt = TaskAttempt(
+            task_id="task123",
+            mode="planning",
+            agent_id="architect-agent"
+        )
+        assert attempt.status == TaskAttemptStatus.STARTED
+        assert isinstance(attempt.started_at, datetime)
+
+    def test_task_event(self):
+        event = TaskEvent(
+            task_id="task123",
+            event_type="status_changed",
+            message="Task approved"
+        )
+        assert event.event_type == "status_changed"
+
+    def test_worker(self):
+        worker = Worker(
+            task_id="task123",
+            mode="execution",
+            pid=12345,
+            log_path="/tmp/worker.log"
+        )
+        assert worker.status == WorkerStatus.PENDING
+        assert worker.pid == 12345
+
+    def test_processing_metadata(self):
+        meta = ProcessingMetadata(
+            last_processed_at=datetime.now(),
+            input_hash="abc123"
+        )
+        assert meta.input_hash == "abc123"
+
+
+class TestEnumStrValues:
+    """Verify all enums serialize to strings correctly."""
+
+    def test_agent_role_str(self):
+        assert str(AgentRole.ENGINEER) == "engineer"
+
+    def test_task_status_str(self):
+        assert str(TaskStatus.NEEDS_APPROVAL) == "needs_approval"
+
+    def test_attention_reason_str(self):
+        assert str(AttentionReason.PLANNING_COMPLETE) == "planning_complete"

@@ -1,301 +1,204 @@
+"""Tests for configuration loading, validation, and defaults."""
+
 import json
+from pathlib import Path
 
 import pytest
 
-from cellos.config import ConfigError, ensure_config, load_agent_catalog, load_config, load_prompt_profiles
-
-
-VALID_CONFIG = (
-    '{"scheduler": {"concurrent_tasks": 2, "worker_timeout_seconds": 60}, '
-    '"worker": {"backend": "acp", "debug_log_path": ".cellos/logs/acp-debug.log", "debug_logging": true}, '
-    '"agents": {"default": "fake", "catalog_path": "agentcatalog.json"}, '
-    '"prompts": {"profiles_path": "promptprofiles.json"}}'
-)
-
-VALID_AGENT_CATALOG = (
-    '{"available": {'
-    '"fake": {"connector": "fake_acp", "description": "Fake development agent"}, '
-    '"opencode": {"connector": "opencode", "description": "OpenCode local ACP agent"}'
-    "}}"
-)
-
-VALID_PROMPT_PROFILES = (
-    '{"role_instructions": {"engineer": "Engineer instructions."}, '
-    '"modes": {"planning": {"instructions": ["Mode: planning"], "output_sections": ["Objective"]}}, '
-    '"final_instructions": ["Report concisely."]}'
+from cellos.config import (
+    CellosConfig,
+    ConfigError,
+    SchedulerConfig,
+    WorkerConfig,
+    AgentCatalogEntry,
+    PromptProfilesConfig,
+    ModeProfile,
+    ApprovalConfig,
+    load_config,
+    ensure_config,
 )
 
 
-def test_ensure_config_copies_example_when_missing(tmp_path):
-    example = tmp_path / "example.json"
-    catalog_example = tmp_path / "agentcatalog.example.json"
-    profiles_example = tmp_path / "promptprofiles.example.json"
-    config = tmp_path / ".cellos" / "config.json"
-    catalog = tmp_path / ".cellos" / "agentcatalog.json"
-    profiles = tmp_path / ".cellos" / "promptprofiles.json"
-    example.write_text(VALID_CONFIG)
-    catalog_example.write_text(VALID_AGENT_CATALOG)
-    profiles_example.write_text(VALID_PROMPT_PROFILES)
+class TestSchedulerConfig:
+    def test_defaults(self):
+        cfg = SchedulerConfig()
+        assert cfg.concurrent_tasks == 4
+        assert cfg.heartbeat_interval_seconds == 5.0
 
-    written = ensure_config(
-        config,
-        example,
-        agent_catalog_path=catalog,
-        agent_catalog_example_path=catalog_example,
-        prompt_profiles_path=profiles,
-        prompt_profiles_example_path=profiles_example,
-    )
-    loaded = load_config(written)
-
-    assert written == config
-    assert catalog.exists()
-    assert profiles.exists()
-    assert loaded.scheduler.concurrent_tasks == 2
-    assert loaded.scheduler.worker_timeout_seconds == 60
-    assert loaded.worker.backend == "acp"
-    assert loaded.agents.default == "fake"
-    assert loaded.approvals.preapprove_research_tasks is False
-    assert loaded.agent_catalog.available["opencode"].connector == "opencode"
-    assert loaded.prompt_profiles.role_instructions["engineer"] == "Engineer instructions."
+    def test_custom_values(self):
+        cfg = SchedulerConfig(concurrent_tasks=8, heartbeat_interval_seconds=2.0)
+        assert cfg.concurrent_tasks == 8
+        assert cfg.heartbeat_interval_seconds == 2.0
 
 
-def test_ensure_config_does_not_overwrite_existing_without_flag(tmp_path):
-    example = tmp_path / "example.json"
-    catalog_example = tmp_path / "agentcatalog.example.json"
-    profiles_example = tmp_path / "promptprofiles.example.json"
-    config = tmp_path / ".cellos" / "config.json"
-    catalog = tmp_path / ".cellos" / "agentcatalog.json"
-    profiles = tmp_path / ".cellos" / "promptprofiles.json"
-    example.write_text(VALID_CONFIG)
-    catalog_example.write_text(VALID_AGENT_CATALOG)
-    profiles_example.write_text(VALID_PROMPT_PROFILES)
-    config.parent.mkdir()
-    config.write_text(
-        '{"scheduler": {"concurrent_tasks": 7, "worker_timeout_seconds": 90}, '
-        '"worker": {"backend": "acp", "debug_log_path": ".cellos/logs/acp-debug.log", "debug_logging": true}, '
-        '"agents": {"default": "fake", "catalog_path": "agentcatalog.json"}}'
-    )
-    catalog.write_text('{"available": {"fake": {"connector": "fake_acp"}}}')
-    profiles.write_text('{"role_instructions": {"engineer": "Original."}}')
+class TestWorkerConfig:
+    def test_defaults(self):
+        cfg = WorkerConfig()
+        assert cfg.backend == "acp"
+        assert cfg.timeout_seconds == 300
 
-    ensure_config(
-        config,
-        example,
-        agent_catalog_path=catalog,
-        agent_catalog_example_path=catalog_example,
-        prompt_profiles_path=profiles,
-        prompt_profiles_example_path=profiles_example,
-    )
-    loaded = load_config(config)
-
-    assert loaded.scheduler.concurrent_tasks == 7
-    assert list(loaded.agent_catalog.available) == ["fake"]
-    assert loaded.prompt_profiles.role_instructions["engineer"] == "Original."
+    def test_custom_values(self):
+        cfg = WorkerConfig(backend="local", timeout_seconds=600)
+        assert cfg.backend == "local"
+        assert cfg.timeout_seconds == 600
 
 
-def test_ensure_config_overwrites_existing_with_flag(tmp_path):
-    example = tmp_path / "example.json"
-    catalog_example = tmp_path / "agentcatalog.example.json"
-    profiles_example = tmp_path / "promptprofiles.example.json"
-    config = tmp_path / ".cellos" / "config.json"
-    catalog = tmp_path / ".cellos" / "agentcatalog.json"
-    profiles = tmp_path / ".cellos" / "promptprofiles.json"
-    example.write_text(VALID_CONFIG)
-    catalog_example.write_text(VALID_AGENT_CATALOG)
-    profiles_example.write_text(VALID_PROMPT_PROFILES)
-    config.parent.mkdir()
-    config.write_text(
-        '{"scheduler": {"concurrent_tasks": 7, "worker_timeout_seconds": 90}, '
-        '"worker": {"backend": "acp", "debug_log_path": ".cellos/logs/acp-debug.log", "debug_logging": true}, '
-        '"agents": {"default": "fake", "catalog_path": "agentcatalog.json"}}'
-    )
-    catalog.write_text('{"available": {"fake": {"connector": "fake_acp"}}}')
-    profiles.write_text('{"role_instructions": {"engineer": "Original."}}')
+class TestAgentCatalogEntry:
+    def test_minimal(self):
+        entry = AgentCatalogEntry(connector="fake_acp")
+        assert entry.connector == "fake_acp"
+        assert entry.model is None
+        assert entry.options == {}
 
-    ensure_config(
-        config,
-        example,
-        agent_catalog_path=catalog,
-        agent_catalog_example_path=catalog_example,
-        prompt_profiles_path=profiles,
-        prompt_profiles_example_path=profiles_example,
-        overwrite=True,
-    )
-    loaded = load_config(config)
-
-    assert loaded.scheduler.concurrent_tasks == 2
-    assert "opencode" in loaded.agent_catalog.available
-    assert loaded.prompt_profiles.role_instructions["engineer"] == "Engineer instructions."
+    def test_with_model_and_options(self):
+        entry = AgentCatalogEntry(
+            connector="opencode", model="qwen-2.5-7b-instruct", options={"timeout": 60}
+        )
+        assert entry.connector == "opencode"
+        assert entry.model == "qwen-2.5-7b-instruct"
+        assert entry.options["timeout"] == 60
 
 
-def test_load_config_reports_missing_file(tmp_path):
-    with pytest.raises(ConfigError, match="Missing config file"):
-        load_config(tmp_path / "missing.json")
+class TestCellosConfig:
+    def test_full_defaults(self):
+        cfg = CellosConfig()
+        assert cfg.scheduler.concurrent_tasks == 4
+        assert cfg.worker.backend == "acp"
+        assert cfg.agents.default_agent_id == "engineer"
+        assert cfg.approvals.preapprove_research_tasks is False
+        assert cfg.agent_catalog == {}
+
+    def test_get_agent_default(self):
+        cfg = CellosConfig(
+            agent_catalog={
+                "engineer": AgentCatalogEntry(connector="fake_acp"),
+                "architect": AgentCatalogEntry(connector="opencode", model="qwen-2.5-7b-instruct"),
+            }
+        )
+        agent = cfg.get_agent()
+        assert agent is not None
+        assert agent.connector == "fake_acp"
+
+    def test_get_agent_explicit(self):
+        cfg = CellosConfig(
+            agent_catalog={
+                "engineer": AgentCatalogEntry(connector="fake_acp"),
+                "architect": AgentCatalogEntry(connector="opencode", model="qwen-2.5-7b-instruct"),
+            }
+        )
+        agent = cfg.get_agent("architect")
+        assert agent is not None
+        assert agent.connector == "opencode"
+
+    def test_get_agent_missing(self):
+        cfg = CellosConfig(agent_catalog={"engineer": AgentCatalogEntry(connector="fake_acp")})
+        assert cfg.get_agent("nonexistent") is None
 
 
-def test_load_config_reports_invalid_json(tmp_path):
-    config = tmp_path / "config.json"
-    config.write_text("{not json")
+class TestLoadConfig:
+    def test_load_from_temp_dir(self, tmp_path):
+        """Full three-file config loads and resolves correctly."""
+        (tmp_path / "config.json").write_text(json.dumps({
+            "scheduler": {"concurrent_tasks": 8},
+            "worker": {"backend": "acp", "timeout_seconds": 600},
+            "agents": {"default_agent_id": "architect"},
+            "approvals": {"preapprove_research_tasks": True},
+        }))
+        (tmp_path / "agentcatalog.json").write_text(json.dumps({
+            "engineer": {"connector": "fake_acp", "options": {}},
+            "architect": {"connector": "opencode", "model": "qwen-2.5-7b-instruct"},
+        }))
+        (tmp_path / "promptprofiles.json").write_text(json.dumps({
+            "role_instructions": {"engineer": "You are an engineer."},
+            "modes": {
+                "planning": {"instructions": "Plan the task.", "output_sections": ["Steps"]},
+            },
+            "final_instructions": "",
+        }))
 
-    with pytest.raises(ConfigError, match="Invalid JSON"):
-        load_config(config)
+        cfg = load_config(str(tmp_path))
+        assert cfg.scheduler.concurrent_tasks == 8
+        assert cfg.worker.timeout_seconds == 600
+        assert cfg.agents.default_agent_id == "architect"
+        assert cfg.approvals.preapprove_research_tasks is True
+        assert len(cfg.agent_catalog) == 2
+        assert cfg.get_agent().connector == "opencode"
 
+    def test_load_missing_config_raises(self, tmp_path):
+        with pytest.raises(ConfigError, match="Config file not found"):
+            load_config(str(tmp_path))
 
-def test_load_config_reports_missing_agent_catalog(tmp_path):
-    config = tmp_path / "config.json"
-    config.write_text(VALID_CONFIG)
+    def test_load_invalid_json_raises(self, tmp_path):
+        (tmp_path / "config.json").write_text("{invalid json}")
+        with pytest.raises(ConfigError, match="Invalid JSON"):
+            load_config(str(tmp_path))
 
-    with pytest.raises(ConfigError, match="Missing agent catalog file"):
-        load_config(config)
+    def test_load_without_catalog_or_profiles(self, tmp_path):
+        """Catalog and profiles are optional — defaults used if missing."""
+        (tmp_path / "config.json").write_text(json.dumps({}))
+        cfg = load_config(str(tmp_path))
+        assert isinstance(cfg.scheduler, SchedulerConfig)
+        assert cfg.agent_catalog == {}
 
+    def test_load_custom_catalog_path(self, tmp_path):
+        """catalog_path in config resolves relative to config dir."""
+        subdir = tmp_path / "agents"
+        subdir.mkdir()
+        (subdir / "my_agents.json").write_text(json.dumps({
+            "test_agent": {"connector": "fake_acp"},
+        }))
+        (tmp_path / "config.json").write_text(json.dumps({
+            "agents": {
+                "default_agent_id": "test_agent",
+                "catalog_path": "agents/my_agents.json",
+            },
+        }))
 
-def test_load_config_reports_missing_prompt_profiles(tmp_path):
-    config = tmp_path / "config.json"
-    catalog = tmp_path / "agentcatalog.json"
-    config.write_text(VALID_CONFIG)
-    catalog.write_text(VALID_AGENT_CATALOG)
-
-    with pytest.raises(ConfigError, match="Missing prompt profiles file"):
-        load_config(config)
-
-
-def test_load_agent_catalog_reports_invalid_json(tmp_path):
-    catalog = tmp_path / "agentcatalog.json"
-    catalog.write_text("{not json")
-
-    with pytest.raises(ConfigError, match="Invalid JSON"):
-        load_agent_catalog(catalog)
-
-
-def test_load_prompt_profiles_reports_invalid_json(tmp_path):
-    profiles = tmp_path / "promptprofiles.json"
-    profiles.write_text("{not json")
-
-    with pytest.raises(ConfigError, match="Invalid JSON"):
-        load_prompt_profiles(profiles)
-
-
-def test_agent_catalog_reports_missing_default_when_used(tmp_path):
-    config = tmp_path / "config.json"
-    catalog = tmp_path / "agentcatalog.json"
-    profiles = tmp_path / "promptprofiles.json"
-    config.write_text(VALID_CONFIG.replace('"default": "fake"', '"default": "missing"'))
-    catalog.write_text(json.dumps({"available": {"fake": {"connector": "fake_acp"}}}))
-    profiles.write_text(VALID_PROMPT_PROFILES)
-
-    loaded = load_config(config)
-
-    with pytest.raises(ValueError, match="Default agent"):
-        loaded.get_default_agent()
-
-
-def test_load_config_resolves_relative_agent_catalog_next_to_config(tmp_path):
-    config = tmp_path / ".cellos" / "config.json"
-    catalog = tmp_path / ".cellos" / "custom-agentcatalog.json"
-    profiles = tmp_path / ".cellos" / "promptprofiles.json"
-    config.parent.mkdir()
-    config.write_text(
-        '{"scheduler": {"concurrent_tasks": 2, "worker_timeout_seconds": 60}, '
-        '"worker": {"backend": "acp"}, '
-        '"agents": {"default": "fake", "catalog_path": "custom-agentcatalog.json"}}'
-    )
-    catalog.write_text(VALID_AGENT_CATALOG)
-    profiles.write_text(VALID_PROMPT_PROFILES)
-
-    loaded = load_config(config)
-
-    assert loaded.get_default_agent().connector == "fake_acp"
+        cfg = load_config(str(tmp_path))
+        assert len(cfg.agent_catalog) == 1
+        assert "test_agent" in cfg.agent_catalog
 
 
-def test_load_config_resolves_relative_prompt_profiles_next_to_config(tmp_path):
-    config = tmp_path / ".cellos" / "config.json"
-    catalog = tmp_path / ".cellos" / "agentcatalog.json"
-    profiles = tmp_path / ".cellos" / "custom-promptprofiles.json"
-    config.parent.mkdir()
-    config.write_text(
-        '{"scheduler": {"concurrent_tasks": 2, "worker_timeout_seconds": 60}, '
-        '"worker": {"backend": "acp"}, '
-        '"agents": {"default": "fake", "catalog_path": "agentcatalog.json"}, '
-        '"prompts": {"profiles_path": "custom-promptprofiles.json"}}'
-    )
-    catalog.write_text(VALID_AGENT_CATALOG)
-    profiles.write_text(VALID_PROMPT_PROFILES)
+class TestEnsureConfig:
+    def test_creates_files(self, tmp_path):
+        result = ensure_config(str(tmp_path / "config"))
+        assert (result / "config.json").exists()
+        assert (result / "agentcatalog.json").exists()
+        assert (result / "promptprofiles.json").exists()
 
-    loaded = load_config(config)
+    def test_skips_existing_without_overwrite(self, tmp_path):
+        dest = tmp_path / "cfg"
+        ensure_config(str(dest))
+        original_mtime = (dest / "config.json").stat().st_mtime
+        import time; time.sleep(0.05)
+        ensure_config(str(dest), overwrite=False)
+        assert (dest / "config.json").stat().st_mtime == original_mtime
 
-    assert loaded.prompt_profiles.modes["planning"].output_sections == ["Objective"]
+    def test_overwrites_existing(self, tmp_path):
+        dest = tmp_path / "cfg"
+        ensure_config(str(dest))
+        (dest / "config.json").write_text("old")
+        import time; time.sleep(0.05)
+        ensure_config(str(dest), overwrite=True)
+        data = json.loads((dest / "config.json").read_text())
+        assert "scheduler" in data
 
-
-def test_config_compatibility_exports():
-    """Verify cellos.config shim still exports all symbols."""
-    from cellos.config import (
-        ConfigError,
-        ensure_config,
-        load_agent_catalog,
-        load_config,
-        load_prompt_profiles,
-    )
-
-    assert ConfigError is not None
-    assert load_config is not None
-    assert load_agent_catalog is not None
-    assert load_prompt_profiles is not None
-    assert ensure_config is not None
+    def test_creates_parent_dirs(self, tmp_path):
+        result = ensure_config(str(tmp_path / "a" / "b" / "c"))
+        assert (result / "config.json").exists()
 
 
-def test_get_agent_returns_default_when_none(tmp_path):
-    config = tmp_path / "config.json"
-    catalog = tmp_path / "agentcatalog.json"
-    profiles = tmp_path / "promptprofiles.json"
-    config.write_text(VALID_CONFIG)
-    catalog.write_text(VALID_AGENT_CATALOG)
-    profiles.write_text(VALID_PROMPT_PROFILES)
+class TestPromptProfilesConfig:
+    def test_mode_profile_defaults(self):
+        mp = ModeProfile(instructions="Do the thing.")
+        assert mp.instructions == "Do the thing."
+        assert mp.output_sections == []
 
-    loaded = load_config(config)
-
-    resolved_id, agent = loaded.get_agent()
-    assert resolved_id == "fake"
-    assert agent.connector == "fake_acp"
+    def test_prompt_profiles_empty(self):
+        cfg = PromptProfilesConfig()
+        assert cfg.role_instructions == {}
+        assert cfg.modes == {}
+        assert cfg.final_instructions == ""
 
 
-def test_get_agent_returns_named_agent(tmp_path):
-    config = tmp_path / "config.json"
-    catalog = tmp_path / "agentcatalog.json"
-    profiles = tmp_path / "promptprofiles.json"
-    config.write_text(VALID_CONFIG)
-    catalog.write_text(VALID_AGENT_CATALOG)
-    profiles.write_text(VALID_PROMPT_PROFILES)
 
-    loaded = load_config(config)
-
-    resolved_id, agent = loaded.get_agent("opencode")
-    assert resolved_id == "opencode"
-    assert agent.connector == "opencode"
-
-
-def test_get_agent_raises_for_missing_named_agent(tmp_path):
-    config = tmp_path / "config.json"
-    catalog = tmp_path / "agentcatalog.json"
-    profiles = tmp_path / "promptprofiles.json"
-    config.write_text(VALID_CONFIG)
-    catalog.write_text(VALID_AGENT_CATALOG)
-    profiles.write_text(VALID_PROMPT_PROFILES)
-
-    loaded = load_config(config)
-
-    with pytest.raises(ValueError, match="Task agent is not in the available agent catalog: nonexistent"):
-        loaded.get_agent("nonexistent")
-
-
-def test_get_default_agent_uses_get_agent(tmp_path):
-    config = tmp_path / "config.json"
-    catalog = tmp_path / "agentcatalog.json"
-    profiles = tmp_path / "promptprofiles.json"
-    config.write_text(VALID_CONFIG)
-    catalog.write_text(VALID_AGENT_CATALOG)
-    profiles.write_text(VALID_PROMPT_PROFILES)
-
-    loaded = load_config(config)
-
-    agent = loaded.get_default_agent()
-    assert agent.connector == "fake_acp"

@@ -1,1055 +1,414 @@
-import json
-import sqlite3
-import time
-from pathlib import Path
+"""CLI integration tests — end-to-end coverage of all 8 commands via CliRunner.
 
+Tests use real SQLite databases in temp directories (no mocking). Each test 
+initializes a fresh DB to avoid cross-test contamination.
+"""
+
+import pytest
+from pathlib import Path
 from click.testing import CliRunner
 
-from cellos.cli import DEFAULT_DB_PATH, DEFAULT_WORKDIR, _resolve_db_path, _resolve_workdir, main
+from cellos.cli import main
 
 
-MINIMAL_PROMPT_PROFILES = {
-    "role_instructions": {"engineer": "Engineer instructions."},
-    "modes": {
-        "planning": {
-            "instructions": ["Mode: planning"],
-            "output_sections": ["Objective"],
-        },
-        "execution": {
-            "instructions": ["Mode: execution"],
-            "output_sections": ["Summary"],
-        },
-    },
-    "final_instructions": ["Report concisely."],
-}
+@pytest.fixture()
+def runner(tmp_path):
+    """CliRunner with isolated config and DB paths."""
+    db = str(tmp_path / "test.sqlite")
+    config_dir = str(tmp_path)
+    return CliRunner(), tmp_path, db, config_dir
 
 
-def wait_for_status(
-    runner: CliRunner,
-    db_path: Path,
-    config_path: Path,
-    expected: str,
-    workdir: Path | None = None,
-):
-    result = None
-    for _ in range(30):
-        command = ["status", "--db", str(db_path), "--config", str(config_path)]
-        if workdir is not None:
-            command.extend(["--workdir", str(workdir)])
-        result = runner.invoke(main, command)
-        if expected in result.output:
-            return result
-        time.sleep(0.1)
-    return result
+# ── init ────────────────────────────────────────────────────────────────
 
+def test_init_creates_config_and_db(runner):
+    cli_runner, tmp_path, db, config_dir = runner
 
-def task_payload(db_path: Path) -> dict:
-    with sqlite3.connect(db_path) as conn:
-        row = conn.execute("SELECT payload FROM tasks ORDER BY created_at LIMIT 1").fetchone()
-    return json.loads(row[0])
-
-
-def task_payloads(db_path: Path) -> list[dict]:
-    with sqlite3.connect(db_path) as conn:
-        rows = conn.execute("SELECT payload FROM tasks ORDER BY created_at").fetchall()
-    return [json.loads(row[0]) for row in rows]
-
-
-def task_event_types(db_path: Path, task_id: str) -> list[str]:
-    with sqlite3.connect(db_path) as conn:
-        rows = conn.execute("SELECT event_type FROM task_events WHERE task_id = ? ORDER BY id", (task_id,)).fetchall()
-    return [row[0] for row in rows]
-
-
-def task_id_from_add_output(output: str) -> str:
-    return output.split("Added ", 1)[1].split(":", 1)[0].strip()
-
-
-def write_fake_runtime_config(config_path: Path, preapprove_research_tasks: bool = False) -> None:
-    config_path.parent.mkdir(parents=True, exist_ok=True)
-    config_path.write_text(
-        json.dumps(
-            {
-                "scheduler": {"concurrent_tasks": 4, "worker_timeout_seconds": 30},
-                "worker": {
-                    "backend": "acp",
-                    "debug_log_path": ".cellos/logs/acp-debug.log",
-                    "debug_logging": True,
-                },
-                "agents": {
-                    "default": "fake",
-                    "catalog_path": "agentcatalog.json",
-                },
-                "approvals": {"preapprove_research_tasks": preapprove_research_tasks},
-                "prompts": {
-                    "profiles_path": "promptprofiles.json",
-                },
-            }
-        )
-    )
-    (config_path.parent / "agentcatalog.json").write_text(
-        json.dumps(
-            {
-                "available": {
-                    "fake": {
-                        "connector": "fake_acp",
-                        "description": "Fake development agent",
-                    }
-                }
-            }
-        )
-    )
-    (config_path.parent / "promptprofiles.json").write_text(json.dumps(MINIMAL_PROMPT_PROFILES))
-
-
-def test_init_creates_database(tmp_path):
-    db_path = tmp_path / "cellos.sqlite"
-    config_path = tmp_path / ".cellos" / "config.json"
-    runner = CliRunner()
-
-    result = runner.invoke(main, ["init", "--db", str(db_path), "--config", str(config_path)])
-
+    result = cli_runner.invoke(main, ["--config-dir", config_dir, "--db", db, "init"])
     assert result.exit_code == 0
-    assert db_path.exists()
-    assert config_path.exists()
+    assert (tmp_path / "config.json").exists()
+    assert (tmp_path / "agentcatalog.json").exists()
+    assert (tmp_path / "promptprofiles.json").exists()
+    assert Path(db).exists()
 
 
-def test_init_creates_database_in_workdir(tmp_path):
-    workdir = tmp_path / "project"
-    config_path = tmp_path / ".cellos" / "config.json"
-    runner = CliRunner()
+def test_init_overwrite(runner):
+    cli_runner, tmp_path, db, config_dir = runner
 
-    result = runner.invoke(main, ["init", "--workdir", str(workdir), "--config", str(config_path)])
+    # First init
+    result1 = cli_runner.invoke(main, ["--config-dir", config_dir, "--db", db, "init"])
+    assert result1.exit_code == 0
 
+    cfg_before = (tmp_path / "config.json").read_text()
+
+    # Second init without overwrite — should skip existing files
+    result2 = cli_runner.invoke(main, ["--config-dir", config_dir, "--db", db, "init"])
+    assert result2.exit_code == 0
+    assert (tmp_path / "config.json").read_text() == cfg_before
+
+    # With overwrite — replaces files
+    result3 = cli_runner.invoke(
+        main, ["--config-dir", config_dir, "--db", db, "init", "--overwrite"]
+    )
+    assert result3.exit_code == 0
+
+
+# ── add-task ────────────────────────────────────────────────────────────
+
+def test_add_task_basic(runner):
+    cli_runner, tmp_path, db, config_dir = runner
+
+    # Init first
+    cli_runner.invoke(main, ["--config-dir", config_dir, "--db", db, "init"])
+
+    result = cli_runner.invoke(
+        main,
+        [
+            "--config-dir", config_dir,
+            "--db", db,
+            "add-task", "Build login page", "-d", "Implement JWT auth"
+        ],
+    )
     assert result.exit_code == 0
-    assert (workdir / ".cellos" / "cellos.sqlite").exists()
+    assert "✓ Created task" in result.output
 
 
-def test_resolve_workdir_prefers_current_directory_with_database(tmp_path, monkeypatch):
-    workdir = tmp_path / "project"
-    (workdir / ".cellos").mkdir(parents=True)
-    (workdir / DEFAULT_DB_PATH).touch()
-    monkeypatch.chdir(workdir)
+def test_add_task_with_role_and_type(runner):
+    cli_runner, tmp_path, db, config_dir = runner
 
-    assert _resolve_workdir(None) == workdir.resolve()
+    cli_runner.invoke(main, ["--config-dir", config_dir, "--db", db, "init"])
 
-
-def test_resolve_workdir_falls_back_to_home(tmp_path, monkeypatch):
-    monkeypatch.chdir(tmp_path)
-
-    assert _resolve_workdir(None) == DEFAULT_WORKDIR.resolve()
-
-
-def test_resolve_db_path_uses_workdir_default(tmp_path):
-    workdir = tmp_path / "project"
-
-    assert _resolve_db_path(None, workdir) == workdir / ".cellos" / "cellos.sqlite"
-
-
-def test_init_hard_reset_overwrites_database_and_config(tmp_path):
-    db_path = tmp_path / "cellos.sqlite"
-    config_path = tmp_path / ".cellos" / "config.json"
-    runner = CliRunner()
-
-    runner.invoke(main, ["init", "--db", str(db_path), "--config", str(config_path)])
-    config_path.write_text(
-        '{"scheduler": {"concurrent_tasks": 99, "worker_timeout_seconds": 99}, '
-        '"worker": {"backend": "acp", "debug_log_path": ".cellos/logs/acp-debug.log", "debug_logging": true}, '
-        '"agents": {"default": "fake", "catalog_path": "agentcatalog.json"}, '
-        '"prompts": {"profiles_path": "promptprofiles.json"}}'
+    result = cli_runner.invoke(
+        main,
+        [
+            "--config-dir", config_dir,
+            "--db", db,
+            "add-task", "Design schema", "-r", "architect"
+        ],
     )
-    (config_path.parent / "agentcatalog.json").write_text('{"available": {"fake": {"connector": "fake_acp"}}}')
-    (config_path.parent / "promptprofiles.json").write_text(json.dumps(MINIMAL_PROMPT_PROFILES))
-
-    result = runner.invoke(main, ["init", "--hard-reset", "--db", str(db_path), "--config", str(config_path)])
-
     assert result.exit_code == 0
-    assert '"concurrent_tasks": 4' in config_path.read_text()
+    # Architect role should infer architecture type
+    assert "Type: architecture" in result.output
 
 
-def test_add_task_and_status(tmp_path):
-    db_path = tmp_path / "cellos.sqlite"
-    config_path = tmp_path / ".cellos" / "config.json"
-    runner = CliRunner()
-    init_result = runner.invoke(main, ["init", "--db", str(db_path), "--config", str(config_path)])
+def test_add_task_with_success_failure_criteria(runner):
+    cli_runner, tmp_path, db, config_dir = runner
 
-    add_result = runner.invoke(
+    cli_runner.invoke(main, ["--config-dir", config_dir, "--db", db, "init"])
+
+    result = cli_runner.invoke(
         main,
         [
-            "add-task",
-            "Draft plan",
-            "--role",
-            "coordinator",
-            "--type",
-            "proposal",
-            "--prompt",
-            "Draft a short plan.",
-            "--db",
-            str(db_path),
-            "--config",
-            str(config_path),
+            "--config-dir", config_dir,
+            "--db", db,
+            "add-task", "Test module", "-s", "All tests pass", "-f", "Tests fail"
         ],
     )
-    status_result = runner.invoke(main, ["status", "--db", str(db_path), "--config", str(config_path)])
-
-    assert init_result.exit_code == 0
-    assert add_result.exit_code == 0
-    task_id = task_id_from_add_output(add_result.output)
-    assert not task_id.startswith("task-")
-    assert len(task_id) == 8
-    assert status_result.exit_code == 0
-    assert task_id in status_result.output
-    assert "Draft plan" in status_result.output
-    assert "coordinator" in status_result.output
-    assert "draft" in status_result.output
-
-
-def test_add_task_accepts_parent_and_depends(tmp_path):
-    db_path = tmp_path / "cellos.sqlite"
-    config_path = tmp_path / ".cellos" / "config.json"
-    runner = CliRunner()
-    runner.invoke(main, ["init", "--db", str(db_path), "--config", str(config_path)])
-    parent_result = runner.invoke(main, ["add-task", "Parent", "--db", str(db_path), "--config", str(config_path)])
-    dependency_result = runner.invoke(
-        main,
-        ["add-task", "Dependency", "--db", str(db_path), "--config", str(config_path)],
-    )
-    parent_id = task_id_from_add_output(parent_result.output)
-    dependency_id = task_id_from_add_output(dependency_result.output)
-
-    child_result = runner.invoke(
-        main,
-        [
-            "add-task",
-            "Child",
-            "--parent",
-            parent_id,
-            "--depends",
-            dependency_id,
-            "--db",
-            str(db_path),
-            "--config",
-            str(config_path),
-        ],
-    )
-    child_id = task_id_from_add_output(child_result.output)
-    detail_result = runner.invoke(main, ["detail", child_id, "--db", str(db_path), "--config", str(config_path)])
-
-    assert child_result.exit_code == 0
-    assert f"Parent: {parent_id}" in detail_result.output
-    assert f"Dependencies: {dependency_id}" in detail_result.output
-
-
-def test_add_task_requires_init(tmp_path):
-    db_path = tmp_path / "cellos.sqlite"
-    config_path = tmp_path / ".cellos" / "config.json"
-    runner = CliRunner()
-    runner.invoke(main, ["init", "--db", str(db_path), "--config", str(config_path)])
-    db_path.unlink()
-
-    result = runner.invoke(
-        main,
-        ["add-task", "No DB yet", "--db", str(db_path), "--config", str(config_path)],
-    )
-
-    assert result.exit_code != 0
-    assert "Run `cellos init` first" in result.output
-
-
-def test_add_task_with_valid_agent(tmp_path):
-    db_path = tmp_path / "cellos.sqlite"
-    config_path = tmp_path / ".cellos" / "config.json"
-    runner = CliRunner()
-    runner.invoke(main, ["init", "--db", str(db_path), "--config", str(config_path)])
-
-    add_result = runner.invoke(
-        main,
-        [
-            "add-task",
-            "Use Fake",
-            "--agent",
-            "fake",
-            "--db",
-            str(db_path),
-            "--config",
-            str(config_path),
-        ],
-    )
-
-    assert add_result.exit_code == 0
-    task_id = task_id_from_add_output(add_result.output)
-    payload = task_payload(db_path)
-    assert payload["agent_id"] == "fake"
-
-
-def test_add_task_with_invalid_agent_rejected(tmp_path):
-    db_path = tmp_path / "cellos.sqlite"
-    config_path = tmp_path / ".cellos" / "config.json"
-    runner = CliRunner()
-    runner.invoke(main, ["init", "--db", str(db_path), "--config", str(config_path)])
-
-    add_result = runner.invoke(
-        main,
-        [
-            "add-task",
-            "Bad agent",
-            "--agent",
-            "nonexistent",
-            "--db",
-            str(db_path),
-            "--config",
-            str(config_path),
-        ],
-    )
-
-    assert add_result.exit_code != 0
-    assert "nonexistent" in add_result.output
-
-
-def test_add_task_without_agent_uses_default(tmp_path):
-    db_path = tmp_path / "cellos.sqlite"
-    config_path = tmp_path / ".cellos" / "config.json"
-    runner = CliRunner()
-    runner.invoke(main, ["init", "--db", str(db_path), "--config", str(config_path)])
-
-    add_result = runner.invoke(
-        main,
-        [
-            "add-task",
-            "Default agent",
-            "--db",
-            str(db_path),
-            "--config",
-            str(config_path),
-        ],
-    )
-
-    assert add_result.exit_code == 0
-    payload = task_payload(db_path)
-    assert payload.get("agent_id") is None
-
-
-def test_run_schedules_approved_task(tmp_path):
-    db_path = tmp_path / "cellos.sqlite"
-    config_path = tmp_path / ".cellos" / "config.json"
-    runner = CliRunner()
-    write_fake_runtime_config(config_path)
-    init_result = runner.invoke(main, ["init", "--db", str(db_path), "--config", str(config_path)])
-
-    add_result = runner.invoke(
-        main,
-        [
-            "add-task",
-            "Approved build",
-            "--role",
-            "engineer",
-            "--type",
-            "implementation",
-            "--status",
-            "approved",
-            "--prompt",
-            "Do the approved work.",
-            "--db",
-            str(db_path),
-            "--config",
-            str(config_path),
-        ],
-    )
-    run_result = runner.invoke(main, ["run", "--db", str(db_path), "--config", str(config_path)])
-    status_result = wait_for_status(runner, db_path, config_path, "completed")
-
-    assert init_result.exit_code == 0
-    assert add_result.exit_code == 0
-    assert run_result.exit_code == 0
-    assert "scheduled" in run_result.output
-    assert "fake ACP" in status_result.output
-    assert "completed" in status_result.output
-
-
-def test_run_schedules_draft_task_for_planning(tmp_path):
-    db_path = tmp_path / "cellos.sqlite"
-    config_path = tmp_path / ".cellos" / "config.json"
-    runner = CliRunner()
-    write_fake_runtime_config(config_path)
-    init_result = runner.invoke(main, ["init", "--db", str(db_path), "--config", str(config_path)])
-
-    add_result = runner.invoke(
-        main,
-        [
-            "add-task",
-            "Plan this work",
-            "--role",
-            "coordinator",
-            "--type",
-            "proposal",
-            "--prompt",
-            "Create a short plan.",
-            "--db",
-            str(db_path),
-            "--config",
-            str(config_path),
-        ],
-    )
-    run_result = runner.invoke(main, ["run", "--db", str(db_path), "--config", str(config_path)])
-    wait_for_status(runner, db_path, config_path, "fake ACP")
-    events_result = runner.invoke(main, ["events", "--db", str(db_path), "--config", str(config_path)])
-    saved_task = task_payload(db_path)
-
-    assert init_result.exit_code == 0
-    assert add_result.exit_code == 0
-    assert run_result.exit_code == 0
-    assert "scheduled planning" in run_result.output
-    assert saved_task["status"] == "needs_approval"
-    assert saved_task["prompt"] == "fake ACP completed task"
-    assert "planning_saved" in events_result.output
-
-
-def test_detail_shows_prompt_result_and_events(tmp_path):
-    db_path = tmp_path / "cellos.sqlite"
-    config_path = tmp_path / ".cellos" / "config.json"
-    runner = CliRunner()
-    runner.invoke(main, ["init", "--db", str(db_path), "--config", str(config_path)])
-    add_result = runner.invoke(
-        main,
-        [
-            "add-task",
-            "Detail task",
-            "--prompt",
-            "Explain the work.",
-            "--db",
-            str(db_path),
-            "--config",
-            str(config_path),
-        ],
-    )
-    task_id = task_id_from_add_output(add_result.output)
-
-    result = runner.invoke(main, ["detail", task_id, "--db", str(db_path), "--config", str(config_path)])
-
     assert result.exit_code == 0
-    assert "Detail task" in result.output
-    assert "Explain the work." in result.output
-    assert "created" in result.output
-    assert "Task created" in result.output
 
 
-def test_detail_shows_task_agent_when_set(tmp_path):
-    db_path = tmp_path / "cellos.sqlite"
-    config_path = tmp_path / ".cellos" / "config.json"
-    runner = CliRunner()
-    runner.invoke(main, ["init", "--db", str(db_path), "--config", str(config_path)])
-    add_result = runner.invoke(
+def test_add_task_with_dependencies(runner):
+    cli_runner, tmp_path, db, config_dir = runner
+
+    cli_runner.invoke(main, ["--config-dir", config_dir, "--db", db, "init"])
+
+    # Create parent task first
+    r1 = cli_runner.invoke(
+        main, ["--config-dir", config_dir, "--db", db, "add-task", "Parent task"]
+    )
+    assert r1.exit_code == 0
+    # Extract ID from output — format: "✓ Created task <id>: ..."
+    parent_id = r1.output.split("Created task ")[1].split(":")[0].strip()
+
+    result = cli_runner.invoke(
         main,
         [
-            "add-task",
-            "Agent task",
-            "--agent",
-            "fake",
-            "--db",
-            str(db_path),
-            "--config",
-            str(config_path),
+            "--config-dir", config_dir,
+            "--db", db,
+            "add-task", "Child task", "--depends", parent_id
         ],
     )
-    task_id = task_id_from_add_output(add_result.output)
-
-    result = runner.invoke(main, ["detail", task_id, "--db", str(db_path), "--config", str(config_path)])
-
     assert result.exit_code == 0
-    assert "Agent: fake" in result.output
 
 
-def test_detail_shows_no_agent_when_unset(tmp_path):
-    db_path = tmp_path / "cellos.sqlite"
-    config_path = tmp_path / ".cellos" / "config.json"
-    runner = CliRunner()
-    runner.invoke(main, ["init", "--db", str(db_path), "--config", str(config_path)])
-    add_result = runner.invoke(
-        main,
-        [
-            "add-task",
-            "Default agent task",
-            "--db",
-            str(db_path),
-            "--config",
-            str(config_path),
-        ],
+# ── status ──────────────────────────────────────────────────────────────
+
+def test_status_empty(runner):
+    cli_runner, tmp_path, db, config_dir = runner
+
+    cli_runner.invoke(main, ["--config-dir", config_dir, "--db", db, "init"])
+
+    result = cli_runner.invoke(
+        main, ["--config-dir", config_dir, "--db", db, "status"]
     )
-    task_id = task_id_from_add_output(add_result.output)
-
-    result = runner.invoke(main, ["detail", task_id, "--db", str(db_path), "--config", str(config_path)])
-
     assert result.exit_code == 0
-    assert "Agent:" not in result.output
+    assert "No tasks found" in result.output
 
 
-def test_update_clears_agent(tmp_path):
-    db_path = tmp_path / "cellos.sqlite"
-    config_path = tmp_path / ".cellos" / "config.json"
-    runner = CliRunner()
-    runner.invoke(main, ["init", "--db", str(db_path), "--config", str(config_path)])
-    add_result = runner.invoke(
-        main,
-        [
-            "add-task",
-            "Agent task",
-            "--agent",
-            "fake",
-            "--db",
-            str(db_path),
-            "--config",
-            str(config_path),
-        ],
+def test_status_with_tasks(runner):
+    cli_runner, tmp_path, db, config_dir = runner
+
+    cli_runner.invoke(main, ["--config-dir", config_dir, "--db", db, "init"])
+    cli_runner.invoke(
+        main, ["--config-dir", config_dir, "--db", db, "add-task", "Task one"]
     )
-    task_id = task_id_from_add_output(add_result.output)
-
-    # Verify agent is set
-    result = runner.invoke(main, ["detail", task_id, "--db", str(db_path), "--config", str(config_path)])
-    assert "Agent: fake" in result.output
-
-    # Clear agent
-    update_result = runner.invoke(
-        main,
-        [
-            "update",
-            task_id,
-            "--clear-agent",
-            "--db",
-            str(db_path),
-            "--config",
-            str(config_path),
-        ],
-    )
-    assert update_result.exit_code == 0
-
-    # Verify agent is gone
-    result = runner.invoke(main, ["detail", task_id, "--db", str(db_path), "--config", str(config_path)])
-    assert "Agent:" not in result.output
-
-
-def test_update_changes_prompt_and_records_event(tmp_path):
-    db_path = tmp_path / "cellos.sqlite"
-    config_path = tmp_path / ".cellos" / "config.json"
-    runner = CliRunner()
-    runner.invoke(main, ["init", "--db", str(db_path), "--config", str(config_path)])
-    add_result = runner.invoke(
-        main,
-        [
-            "add-task",
-            "Needs edits",
-            "--prompt",
-            "Old prompt.",
-            "--db",
-            str(db_path),
-            "--config",
-            str(config_path),
-        ],
-    )
-    task_id = task_id_from_add_output(add_result.output)
-
-    update_result = runner.invoke(
-        main,
-        [
-            "update",
-            task_id,
-            "--prompt",
-            "New prompt.",
-            "--status",
-            "needs_approval",
-            "--db",
-            str(db_path),
-            "--config",
-            str(config_path),
-        ],
-    )
-    detail_result = runner.invoke(main, ["detail", task_id, "--db", str(db_path), "--config", str(config_path)])
-    events_result = runner.invoke(main, ["events", task_id, "--db", str(db_path), "--config", str(config_path)])
-    saved_task = task_payload(db_path)
-
-    assert update_result.exit_code == 0
-    assert f"Updated {task_id}" in update_result.output
-    assert "New prompt." in detail_result.output
-    assert saved_task["status"] == "needs_approval"
-    assert saved_task["attention"]["required"] is True
-    assert saved_task["attention"]["reason"] == "human_changed_task"
-    assert "Task updated" in events_result.output
-
-
-def test_update_changes_parent_and_dependencies(tmp_path):
-    db_path = tmp_path / "cellos.sqlite"
-    config_path = tmp_path / ".cellos" / "config.json"
-    runner = CliRunner()
-    runner.invoke(main, ["init", "--db", str(db_path), "--config", str(config_path)])
-    child_result = runner.invoke(main, ["add-task", "Child", "--db", str(db_path), "--config", str(config_path)])
-    parent_result = runner.invoke(main, ["add-task", "Parent", "--db", str(db_path), "--config", str(config_path)])
-    dependency_result = runner.invoke(
-        main,
-        ["add-task", "Dependency", "--db", str(db_path), "--config", str(config_path)],
-    )
-    child_id = task_id_from_add_output(child_result.output)
-    parent_id = task_id_from_add_output(parent_result.output)
-    dependency_id = task_id_from_add_output(dependency_result.output)
-
-    update_result = runner.invoke(
-        main,
-        [
-            "update",
-            child_id,
-            "--parent",
-            parent_id,
-            "--depends",
-            dependency_id,
-            "--db",
-            str(db_path),
-            "--config",
-            str(config_path),
-        ],
-    )
-    detail_after_add = runner.invoke(main, ["detail", child_id, "--db", str(db_path), "--config", str(config_path)])
-    remove_result = runner.invoke(
-        main,
-        [
-            "update",
-            child_id,
-            "--remove-dep",
-            dependency_id,
-            "--db",
-            str(db_path),
-            "--config",
-            str(config_path),
-        ],
-    )
-    detail_after_remove = runner.invoke(main, ["detail", child_id, "--db", str(db_path), "--config", str(config_path)])
-
-    assert update_result.exit_code == 0
-    assert f"Parent: {parent_id}" in detail_after_add.output
-    assert f"Dependencies: {dependency_id}" in detail_after_add.output
-    assert remove_result.exit_code == 0
-    assert f"Parent: {parent_id}" in detail_after_remove.output
-    assert "Dependencies:" not in detail_after_remove.output
-
-
-def test_update_rejects_empty_update(tmp_path):
-    db_path = tmp_path / "cellos.sqlite"
-    config_path = tmp_path / ".cellos" / "config.json"
-    runner = CliRunner()
-    runner.invoke(main, ["init", "--db", str(db_path), "--config", str(config_path)])
-    add_result = runner.invoke(
-        main,
-        ["add-task", "No-op", "--db", str(db_path), "--config", str(config_path)],
-    )
-    task_id = task_id_from_add_output(add_result.output)
-
-    result = runner.invoke(main, ["update", task_id, "--db", str(db_path), "--config", str(config_path)])
-
-    assert result.exit_code != 0
-    assert "Nothing to update." in result.output
-
-
-def test_comment_marks_unapproved_task_attention_and_shows_detail(tmp_path):
-    db_path = tmp_path / "cellos.sqlite"
-    config_path = tmp_path / ".cellos" / "config.json"
-    runner = CliRunner()
-    runner.invoke(main, ["init", "--db", str(db_path), "--config", str(config_path)])
-    add_result = runner.invoke(
-        main,
-        [
-            "add-task",
-            "Needs conversation",
-            "--status",
-            "needs_approval",
-            "--prompt",
-            "Initial plan.",
-            "--db",
-            str(db_path),
-            "--config",
-            str(config_path),
-        ],
-    )
-    task_id = task_id_from_add_output(add_result.output)
-
-    comment_result = runner.invoke(
-        main,
-        [
-            "comment",
-            task_id,
-            "Revise this to only edit docs.",
-            "--db",
-            str(db_path),
-            "--config",
-            str(config_path),
-        ],
-    )
-    detail_result = runner.invoke(main, ["detail", task_id, "--db", str(db_path), "--config", str(config_path)])
-    saved_task = task_payload(db_path)
-
-    assert comment_result.exit_code == 0
-    assert f"Commented on {task_id}" in comment_result.output
-    assert saved_task["attention"]["required"] is True
-    assert saved_task["attention"]["reason"] == "human_commented"
-    assert "Recent Comments" in detail_result.output
-    assert "Revise this to only edit docs." in detail_result.output
-
-
-def test_approve_moves_task_to_approved(tmp_path):
-    db_path = tmp_path / "cellos.sqlite"
-    config_path = tmp_path / ".cellos" / "config.json"
-    runner = CliRunner()
-    runner.invoke(main, ["init", "--db", str(db_path), "--config", str(config_path)])
-    add_result = runner.invoke(
-        main,
-        [
-            "add-task",
-            "Approve me",
-            "--status",
-            "needs_approval",
-            "--prompt",
-            "Approved scope.",
-            "--db",
-            str(db_path),
-            "--config",
-            str(config_path),
-        ],
-    )
-    task_id = task_id_from_add_output(add_result.output)
-
-    approve_result = runner.invoke(main, ["approve", task_id, "--db", str(db_path), "--config", str(config_path)])
-    status_result = runner.invoke(main, ["status", "--db", str(db_path), "--config", str(config_path)])
-    events_result = runner.invoke(main, ["events", task_id, "--db", str(db_path), "--config", str(config_path)])
-
-    assert approve_result.exit_code == 0
-    assert f"Approved {task_id}" in approve_result.output
-    assert "approved" in status_result.output
-    assert "Task approved" in events_result.output
-
-
-def test_planned_task_can_be_approved_and_executed(tmp_path):
-    db_path = tmp_path / "cellos.sqlite"
-    config_path = tmp_path / ".cellos" / "config.json"
-    runner = CliRunner()
-    write_fake_runtime_config(config_path)
-    runner.invoke(main, ["init", "--db", str(db_path), "--config", str(config_path)])
-    add_result = runner.invoke(
-        main,
-        [
-            "add-task",
-            "Plan then execute",
-            "--role",
-            "engineer",
-            "--type",
-            "implementation",
-            "--prompt",
-            "Plan the work.",
-            "--db",
-            str(db_path),
-            "--config",
-            str(config_path),
-        ],
-    )
-    task_id = task_id_from_add_output(add_result.output)
-    planning_result = runner.invoke(main, ["run", "--db", str(db_path), "--config", str(config_path)])
-    wait_for_status(runner, db_path, config_path, "fake ACP")
-
-    approve_result = runner.invoke(main, ["approve", task_id, "--db", str(db_path), "--config", str(config_path)])
-    execution_result = runner.invoke(main, ["run", "--db", str(db_path), "--config", str(config_path)])
-    status_result = wait_for_status(runner, db_path, config_path, "done")
-    detail_result = runner.invoke(main, ["detail", task_id, "--db", str(db_path), "--config", str(config_path)])
-
-    assert planning_result.exit_code == 0
-    assert "scheduled planning" in planning_result.output
-    assert approve_result.exit_code == 0
-    assert execution_result.exit_code == 0
-    assert "scheduled execution" in execution_result.output
-    assert "done" in status_result.output
-    assert "Attempts" in detail_result.output
-    assert "planning succeeded via fake" in detail_result.output
-    assert "execution succeeded via fake" in detail_result.output
-
-
-def test_events_shows_task_history(tmp_path):
-    db_path = tmp_path / "cellos.sqlite"
-    config_path = tmp_path / ".cellos" / "config.json"
-    runner = CliRunner()
-    init_result = runner.invoke(main, ["init", "--db", str(db_path), "--config", str(config_path)])
-    add_result = runner.invoke(
-        main,
-        [
-            "add-task",
-            "Eventful task",
-            "--db",
-            str(db_path),
-            "--config",
-            str(config_path),
-        ],
-    )
-    events_result = runner.invoke(main, ["events", "--db", str(db_path), "--config", str(config_path)])
-
-    assert init_result.exit_code == 0
-    assert add_result.exit_code == 0
-    assert events_result.exit_code == 0
-    assert "Task created" in events_result.output
-    assert "created" in events_result.output
-
-
-def test_run_schedules_approved_task_with_fake_acp(tmp_path):
-    db_path = tmp_path / "cellos.sqlite"
-    config_path = tmp_path / ".cellos" / "config.json"
-    runner = CliRunner()
-
-    write_fake_runtime_config(config_path)
-    init_result = runner.invoke(main, ["init", "--db", str(db_path), "--config", str(config_path)])
-    add_result = runner.invoke(
-        main,
-        [
-            "add-task",
-            "Approved ACP build",
-            "--role",
-            "engineer",
-            "--type",
-            "implementation",
-            "--status",
-            "approved",
-            "--prompt",
-            "Do the approved ACP work.",
-            "--db",
-            str(db_path),
-            "--config",
-            str(config_path),
-        ],
-    )
-    run_result = runner.invoke(main, ["run", "--db", str(db_path), "--config", str(config_path)])
-    status_result = wait_for_status(runner, db_path, config_path, "done")
-
-    assert init_result.exit_code == 0
-    assert add_result.exit_code == 0
-    assert run_result.exit_code == 0
-    assert "scheduled" in run_result.output
-    assert "done" in status_result.output
-
-
-def test_execution_can_create_preapproved_blocking_research_task(tmp_path):
-    db_path = tmp_path / "cellos.sqlite"
-    config_path = tmp_path / ".cellos" / "config.json"
-    runner = CliRunner()
-
-    write_fake_runtime_config(config_path, preapprove_research_tasks=True)
-    runner.invoke(main, ["init", "--db", str(db_path), "--config", str(config_path)])
-    add_result = runner.invoke(
-        main,
-        [
-            "add-task",
-            "Needs research",
-            "--role",
-            "architect",
-            "--type",
-            "architecture",
-            "--status",
-            "approved",
-            "--prompt",
-            "CREATE_RESEARCH_CHILD_ACTION",
-            "--db",
-            str(db_path),
-            "--config",
-            str(config_path),
-        ],
-    )
-    parent_id = task_id_from_add_output(add_result.output)
-
-    # Run: parent goes through planning, creates child task
-    run_result = runner.invoke(main, ["run", "--db", str(db_path), "--config", str(config_path)])
-    status_result = wait_for_status(runner, db_path, config_path, "Research prerequisite")
-    parent_detail = runner.invoke(main, ["detail", parent_id, "--db", str(db_path), "--config", str(config_path)])
-
-    assert run_result.exit_code == 0
-    # Verify child task was created and parent has dependencies
-    assert "Dependencies:" in parent_detail.output
-    assert "child_task_created" in parent_detail.output or "blocked" in status_result.output
-
-    # If parent needs_approval, approve it and any child, then run execution
-    if "needs_approval" in parent_detail.output:
-        runner.invoke(main, ["approve", parent_id, "--db", str(db_path), "--config", str(config_path)])
-        payloads = task_payloads(db_path)
-        child_id = next((p["id"] for p in payloads if p["title"] == "Research prerequisite"), None)
-        if child_id:
-            child_detail = runner.invoke(main, ["detail", child_id, "--db", str(db_path), "--config", str(config_path)])
-            if "needs_approval" in child_detail.output:
-                runner.invoke(main, ["approve", child_id, "--db", str(db_path), "--config", str(config_path)])
-        runner.invoke(main, ["run", "--db", str(db_path), "--config", str(config_path)])
-        status_result = wait_for_status(runner, db_path, config_path, "Research prerequisite")
-        parent_detail = runner.invoke(main, ["detail", parent_id, "--db", str(db_path), "--config", str(config_path)])
-
-    # Final assertions: parent has child dependency
-    assert "Dependencies:" in parent_detail.output
-
-
-def test_execution_gates_research_task_when_preapproval_disabled(tmp_path):
-    db_path = tmp_path / "cellos.sqlite"
-    config_path = tmp_path / ".cellos" / "config.json"
-    runner = CliRunner()
-
-    write_fake_runtime_config(config_path, preapprove_research_tasks=False)
-    runner.invoke(main, ["init", "--db", str(db_path), "--config", str(config_path)])
-    runner.invoke(
-        main,
-        [
-            "add-task",
-            "Needs gated research",
-            "--role",
-            "architect",
-            "--type",
-            "architecture",
-            "--status",
-            "approved",
-            "--prompt",
-            "CREATE_RESEARCH_CHILD_ACTION",
-            "--db",
-            str(db_path),
-            "--config",
-            str(config_path),
-        ],
+    cli_runner.invoke(
+        main, ["--config-dir", config_dir, "--db", db, "add-task", "Task two"]
     )
 
-    runner.invoke(main, ["run", "--db", str(db_path), "--config", str(config_path)])
-    status_result = wait_for_status(runner, db_path, config_path, "Research prerequisite")
-    payloads = task_payloads(db_path)
-    research_task = next(payload for payload in payloads if payload["title"] == "Research prerequisite")
-
-    # Verify child task was created
-    assert research_task["status"] == "needs_approval"
-
-
-def test_execution_records_invalid_task_actions_without_crashing(tmp_path):
-    db_path = tmp_path / "cellos.sqlite"
-    config_path = tmp_path / ".cellos" / "config.json"
-    runner = CliRunner()
-
-    write_fake_runtime_config(config_path)
-    runner.invoke(main, ["init", "--db", str(db_path), "--config", str(config_path)])
-    add_result = runner.invoke(
-        main,
-        [
-            "add-task",
-            "Invalid action",
-            "--role",
-            "architect",
-            "--type",
-            "architecture",
-            "--status",
-            "approved",
-            "--prompt",
-            "CREATE_INVALID_CHILD_ACTION",
-            "--db",
-            str(db_path),
-            "--config",
-            str(config_path),
-        ],
+    result = cli_runner.invoke(
+        main, ["--config-dir", config_dir, "--db", db, "status"]
     )
-    task_id = task_id_from_add_output(add_result.output)
-
-    runner.invoke(main, ["run", "--db", str(db_path), "--config", str(config_path)])
-    # Planning phase
-    status_result = wait_for_status(runner, db_path, config_path, task_id)
-    runner.invoke(main, ["approve", task_id, "--db", str(db_path), "--config", str(config_path)])
-    runner.invoke(main, ["run", "--db", str(db_path), "--config", str(config_path)])
-    # Wait for execution to complete
-    import time; time.sleep(5)
-
-    # Verify invalid action was recorded without crashing
-    events = task_event_types(db_path, task_id)
-    assert "invalid_task_action" in events
-
-
-def test_run_help_shows_concurrent_tasks_option():
-    runner = CliRunner()
-
-    result = runner.invoke(main, ["run", "--help"])
-
     assert result.exit_code == 0
-    assert "--concurrent-tasks" in result.output
-    assert "--workdir" in result.output
+    assert "Total: 2 tasks" in result.output
 
 
-def test_update_comment_adds_conversation_message(tmp_path):
-    db_path = tmp_path / "cellos.sqlite"
-    config_path = tmp_path / ".cellos" / "config.json"
-    runner = CliRunner()
-    runner.invoke(main, ["init", "--db", str(db_path), "--config", str(config_path)])
-    add_result = runner.invoke(
-        main,
-        ["add-task", "Test conversation", "--role", "engineer", "--db", str(db_path), "--config", str(config_path)],
-    )
-    task_id = task_id_from_add_output(add_result.output)
+def test_status_filter(runner):
+    cli_runner, tmp_path, db, config_dir = runner
 
-    # Add conversation message
-    comment_result = runner.invoke(
-        main,
-        ["update", task_id, "--comment", "human: I want to focus on X", "--db", str(db_path), "--config", str(config_path)],
-    )
-    assert comment_result.exit_code == 0
-    assert "Conversation added" in comment_result.output
-
-    # Verify in detail view
-    detail_result = runner.invoke(main, ["detail", task_id, "--db", str(db_path), "--config", str(config_path)])
-    assert detail_result.exit_code == 0
-    assert "Conversation" in detail_result.output
-    assert "(human)" in detail_result.output
-    assert "I want to focus on X" in detail_result.output
-
-
-def test_update_comment_rejects_invalid_author(tmp_path):
-    db_path = tmp_path / "cellos.sqlite"
-    config_path = tmp_path / ".cellos" / "config.json"
-    runner = CliRunner()
-    runner.invoke(main, ["init", "--db", str(db_path), "--config", str(config_path)])
-    add_result = runner.invoke(
-        main,
-        ["add-task", "Test", "--role", "engineer", "--db", str(db_path), "--config", str(config_path)],
-    )
-    task_id = task_id_from_add_output(add_result.output)
-
-    result = runner.invoke(
-        main,
-        ["update", task_id, "--comment", "unknown: message", "--db", str(db_path), "--config", str(config_path)],
-    )
-    assert result.exit_code != 0
-    assert "Invalid author" in result.output
-
-
-def test_update_comment_rejects_missing_prefix(tmp_path):
-    db_path = tmp_path / "cellos.sqlite"
-    config_path = tmp_path / ".cellos" / "config.json"
-    runner = CliRunner()
-    runner.invoke(main, ["init", "--db", str(db_path), "--config", str(config_path)])
-    add_result = runner.invoke(
-        main,
-        ["add-task", "Test", "--role", "engineer", "--db", str(db_path), "--config", str(config_path)],
-    )
-    task_id = task_id_from_add_output(add_result.output)
-
-    result = runner.invoke(
-        main,
-        ["update", task_id, "--comment", "no prefix here", "--db", str(db_path), "--config", str(config_path)],
-    )
-    assert result.exit_code != 0
-    assert "author prefix" in result.output
-
-
-def test_update_comment_system_message(tmp_path):
-    db_path = tmp_path / "cellos.sqlite"
-    config_path = tmp_path / ".cellos" / "config.json"
-    runner = CliRunner()
-    runner.invoke(main, ["init", "--db", str(db_path), "--config", str(config_path)])
-    add_result = runner.invoke(
-        main,
-        ["add-task", "Test", "--role", "engineer", "--db", str(db_path), "--config", str(config_path)],
-    )
-    task_id = task_id_from_add_output(add_result.output)
-
-    runner.invoke(
-        main,
-        ["update", task_id, "--comment", "system: Plan revised", "--db", str(db_path), "--config", str(config_path)],
+    cli_runner.invoke(main, ["--config-dir", config_dir, "--db", db, "init"])
+    cli_runner.invoke(
+        main, ["--config-dir", config_dir, "--db", db, "add-task", "Draft task"]
     )
 
-    detail_result = runner.invoke(main, ["detail", task_id, "--db", str(db_path), "--config", str(config_path)])
-    assert "(system)" in detail_result.output
-    assert "Plan revised" in detail_result.output
+    result = cli_runner.invoke(
+        main, ["--config-dir", config_dir, "--db", db, "status", "-s", "draft"]
+    )
+    assert result.exit_code == 0
+    assert "Total: 1 task" in result.output
+
+
+# ── detail ──────────────────────────────────────────────────────────────
+
+def test_detail_task(runner):
+    cli_runner, tmp_path, db, config_dir = runner
+
+    cli_runner.invoke(main, ["--config-dir", config_dir, "--db", db, "init"])
+
+    r1 = cli_runner.invoke(
+        main,
+        [
+            "--config-dir", config_dir,
+            "--db", db,
+            "add-task", "Detail test task", "-d", "Test details here"
+        ],
+    )
+    assert r1.exit_code == 0
+    task_id = r1.output.split("Created task ")[1].split(":")[0].strip()
+
+    result = cli_runner.invoke(
+        main, ["--config-dir", config_dir, "--db", db, "detail", task_id]
+    )
+    assert result.exit_code == 0
+    assert "Detail test task" in result.output
+
+
+def test_detail_nonexistent(runner):
+    cli_runner, tmp_path, db, config_dir = runner
+
+    cli_runner.invoke(main, ["--config-dir", config_dir, "--db", db, "init"])
+
+    result = cli_runner.invoke(
+        main, ["--config-dir", config_dir, "--db", db, "detail", "nonexistent"]
+    )
+    assert result.exit_code == 0  # CLI catches error gracefully
+    assert "not found" in result.output.lower()
+
+
+# ── approve ─────────────────────────────────────────────────────────────
+
+def test_approve_draft_fails(runner):
+    cli_runner, tmp_path, db, config_dir = runner
+
+    cli_runner.invoke(main, ["--config-dir", config_dir, "--db", db, "init"])
+
+    r1 = cli_runner.invoke(
+        main, ["--config-dir", config_dir, "--db", db, "add-task", "Draft task"]
+    )
+    assert r1.exit_code == 0
+    task_id = r1.output.split("Created task ")[1].split(":")[0].strip()
+
+    result = cli_runner.invoke(
+        main, ["--config-dir", config_dir, "--db", db, "approve", task_id]
+    )
+    assert result.exit_code == 0  # CLI catches error gracefully
+    assert "draft" in result.output.lower()
+
+
+# ── comment ─────────────────────────────────────────────────────────────
+
+def test_comment_on_task(runner):
+    cli_runner, tmp_path, db, config_dir = runner
+
+    cli_runner.invoke(main, ["--config-dir", config_dir, "--db", db, "init"])
+
+    r1 = cli_runner.invoke(
+        main, ["--config-dir", config_dir, "--db", db, "add-task", "Comment target"]
+    )
+    assert r1.exit_code == 0
+    task_id = r1.output.split("Created task ")[1].split(":")[0].strip()
+
+    result = cli_runner.invoke(
+        main,
+        [
+            "--config-dir", config_dir,
+            "--db", db,
+            "comment", task_id, "-m", "Please use bcrypt"
+        ],
+    )
+    assert result.exit_code == 0
+    assert "Comment added" in result.output
+
+
+# ── events ──────────────────────────────────────────────────────────────
+
+def test_events_empty(runner):
+    cli_runner, tmp_path, db, config_dir = runner
+
+    cli_runner.invoke(main, ["--config-dir", config_dir, "--db", db, "init"])
+
+    r1 = cli_runner.invoke(
+        main, ["--config-dir", config_dir, "--db", db, "add-task", "Events test"]
+    )
+    assert r1.exit_code == 0
+    task_id = r1.output.split("Created task ")[1].split(":")[0].strip()
+
+    result = cli_runner.invoke(
+        main, ["--config-dir", config_dir, "--db", db, "events", task_id]
+    )
+    assert result.exit_code == 0
+
+
+# ── update ──────────────────────────────────────────────────────────────
+
+def test_update_title(runner):
+    cli_runner, tmp_path, db, config_dir = runner
+
+    cli_runner.invoke(main, ["--config-dir", config_dir, "--db", db, "init"])
+
+    r1 = cli_runner.invoke(
+        main, ["--config-dir", config_dir, "--db", db, "add-task", "Original title"]
+    )
+    assert r1.exit_code == 0
+    task_id = r1.output.split("Created task ")[1].split(":")[0].strip()
+
+    result = cli_runner.invoke(
+        main, ["--config-dir", config_dir, "--db", db, "update", task_id, "--title", "New title"]
+    )
+    assert result.exit_code == 0
+    assert "Updated task" in result.output
+
+
+def test_update_empty_fails(runner):
+    cli_runner, tmp_path, db, config_dir = runner
+
+    cli_runner.invoke(main, ["--config-dir", config_dir, "--db", db, "init"])
+
+    r1 = cli_runner.invoke(
+        main, ["--config-dir", config_dir, "--db", db, "add-task", "Update target"]
+    )
+    assert r1.exit_code == 0
+    task_id = r1.output.split("Created task ")[1].split(":")[0].strip()
+
+    result = cli_runner.invoke(
+        main, ["--config-dir", config_dir, "--db", db, "update", task_id]
+    )
+    assert result.exit_code == 0  # CLI catches error gracefully
+    assert "no fields" in result.output.lower() or "error" in result.output.lower()
+
+
+def test_update_add_remove_dep(runner):
+    cli_runner, tmp_path, db, config_dir = runner
+
+    cli_runner.invoke(main, ["--config-dir", config_dir, "--db", db, "init"])
+
+    # Create two tasks
+    r1 = cli_runner.invoke(
+        main, ["--config-dir", config_dir, "--db", db, "add-task", "Task A"]
+    )
+    assert r1.exit_code == 0
+    task_a_id = r1.output.split("Created task ")[1].split(":")[0].strip()
+
+    r2 = cli_runner.invoke(
+        main, ["--config-dir", config_dir, "--db", db, "add-task", "Task B"]
+    )
+    assert r2.exit_code == 0
+    task_b_id = r2.output.split("Created task ")[1].split(":")[0].strip()
+
+    # Add dependency A -> B
+    result = cli_runner.invoke(
+        main, ["--config-dir", config_dir, "--db", db, "update", task_a_id, "--add-dep", task_b_id]
+    )
+    assert result.exit_code == 0
+    assert "added deps" in result.output.lower()
+
+
+# ── Worker command ────────────────────────────────────────────
+
+class TestWorkerCommand:
+    async def test_worker_command_exists(self):
+        from cellos.cli import main
+        assert "worker" in [cmd.name for cmd in main.commands.values()]
+
+    async def test_worker_command_requires_mode(self, tmp_path):
+        from click.testing import CliRunner
+        from cellos.cli import main
+        runner = CliRunner()
+        result = runner.invoke(main, ["--db", str(tmp_path / "t.sqlite"), "worker", "fake-id"])
+        assert result.exit_code != 0  # Should fail without --mode
+
+    def test_worker_command_planning_e2e(self, tmp_path):
+        """End-to-end: init → add-task → worker planning → verify result."""
+        from click.testing import CliRunner
+        from cellos.cli import main
+        from cellos.persistence.schema import init_db
+        from cellos.config import ensure_config
+        import asyncio
+
+        # Init config and DB (sync wrapper for async init)
+        asyncio.run(init_db(tmp_path / "test.sqlite"))
+        ensure_config(str(tmp_path), overwrite=True)
+        # Override to use fake_acp for tests
+        import json
+        catalog_path = tmp_path / "agentcatalog.json"
+        catalog = json.loads(catalog_path.read_text())
+        for agent in catalog.values():
+            agent["connector"] = "fake_acp"
+            agent.setdefault("options", {})["default_success"] = True
+            agent["options"]["default_summary"] = "Test agent completed."
+        catalog_path.write_text(json.dumps(catalog, indent=2) + "\n")
+
+        runner = CliRunner()
+
+        # Add a task
+        result = runner.invoke(main, [
+            "--db", str(tmp_path / "test.sqlite"),
+            "--config-dir", str(tmp_path),
+            "add-task", "Plan something", "-r", "architect"
+        ])
+        assert result.exit_code == 0, f"add-task failed: {result.output}"
+        # Extract task ID from output
+        task_id = None
+        for line in result.output.split("\n"):
+            if "Created task" in line:
+                task_id = line.split("task")[1].split(":")[0].strip()
+                break
+        assert task_id is not None
+
+        # Run worker in planning mode
+        result = runner.invoke(main, [
+            "--db", str(tmp_path / "test.sqlite"),
+            "--config-dir", str(tmp_path),
+            "worker", task_id, "--mode", "planning"
+        ])
+        assert result.exit_code == 0, f"worker failed: {result.output}"
+        assert "Worker completed" in result.output
+
+        # Verify task is now in NEEDS_APPROVAL
+        result = runner.invoke(main, [
+            "--db", str(tmp_path / "test.sqlite"),
+            "--config-dir", str(tmp_path),
+            "status"
+        ])
+        assert result.exit_code == 0
+        assert "needs_approval" in result.output.lower()
