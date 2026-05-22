@@ -1,109 +1,125 @@
-"""Database schema and initialization helpers for CelloS."""
-
-from pathlib import Path
-from typing import Any
+"""SQLite schema definitions and initialization."""
 
 import aiosqlite
+from pathlib import Path
 
-REQUIRED_TABLES = {
+
+REQUIRED_TABLES = frozenset({
     "tasks",
     "task_dependencies",
     "task_results",
     "task_events",
     "task_comments",
     "task_attempts",
-}
+})
 
-
-class DatabaseNotInitialized(RuntimeError):
-    def __init__(self, path: Path):
-        super().__init__(f"CelloS database is not initialized at {path}. Run `cellos init` first.")
-
-
-SCHEMA_SQL = """
+SCHEMA_SQL = """\
 CREATE TABLE IF NOT EXISTS tasks (
     id TEXT PRIMARY KEY,
-    parent_id TEXT,
-    role TEXT NOT NULL,
+    title TEXT NOT NULL,
+    details TEXT DEFAULT '',
+    status TEXT NOT NULL DEFAULT 'draft',
+    role TEXT NOT NULL DEFAULT 'engineer',
     task_type TEXT NOT NULL,
-    status TEXT NOT NULL,
-    attention_required INTEGER NOT NULL,
-    assigned_worker_id TEXT,
+    plan TEXT DEFAULT '',
+    prompt_text TEXT DEFAULT '',
+    parent_id TEXT REFERENCES tasks(id),
+    agent_id TEXT DEFAULT '',
+    success_criteria TEXT DEFAULT '',
+    failure_criteria TEXT DEFAULT '',
+    dependencies TEXT DEFAULT '[]',
+    attention TEXT DEFAULT '{"required": false}',
+    processing TEXT DEFAULT '{}',
+    conversation TEXT DEFAULT '[]',
+    result TEXT DEFAULT '',
+    comments TEXT DEFAULT '[]',
     created_at TEXT NOT NULL,
-    updated_at TEXT NOT NULL,
-    payload TEXT NOT NULL,
-    conversation TEXT NOT NULL DEFAULT '[]'
+    updated_at TEXT NOT NULL
 );
 
+CREATE INDEX IF NOT EXISTS idx_attention_required
+    ON tasks(json_extract(attention, '$.required'));
+
 CREATE TABLE IF NOT EXISTS task_dependencies (
-    task_id TEXT NOT NULL,
-    depends_on_task_id TEXT NOT NULL,
-    PRIMARY KEY (task_id, depends_on_task_id),
-    FOREIGN KEY (task_id) REFERENCES tasks(id) ON DELETE CASCADE,
-    FOREIGN KEY (depends_on_task_id) REFERENCES tasks(id) ON DELETE CASCADE
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    task_id TEXT NOT NULL REFERENCES tasks(id),
+    depends_on_task_id TEXT NOT NULL REFERENCES tasks(id),
+    status_satisfied BOOLEAN DEFAULT FALSE,
+    created_at TEXT NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS task_results (
-    task_id TEXT PRIMARY KEY,
-    success INTEGER NOT NULL,
-    created_at TEXT NOT NULL,
-    payload TEXT NOT NULL,
-    FOREIGN KEY (task_id) REFERENCES tasks(id) ON DELETE CASCADE
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    task_id TEXT NOT NULL REFERENCES tasks(id),
+    success BOOLEAN NOT NULL,
+    summary TEXT DEFAULT '',
+    output TEXT DEFAULT '',
+    created_at TEXT NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS task_events (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
-    task_id TEXT NOT NULL,
+    task_id TEXT NOT NULL REFERENCES tasks(id),
     event_type TEXT NOT NULL,
-    message TEXT NOT NULL,
-    created_at TEXT NOT NULL,
-    payload TEXT NOT NULL DEFAULT '{}',
-    FOREIGN KEY (task_id) REFERENCES tasks(id) ON DELETE CASCADE
+    message TEXT DEFAULT '',
+    created_at TEXT NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS task_comments (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    task_id TEXT NOT NULL,
+    id TEXT PRIMARY KEY,
+    task_id TEXT NOT NULL REFERENCES tasks(id),
     author_type TEXT NOT NULL,
-    author_id TEXT NOT NULL,
-    message TEXT NOT NULL,
-    created_at TEXT NOT NULL,
-    payload TEXT NOT NULL DEFAULT '{}',
-    FOREIGN KEY (task_id) REFERENCES tasks(id) ON DELETE CASCADE
+    author_id TEXT DEFAULT '',
+    content TEXT NOT NULL,
+    created_at TEXT NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS task_attempts (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    task_id TEXT NOT NULL,
-    mode TEXT NOT NULL,
-    agent_id TEXT NOT NULL,
-    connector TEXT NOT NULL,
-    status TEXT NOT NULL,
-    prompt_snapshot TEXT NOT NULL,
-    result_summary TEXT NOT NULL DEFAULT '',
-    result_payload TEXT NOT NULL DEFAULT '{}',
-    error TEXT,
-    log_path TEXT NOT NULL DEFAULT '',
+    id TEXT PRIMARY KEY,
+    task_id TEXT NOT NULL REFERENCES tasks(id),
+    status TEXT NOT NULL DEFAULT 'started',
+    mode TEXT DEFAULT '',
+    agent_id TEXT DEFAULT '',
+    result_summary TEXT DEFAULT '',
+    error_message TEXT DEFAULT '',
     started_at TEXT NOT NULL,
-    completed_at TEXT,
-    payload TEXT NOT NULL DEFAULT '{}',
-    FOREIGN KEY (task_id) REFERENCES tasks(id) ON DELETE CASCADE
+    completed_at TEXT DEFAULT ''
 );
 """
 
 
-async def init_db(conn: aiosqlite.Connection) -> None:
-    await conn.executescript(SCHEMA_SQL)
-    await conn.commit()
+class DatabaseNotInitialized(Exception):
+    """Raised when the database has not been initialized."""
 
 
-async def ensure_initialized(conn: aiosqlite.Connection, path: Path) -> None:
-    placeholders = ", ".join("?" for _ in REQUIRED_TABLES)
-    cursor = await conn.execute(
-        f"SELECT name FROM sqlite_master WHERE type = 'table' AND name IN ({placeholders})",
-        tuple(sorted(REQUIRED_TABLES)),
-    )
-    rows = await cursor.fetchall()
-    found_tables = {row["name"] for row in rows}
-    if found_tables != REQUIRED_TABLES:
-        raise DatabaseNotInitialized(path)
+async def init_db(db_path: str | Path) -> None:
+    """Initialize the SQLite database by creating all tables.
+
+    Idempotent — safe to call multiple times.
+    """
+    async with aiosqlite.connect(str(db_path)) as db:
+        await db.executescript(SCHEMA_SQL)
+        await db.commit()
+
+
+async def ensure_initialized(db_path: str | Path) -> None:
+    """Verify all required tables exist; raise if not initialized.
+
+    Checks table existence rather than relying on a sentinel file, so it's
+    resilient to manual DB drops or corruption.
+    """
+    async with aiosqlite.connect(str(db_path)) as db:
+        await db.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' ORDER BY name"
+        )
+        cursor = await db.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' ORDER BY name"
+        )
+        existing = {row[0] async for row in cursor}
+
+    missing = REQUIRED_TABLES - existing
+    if missing:
+        raise DatabaseNotInitialized(
+            f"Database not initialized. Missing tables: {', '.join(sorted(missing))}. "
+            "Run 'cellos init' to create them."
+        )

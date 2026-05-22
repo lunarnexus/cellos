@@ -1,173 +1,309 @@
-"""Async SQLite persistence for CelloS."""
+"""CellosDatabase — async SQLite facade wrapping repository functions."""
 
+from __future__ import annotations
+
+import datetime
 import json
 from pathlib import Path
-from typing import Any
+from typing import Optional
 
 import aiosqlite
 
-from cellos.models import CommentAuthorType, Task, TaskAttempt, TaskAttemptStatus, TaskComment, TaskResult, TaskStatus, TaskType, utc_now
-from cellos.persistence.schema import (
-    REQUIRED_TABLES,
-    DatabaseNotInitialized,
-    ensure_initialized,
-    init_db,
+from cellos.models import (
+    AttentionMetadata,
+    CommentAuthorType,
+    ConversationMessage,
+    ProcessingMetadata,
+    Task,
+    TaskAttempt,
+    TaskComment,
+    TaskDependency,
+    TaskEvent,
+    TaskResult,
+    TaskStatus,
 )
-from cellos.persistence.serialization import attempt_row, json_payload, task_row
-from cellos.persistence.event_repository import list_task_events, record_task_event
-from cellos.persistence.comment_repository import add_task_comment as _add_task_comment, list_task_comments as _list_task_comments
-from cellos.persistence.attempt_repository import complete_task_attempt as _complete_task_attempt, list_task_attempts as _list_task_attempts, start_task_attempt as _start_task_attempt
-from cellos.persistence.task_repository import (
-    create_task as _create_task,
-    dependencies_satisfied as _dependencies_satisfied,
-    fetchone as _fetchone,
-    get_task as _get_task,
-    list_approved_unblocked_tasks as _list_approved_unblocked_tasks,
-    list_tasks as _list_tasks,
-    list_tasks_depending_on as _list_tasks_depending_on,
-    list_tasks_ready_for_planning as _list_tasks_ready_for_planning,
-    list_tasks_requiring_attention as _list_tasks_requiring_attention,
-    replace_dependencies as _replace_dependencies,
-    update_task as _update_task,
-    update_task_status as _update_task_status,
+
+from cellos.persistence.attempt_repository import (
+    create_attempt as _create_attempt,
+    list_attempts as _list_attempts,
+    update_attempt as _update_attempt,
+)
+from cellos.persistence.comment_repository import (
+    create_comment as _create_comment,
+    list_comments as _list_comments,
+)
+from cellos.persistence.event_repository import (
+    create_event as _create_event,
+    list_events as _list_events,
 )
 from cellos.persistence.result_repository import (
+    add_dependency_result_comment as _add_dep_comment,
+    complete_parent_if_all_children_done as _complete_parent,
     save_task_result as _save_task_result,
-    _wake_satisfied_blocked_dependents as _wake_satisfied_blocked_dependents_repo,
-    _add_dependency_result_comments as _add_dependency_result_comments_repo,
+    wake_blocked_dependents as _wake_blocked,
+)
+from cellos.persistence.schema import DatabaseNotInitialized, ensure_initialized, init_db
+from cellos.persistence.task_repository import (
+    _replace_dependencies,
+    create_task as _create_task,
+    get_task as _get_task,
+    list_approved_unblocked_tasks as _list_approved_unblocked,
+    list_tasks as _list_tasks,
+    list_tasks_depending_on as _list_dependents,
+    list_tasks_ready_for_planning as _list_planning_candidates,
+    list_tasks_requiring_attention as _list_attention_tasks,
+    update_task as _update_task,
+    update_task_status as _update_task_status,
 )
 
 
 class CellosDatabase:
-    def __init__(self, path: str | Path):
-        self.path = Path(path)
-        self._conn: aiosqlite.Connection | None = None
+    """Async SQLite facade over persistence repositories.
 
-    async def connect(self) -> None:
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        self._conn = await aiosqlite.connect(self.path)
-        self._conn.row_factory = aiosqlite.Row
-        await self._conn.execute("PRAGMA foreign_keys = ON")
+    Manages connection lifecycle and delegates CRUD/scheduler queries to
+    function-based repository modules.
+    """
+
+    def __init__(self, db_path: str | Path):
+        self.db_path = str(db_path)
+        self._conn: Optional[aiosqlite.Connection] = None
+
+    @property
+    def conn(self) -> aiosqlite.Connection:
+        if self._conn is None:
+            raise RuntimeError("Database not connected. Call connect() first.")
+        return self._conn
+
+    async def connect(self, foreign_keys: bool = False) -> aiosqlite.Connection:
+        """Open the SQLite connection."""
+        await ensure_initialized(self.db_path)
+        self._conn = await aiosqlite.connect(self.db_path)
+        if foreign_keys:
+            await self._conn.execute("PRAGMA foreign_keys = ON")
+        return self._conn
+
+    async def connect_without_fk(self) -> aiosqlite.Connection:
+        """Open without FK enforcement (for testing/migrations)."""
+        await ensure_initialized(self.db_path)
+        self._conn = await aiosqlite.connect(self.db_path)
+        return self._conn
 
     async def close(self) -> None:
         if self._conn is not None:
             await self._conn.close()
             self._conn = None
 
-    @property
-    def conn(self) -> aiosqlite.Connection:
-        if self._conn is None:
-            raise RuntimeError("Database is not connected")
-        return self._conn
-
-    async def init_db(self) -> None:
-        await init_db(self.conn)
-
-    async def ensure_initialized(self) -> None:
-        await ensure_initialized(self.conn, self.path)
+    # ── Task CRUD ────────────────────────────────────────────────
 
     async def create_task(self, task: Task) -> None:
-        await _create_task(self.conn, task)
-        await self._replace_dependencies(task)
-        await self.record_task_event(task.id, "created", "Task created")
-        await self.conn.commit()
+        """Insert a new task and record the creation event."""
+        conn = self.conn
+        await _create_task(conn, task)
+        await _create_event(
+            conn, task.id, "task_created", f"Task created: {task.title}"
+        )
+        await conn.commit()
 
-    async def update_task(self, task: Task) -> Task:
-        updated = await _update_task(self.conn, task)
-        await self._replace_dependencies(updated)
-        await self.conn.commit()
-        return updated
-
-    async def get_task(self, task_id: str) -> Task | None:
+    async def get_task(self, task_id: str) -> Optional[Task]:
         return await _get_task(self.conn, task_id)
 
-    async def list_tasks(self, status: TaskStatus | None = None) -> list[Task]:
-        return await _list_tasks(self.conn, status=status)
+    async def list_tasks(
+        self, status_filter: Optional[str] = None
+    ) -> list[Task]:
+        return await _list_tasks(self.conn, status_filter=status_filter)
 
-    async def list_tasks_requiring_attention(self, limit: int | None = None) -> list[Task]:
-        return await _list_tasks_requiring_attention(self.conn, limit=limit)
+    async def update_task(self, task: Task) -> bool:
+        """Update a task and commit. Returns True if row existed."""
+        conn = self.conn
+        result = await _update_task(conn, task)
+        await conn.commit()
+        return result
 
-    async def list_tasks_ready_for_planning(self, limit: int | None = None) -> list[Task]:
-        return await _list_tasks_ready_for_planning(self.conn, limit=limit)
-
-    async def list_approved_unblocked_tasks(self, limit: int | None = None) -> list[Task]:
-        return await _list_approved_unblocked_tasks(self.conn, limit=limit)
-
-    async def list_tasks_depending_on(self, task_id: str) -> list[Task]:
-        return await _list_tasks_depending_on(self.conn, task_id)
-
-    async def dependencies_satisfied(self, task: Task) -> bool:
-        return await _dependencies_satisfied(self.conn, task)
-
-    async def list_task_events(self, task_id: str | None = None, limit: int | None = None) -> list[dict[str, Any]]:
-        return await list_task_events(self.conn, task_id=task_id, limit=limit)
-
-    async def add_task_comment(self, comment: TaskComment) -> TaskComment:
-        saved = await _add_task_comment(self.conn, comment)
-        await record_task_event(self.conn, comment.task_id, "comment_added", f"{comment.author_type.value}: {comment.message}")
-        await self.conn.commit()
-        return saved
-
-    async def list_task_comments(self, task_id: str, limit: int | None = None) -> list[dict[str, Any]]:
-        return await _list_task_comments(self.conn, task_id=task_id, limit=limit)
-
-    async def start_task_attempt(self, attempt: TaskAttempt) -> TaskAttempt:
-        saved = await _start_task_attempt(self.conn, attempt)
-        await record_task_event(self.conn, attempt.task_id, "attempt_started", f"{attempt.mode} attempt started")
-        await self.conn.commit()
-        return saved
-
-    async def complete_task_attempt(
-        self,
-        attempt_id: int,
-        status: TaskAttemptStatus,
-        result_summary: str,
-        result_payload: dict[str, Any] | None = None,
-        error: str | None = None,
+    async def update_task_status(
+        self, task_id: str, new_status: TaskStatus
     ) -> None:
-        await _complete_task_attempt(self.conn, attempt_id, status, result_summary, result_payload, error)
-        row = await _fetchone(self.conn, "SELECT task_id, mode FROM task_attempts WHERE id = ?", (attempt_id,))
-        if row is not None:
-            await record_task_event(self.conn, row["task_id"], "attempt_completed", f"{row['mode']} attempt {status.value}")
-        await self.conn.commit()
+        """Partial status update with event recording."""
+        old_task = await _get_task(self.conn, task_id)
+        if not old_task:
+            raise ValueError(f"Task {task_id} not found")
 
-    async def list_task_attempts(self, task_id: str, limit: int | None = None) -> list[dict[str, Any]]:
-        return await _list_task_attempts(self.conn, task_id=task_id, limit=limit)
+        conn = self.conn
+        await _update_task_status(conn, task_id, new_status)
+        await _create_event(
+            conn,
+            task_id,
+            "status_changed",
+            f"Status changed from {old_task.status.value} to {new_status.value}",
+        )
+        await conn.commit()
 
-    async def update_task_status(self, task_id: str, status: TaskStatus) -> Task:
-        task = await self.get_task(task_id)
-        if task is None:
-            raise KeyError(f"Task not found: {task_id}")
+    # ── Scheduler queries ────────────────────────────────────────
 
-        updated = await _update_task_status(self.conn, task_id, status, task)
-        await self.record_task_event(task_id, "status_changed", f"Task marked {status.value}")
-        await self.conn.commit()
-        return updated
+    async def list_tasks_requiring_attention(self) -> list[Task]:
+        return await _list_attention_tasks(self.conn)
 
-    async def save_task_result(self, result: TaskResult) -> None:
-        await _save_task_result(self.conn, result, self)
+    async def list_tasks_ready_for_planning(self) -> list[Task]:
+        return await _list_planning_candidates(self.conn)
 
-    async def record_task_event(
+    async def list_approved_unblocked_tasks(
+        self, max_results: int = 10
+    ) -> list[Task]:
+        return await _list_approved_unblocked(self.conn, max_results=max_results)
+
+    # ── Dependencies ─────────────────────────────────────────────
+
+    async def add_dependencies(
+        self, task_id: str, dependencies: list[TaskDependency]
+    ) -> None:
+        """Add new dependencies to a task (merge with existing)."""
+        conn = self.conn
+        task = await _get_task(conn, task_id)
+        if not task:
+            raise ValueError(f"Task {task_id} not found")
+
+        # Merge: keep existing deps that don't overlap, add new ones
+        existing_ids = {d.task_id for d in task.dependencies}
+        merged = list(task.dependencies)
+        for dep in dependencies:
+            if dep.task_id not in existing_ids:
+                merged.append(dep)
+
+        await _update_task(conn, task.model_copy(update={"dependencies": merged}))
+        await _replace_dependencies(conn, task_id, merged)
+        await conn.commit()
+
+    async def remove_dependencies(self, task_id: str, dep_ids: list[str]) -> None:
+        """Remove specific dependencies from a task."""
+        conn = self.conn
+        task = await _get_task(conn, task_id)
+        if not task:
+            raise ValueError(f"Task {task_id} not found")
+
+        remaining = [d for d in task.dependencies if d.task_id not in dep_ids]
+        await _update_task(conn, task.model_copy(update={"dependencies": remaining}))
+        await _replace_dependencies(conn, task_id, remaining)
+        await conn.commit()
+
+    async def dependencies_satisfied(self, task_id: str) -> bool:
+        """Check if all dependencies for a task are satisfied."""
+        task = await _get_task(self.conn, task_id)
+        if not task or not task.dependencies:
+            return True
+        return all(d.status_satisfied for d in task.dependencies)
+
+    async def list_tasks_depending_on(self, task_id: str) -> list[int]:
+        """Return junction table row IDs of tasks depending on this one."""
+        return await _list_dependents(self.conn, task_id)
+
+    # ── Results ───────────────────────────────────────────────────
+
+    async def save_task_result(
         self,
         task_id: str,
-        event_type: str,
-        message: str,
-        payload: dict[str, Any] | None = None,
+        success: bool,
+        summary: str,
+        output: Optional[str] = None,
+    ) -> list[str]:
+        """Save a result, wake blocked dependents, check parent completion.
+
+        Returns list of affected task IDs (dependents + parent if transitioned).
+        """
+        conn = self.conn
+        await _save_task_result(conn, task_id, success, summary, output=output)
+
+        event_type = "execution_succeeded" if success else "execution_failed"
+        await _create_event(
+            conn, task_id, event_type, summary or "Execution completed"
+        )
+
+        affected = await _wake_blocked(conn, task_id)
+        for parent_id in affected:
+            await _add_dep_comment(conn, parent_id, task_id)
+
+        # Check if parent should transition (all children done or any failed)
+        parent_id = await _complete_parent(conn, task_id)
+        if parent_id:
+            await _create_event(
+                conn, parent_id, "status_changed",
+                f"Parent task status updated due to child {task_id} completion."
+            )
+            if parent_id not in affected:
+                affected.append(parent_id)
+
+        await conn.commit()
+        return affected
+
+    # ── Events ────────────────────────────────────────────────────
+
+    async def create_event(
+        self, task_id: str, event_type: str, message: str
+    ) -> TaskEvent:
+        event = await _create_event(self.conn, task_id, event_type, message)
+        await self.conn.commit()
+        return event
+
+    async def list_events(
+        self, task_id: str, limit: int = 50
+    ) -> list[TaskEvent]:
+        return await _list_events(self.conn, task_id, limit=limit)
+
+    # ── Comments ──────────────────────────────────────────────────
+
+    async def create_comment(
+        self,
+        task_id: str,
+        author_type: CommentAuthorType,
+        content: str,
+        author_id: Optional[str] = None,
+    ) -> TaskComment:
+        comment = await _create_comment(
+            self.conn, task_id, author_type, content, author_id=author_id
+        )
+        await self.conn.commit()
+        return comment
+
+    async def list_comments(self, task_id: str) -> list[TaskComment]:
+        return await _list_comments(self.conn, task_id)
+
+    # ── Attempts ──────────────────────────────────────────────────
+
+    async def create_attempt(
+        self,
+        task_id: str,
+        mode: Optional[str] = None,
+        agent_id: Optional[str] = None,
+    ) -> TaskAttempt:
+        attempt = await _create_attempt(self.conn, task_id, mode=mode, agent_id=agent_id)
+        await self.conn.commit()
+        return attempt
+
+    async def update_attempt(
+        self,
+        attempt_id: str,
+        status: TaskStatus,  # Note: uses TaskAttemptStatus in repo but exposed as TaskStatus here for type safety
+        result_summary: Optional[str] = None,
+        error_message: Optional[str] = None,
     ) -> None:
-        await record_task_event(self.conn, task_id, event_type, message, payload)
+        from cellos.models import TaskAttemptStatus
 
-    async def _replace_dependencies(self, task: Task) -> None:
-        await _replace_dependencies(self.conn, task)
+        attempt_status_map = {
+            TaskStatus.DONE: TaskAttemptStatus.SUCCEEDED,
+            TaskStatus.FAILED: TaskAttemptStatus.FAILED,
+            TaskStatus.CANCELLED: TaskAttemptStatus.FAILED,
+        }
+        repo_status = attempt_status_map.get(status, TaskAttemptStatus.STARTED)
 
-    async def _wake_satisfied_blocked_dependents(self, completed_task_id: str) -> None:
-        await _wake_satisfied_blocked_dependents_repo(self.conn, completed_task_id, self)
+        await _update_attempt(
+            self.conn, attempt_id, repo_status, result_summary=result_summary, error_message=error_message
+        )
+        await self.conn.commit()
 
-    async def _add_dependency_result_comments(self, completed_task: Task, result: TaskResult) -> None:
-        await _add_dependency_result_comments_repo(self.conn, completed_task, result, self)
-
-    async def _fetchone(self, sql: str, params: tuple[Any, ...]):
-        return await _fetchone(self.conn, sql, params)
+    async def list_attempts(self, task_id: str) -> list[TaskAttempt]:
+        return await _list_attempts(self.conn, task_id)
 
 
-def _json(payload: dict[str, Any]) -> str:
-    return json.dumps(payload)
+async def init_database(db_path: str | Path) -> None:
+    """Top-level convenience: initialize DB and verify."""
+    db = CellosDatabase(db_path)
+    await db.connect()
+    await db.close()
