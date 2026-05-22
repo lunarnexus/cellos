@@ -1,394 +1,670 @@
-"""Command line interface for CelloS."""
+"""CelloS CLI — Click command group for human task management.
+
+All manual operations: init, add-task, status, detail, approve, comment, events, update.
+No ACP integration yet — everything is local state manipulation via services layer.
+"""
+
+from __future__ import annotations
 
 import asyncio
+import logging
 from pathlib import Path
-from uuid import uuid4
+from typing import Optional
 
 import click
 from rich.console import Console
+from rich.panel import Panel
+from rich.table import Table
 
-from cellos.cli_app import (
-    DEFAULT_DB_PATH,
-    DEFAULT_WORKDIR,
-    _open_app,
-    _resolve_db_path,
-    _resolve_workdir,
-    _run_cli,
+from cellos.config import ensure_config, load_config
+from cellos.db import CellosDatabase
+from cellos.models import (
+    AgentRole,
+    AttentionReason,
+    CommentAuthorType,
+    TaskDependency,
+    TaskStatus,
+    TaskType,
 )
-from cellos.cli_formatting import detail_formatter, events_formatter, status_formatter
-from cellos.config import DEFAULT_CONFIG_PATH
-from cellos.models import AgentRole, Task, TaskStatus, TaskType
-from cellos.services.scheduler import SchedulerService
+from cellos.persistence.schema import init_db
 from cellos.services.task_service import (
     EmptyTaskUpdateError,
     InvalidTaskApprovalError,
     TaskNotFoundError,
     TaskService,
 )
-from cellos.services.worker_service import WorkerService
 
 console = Console()
 
 
-# Re-exports for backward compatibility and tests
-__all__ = [
-    "DEFAULT_DB_PATH",
-    "DEFAULT_WORKDIR",
-    "_resolve_db_path",
-    "_resolve_workdir",
-    "main",
-]
+# ── Global options via context params ────────────────────────────────────────
+
+DEFAULT_DB_PATH = str(Path.home() / ".cellos" / "cellos.sqlite")
+DEFAULT_CONFIG_DIR = str(Path.home() / ".cellos")
+DEFAULT_DEBUG_LOG = str(Path.home() / ".cellos" / "debug.log")
+
+
+def _debug_callback(ctx: click.Context, param: click.Parameter, value: str | bool | None) -> str | None:
+    """Handle --debug flag with optional path argument."""
+    if value is True:  # Flag used without argument
+        return DEFAULT_DEBUG_LOG
+    if isinstance(value, str):
+        return value
+    return None
 
 
 @click.group(context_settings={"help_option_names": ["-h", "--help"]})
-def main() -> None:
-    """CelloS orchestration CLI."""
+@click.option("--db", default=DEFAULT_DB_PATH, help="Path to SQLite database.")
+@click.option(
+    "--config-dir", default=DEFAULT_CONFIG_DIR, help="Directory containing config files."
+)
+@click.option(
+    "--debug",
+    default=None,
+    is_flag=True,
+    flag_value=DEFAULT_DEBUG_LOG,
+    help="Enable debug logging to file. Defaults to ~/.cellos/debug.log",
+)
+@click.pass_context
+def main(ctx: click.Context, db: str, config_dir: str, debug: str | None):
+    """CelloS — Human-governed AI orchestration."""
+    ctx.ensure_object(dict)
+    ctx.obj["db"] = db
+    ctx.obj["config_dir"] = config_dir
 
-
-@main.command()
-@click.option("--workdir", type=click.Path(path_type=Path), default=None)
-@click.option("--db", "db_path", type=click.Path(path_type=Path), default=None)
-@click.option("--config", "config_path", type=click.Path(path_type=Path), default=DEFAULT_CONFIG_PATH)
-@click.option("--hard-reset", is_flag=True, help="Reset local DB and overwrite config from defaults.")
-def init(workdir, db_path, config_path, hard_reset):
-    """Initialize local CelloS state."""
-    resolved_workdir = _resolve_workdir(workdir)
-    resolved_db_path = _resolve_db_path(db_path, resolved_workdir)
-    if hard_reset and resolved_db_path.exists():
-        resolved_db_path.unlink()
-    if hard_reset:
-        logs_dir = resolved_workdir / ".cellos" / "logs"
-        if logs_dir.is_dir():
-            log_files = list(logs_dir.glob("worker-*.log"))
-            for f in log_files:
-                f.unlink()
-            console.print(f"Cleared [dim]{len(log_files)}[/dim] worker log(s)")
-    from cellos.config import ensure_config
-
-    copied_config = ensure_config(config_path, overwrite=hard_reset)
-
-    async def _init():
-        from cellos.db import CellosDatabase
-
-        db = CellosDatabase(resolved_db_path)
-        await db.connect()
-        await db.init_db()
-        await db.close()
-
-    asyncio.run(_init())
-    console.print(f"Initialized database at [bold]{resolved_db_path}[/bold]")
-    console.print(f"Initialized config at [bold]{copied_config}[/bold]")
-    console.print(f"Initialized agent catalog at [bold]{copied_config.parent / 'agentcatalog.json'}[/bold]")
-    console.print(f"Initialized prompt profiles at [bold]{copied_config.parent / 'promptprofiles.json'}[/bold]")
-
-
-@main.command("add-task")
-@click.argument("title")
-@click.option("--role", type=click.Choice([item.value for item in AgentRole]), default=AgentRole.ENGINEER.value)
-@click.option("--type", "task_type", type=click.Choice([item.value for item in TaskType]), default=TaskType.PROPOSAL.value)
-@click.option("--status", type=click.Choice([item.value for item in TaskStatus]), default=TaskStatus.DRAFT.value)
-@click.option("--details", default="", help="Task details, constraints, or supporting context.")
-@click.option("--success-criteria", default="", help="How success should be evaluated.")
-@click.option("--failure-criteria", default="", help="Failure, avoidance, or constraint criteria.")
-@click.option("--plan", default="", help="Current plan or approved plan text.")
-@click.option("--prompt", default="", help="Task prompt or approved execution scope.")
-@click.option("--depends", "depends_on", multiple=True, help="Task ID this task depends on. May be repeated.")
-@click.option("--parent", "parent_id", default=None, help="Parent task ID.")
-@click.option("--timeout", type=int, default=None, help="Per-task worker timeout in seconds.")
-@click.option("--agent", "agent_id", default=None, help="Agent catalog ID to run this task with.")
-@click.option("--workdir", type=click.Path(path_type=Path), default=None)
-@click.option("--db", "db_path", type=click.Path(path_type=Path), default=None)
-@click.option("--config", "config_path", type=click.Path(path_type=Path), default=DEFAULT_CONFIG_PATH)
-def add_task(title, role, task_type, status, details, success_criteria, failure_criteria, plan, prompt, depends_on, parent_id, timeout, agent_id, workdir, db_path, config_path):
-    """Add a task to the local CelloS database."""
-    task = Task(
-        id=uuid4().hex[:8],
-        title=title,
-        details=details,
-        success_criteria=success_criteria,
-        failure_criteria=failure_criteria,
-        role=AgentRole(role),
-        task_type=TaskType(task_type),
-        status=TaskStatus(status),
-        plan=plan,
-        prompt=prompt,
-        parent_id=parent_id,
-        dependencies=list(depends_on),
-        timeout_seconds=timeout,
-        agent_id=agent_id,
-    )
-    _run_cli(_add_task(db_path, config_path, workdir, task))
-    console.print(f"Added [bold]{task.id}[/bold]: {task.title}")
-
-
-@main.command()
-@click.option("--workdir", type=click.Path(path_type=Path), default=None)
-@click.option("--db", "db_path", type=click.Path(path_type=Path), default=None)
-@click.option("--config", "config_path", type=click.Path(path_type=Path), default=DEFAULT_CONFIG_PATH)
-def status(workdir, db_path, config_path):
-    """Show current task status."""
-    _run_cli(_status(db_path, config_path, workdir))
-
-
-@main.command()
-@click.argument("task_id", required=False)
-@click.option("--limit", type=int, default=50, show_default=True)
-@click.option("--workdir", type=click.Path(path_type=Path), default=None)
-@click.option("--db", "db_path", type=click.Path(path_type=Path), default=None)
-@click.option("--config", "config_path", type=click.Path(path_type=Path), default=DEFAULT_CONFIG_PATH)
-def events(task_id, limit, workdir, db_path, config_path):
-    """Show stored task events."""
-    _run_cli(_events(db_path, config_path, workdir, task_id, limit))
-
-
-@main.command()
-@click.argument("task_id")
-@click.option("--events", "event_limit", type=int, default=10, show_default=True)
-@click.option("--workdir", type=click.Path(path_type=Path), default=None)
-@click.option("--db", "db_path", type=click.Path(path_type=Path), default=None)
-@click.option("--config", "config_path", type=click.Path(path_type=Path), default=DEFAULT_CONFIG_PATH)
-def detail(task_id, event_limit, workdir, db_path, config_path):
-    """Show task details."""
-    _run_cli(_detail(db_path, config_path, workdir, task_id, event_limit))
-
-
-@main.command()
-@click.argument("task_id")
-@click.option("--title", default=None)
-@click.option("--details", default=None)
-@click.option("--success-criteria", default=None)
-@click.option("--failure-criteria", default=None)
-@click.option("--plan", default=None)
-@click.option("--prompt", default=None)
-@click.option("--status", type=click.Choice([item.value for item in TaskStatus]), default=None)
-@click.option("--parent", "parent_id", default=None)
-@click.option("--depends", "add_dependencies", multiple=True, help="Add a task dependency. May be repeated.")
-@click.option("--remove-dep", "remove_dependencies", multiple=True, help="Remove a task dependency. May be repeated.")
-@click.option("--agent", "agent_id", default=None, help="Agent catalog ID to run this task with.")
-@click.option("--clear-agent", is_flag=True, help="Clear task-specific agent and use default.")
-@click.option("--comment", "comment_message", default=None, help="Add a conversation message. Format: 'human: message', 'agent: message', or 'system: message'.")
-@click.option("--workdir", type=click.Path(path_type=Path), default=None)
-@click.option("--db", "db_path", type=click.Path(path_type=Path), default=None)
-@click.option("--config", "config_path", type=click.Path(path_type=Path), default=DEFAULT_CONFIG_PATH)
-def update(task_id, title, details, success_criteria, failure_criteria, plan, prompt, status, parent_id, add_dependencies, remove_dependencies, agent_id, clear_agent, comment_message, workdir, db_path, config_path):
-    """Update a task."""
-    if agent_id is not None and clear_agent:
-        raise click.ClickException("Use either --agent or --clear-agent, not both.")
-    if comment_message is not None and any([title, details, success_criteria, failure_criteria, plan, prompt, status, parent_id, add_dependencies, remove_dependencies, agent_id, clear_agent]):
-        raise click.ClickException("--comment cannot be combined with other update flags.")
-    if comment_message is not None:
-        _run_cli(_add_conversation(db_path, config_path, workdir, task_id, comment_message))
-        console.print(f"Conversation added to [bold]{task_id}[/bold]")
-        return
-    task = _run_cli(
-        _update(
-            db_path,
-            config_path,
-            workdir,
-            task_id,
-            title,
-            details,
-            success_criteria,
-            failure_criteria,
-            plan,
-            prompt,
-            status,
-            parent_id,
-            add_dependencies,
-            remove_dependencies,
-            agent_id,
-            clear_agent,
+    if debug is not None:
+        debug_path = Path(debug)
+        debug_path.parent.mkdir(parents=True, exist_ok=True)
+        logging.basicConfig(
+            filename=str(debug_path), level=logging.DEBUG,
+            format="%(asctime)s [%(levelname)s] %(name)s: %(message)s"
         )
-    )
-    console.print(f"Updated [bold]{task.id}[/bold]: {task.title}")
+        console.print(f"[dim]Debug logging to {debug_path}[/]")
 
 
-@main.command("comment")
-@click.argument("task_id")
-@click.argument("message")
-@click.option("--author", "author_id", default="human")
-@click.option("--workdir", type=click.Path(path_type=Path), default=None)
-@click.option("--db", "db_path", type=click.Path(path_type=Path), default=None)
-@click.option("--config", "config_path", type=click.Path(path_type=Path), default=DEFAULT_CONFIG_PATH)
-def comment_task(task_id, message, author_id, workdir, db_path, config_path):
-    """Add a human comment to a task."""
-    _run_cli(_comment(db_path, config_path, workdir, task_id, message, author_id))
-    console.print(f"Commented on [bold]{task_id}[/bold]")
+# ── Helper functions ────────────────────────────────────────────────────────
+
+async def _get_db(db_path: str) -> CellosDatabase:
+    """Create and connect a CellosDatabase instance."""
+    db = CellosDatabase(db_path)
+    await db.connect()
+    return db
+
+
+def _notify_daemon(config_dir: str | None = None, workdir: str = ".") -> None:
+    """Signal the daemon to wake and re-evaluate scheduling.
+
+    Touches the notification file so the daemon's file watcher picks it up.
+    """
+    notify_path = Path(workdir) / ".cellos" / "daemon_notify"
+    notify_path.parent.mkdir(parents=True, exist_ok=True)
+    notify_path.touch()
+
+
+def _format_status_table(tasks, status_filter=None):
+    """Format tasks as Rich table with attention markers."""
+    table = Table(show_header=True, header_style="bold")
+    table.add_column("ID", style="cyan", no_wrap=True)
+    table.add_column("Status", style="bold")
+    table.add_column("Role", width=12)
+    table.add_column("Title", overflow="fold")
+
+    for task in tasks:
+        status_str = str(task.status.value)
+        if task.attention.required:
+            status_str += " ⚠️"
+        table.add_row(
+            task.id,
+            status_str,
+            str(task.role.value),
+            task.title[:60],  # truncate long titles
+        )
+
+    return table
+
+
+def _format_detail_panel(task):
+    """Format full task details as Rich panel."""
+    lines = [
+        f"[bold]{task.title}[/]",
+        "",
+        f"ID:           {task.id}",
+        f"Status:       {task.status.value}",
+        f"Role:         {task.role.value}",
+        f"Type:         {task.task_type.value}",
+    ]
+
+    if task.details:
+        lines.append(f"Details:      {task.details}")
+    if task.success_criteria:
+        lines.append(f"Success Crit: {task.success_criteria}")
+    if task.failure_criteria:
+        lines.append(f"Failure Crit: {task.failure_criteria}")
+    if task.plan:
+        lines.extend(["", f"[italic]Plan:[/]\n{task.plan}"])
+
+    if task.result:
+        result_icon = "✅" if task.result.success else "❌"
+        lines.extend(["", f"[bold]{result_icon} Result:[/] {task.result.summary}"])
+
+    # Attention warning
+    if task.attention.required:
+        lines.insert(
+            2,
+            f"\n[red bold]⚠️ ATTENTION REQUIRED[/]",
+        )
+        lines.insert(3, f"   Reason: {task.attention.reason.value if task.attention.reason else 'unknown'}")
+        if task.attention.detail:
+            lines.insert(4, f"   Detail: {task.attention.detail}")
+
+    # Dependencies
+    if task.dependencies:
+        dep_ids = ", ".join(d.task_id for d in task.dependencies)
+        lines.extend(["", f"Dependencies: {dep_ids}"])
+
+    # Comments
+    if task.comments:
+        lines.append("")
+        for c in task.comments[-5:]:  # last 5 comments
+            author_label = "Human" if c.author_type == CommentAuthorType.HUMAN else "System"
+            lines.append(f"[dim]{author_label}:[/dim] {c.content[:80]}")
+
+    return Panel("\n".join(lines), title="Task Details", border_style="blue")
+
+
+def _format_events_table(events, limit=None):
+    """Format events as Rich table (newest first)."""
+    if limit:
+        events = events[:limit]
+
+    table = Table(show_header=True, header_style="bold")
+    table.add_column("Time", style="dim")
+    table.add_column("Event", style="cyan")
+    table.add_column("Message", overflow="fold")
+
+    for e in events:
+        time_str = e.timestamp.strftime("%H:%M:%S") if hasattr(e, "timestamp") else str(e.timestamp)
+        table.add_row(time_str, e.event_type, e.message[:80])
+
+    return table
+
+
+# ── Commands ────────────────────────────────────────────────────────────────
+
+@main.command()
+@click.option("--overwrite", is_flag=True, help="Overwrite existing config files.")
+@click.pass_context
+def init(ctx: click.Context, overwrite: bool):
+    """Initialize project — create config files and database."""
+    config_dir = ctx.obj["config_dir"]
+    db_path = ctx.obj["db"]
+
+    # Ensure config dir exists
+    Path(config_dir).mkdir(parents=True, exist_ok=True)
+
+    # Write config files
+    ensure_config(config_dir, overwrite=overwrite)
+    console.print(f"✓ Config written to {config_dir}")
+    console.print("  config.json, agentcatalog.json, promptprofiles.json")
+
+    # Init database (creates tables — takes path, not connection)
+    asyncio.run(init_db(db_path))
+    console.print(f"✓ Database initialized at {db_path}")
+
+
+@main.command(name="add-task")
+@click.argument("title", required=True)
+@click.option("-d", "--details", default=None, help="Task details/description.")
+@click.option(
+    "-r",
+    "--role",
+    type=click.Choice([r.value for r in AgentRole]),
+    default=AgentRole.ENGINEER.value,
+    help="Agent role (infers task_type).",
+)
+@click.option(
+    "-t",
+    "--type",
+    "task_type",
+    type=click.Choice([t.value for t in TaskType]),
+    default=None,
+    help="Explicit task type.",
+)
+@click.option("-s", "--success-criteria", default=None, help="Success criteria.")
+@click.option("-f", "--failure-criteria", default=None, help="Failure criteria.")
+@click.option(
+    "--depends", multiple=True, default=(), help="Dependency task IDs (can specify multiple)."
+)
+@click.pass_context
+def add_task(ctx: click.Context, title, details, role, task_type, success_criteria, failure_criteria, depends):
+    """Create a new task."""
+
+    async def _run():
+        db = await _get_db(ctx.obj["db"])
+        service = TaskService(db)
+
+        try:
+            deps = [TaskDependency(task_id=dep_id) for dep_id in depends] if depends else []
+
+            created = await service.create_task(
+                title=title,
+                details=details,
+                role=AgentRole(role),
+                task_type=TaskType(task_type) if task_type else None,
+                success_criteria=success_criteria,
+                failure_criteria=failure_criteria,
+                dependencies=deps,
+            )
+
+            console.print(f"✓ Created task {created.id}: {title}")
+            console.print(
+                f"  Role: {created.role.value} | Type: {created.task_type.value} | Status: {created.status.value}"
+            )
+            _notify_daemon()
+        finally:
+            await db.close()
+
+    asyncio.run(_run())
 
 
 @main.command()
-@click.argument("task_id")
-@click.option("--workdir", type=click.Path(path_type=Path), default=None)
-@click.option("--db", "db_path", type=click.Path(path_type=Path), default=None)
-@click.option("--config", "config_path", type=click.Path(path_type=Path), default=DEFAULT_CONFIG_PATH)
-def approve(task_id, workdir, db_path, config_path):
+@click.option("-s", "--status-filter", type=click.Choice([s.value for s in TaskStatus]), default=None, help="Filter by status.")
+@click.pass_context
+def status(ctx: click.Context, status_filter):
+    """List tasks with attention markers."""
+
+    async def _run():
+        db = await _get_db(ctx.obj["db"])
+        service = TaskService(db)
+
+        try:
+            filter_enum = TaskStatus(status_filter) if status_filter else None
+            tasks = await service.list_tasks(status_filter=filter_enum)
+
+            if not tasks:
+                console.print("No tasks found.")
+                return
+
+            table = _format_status_table(tasks, status_filter)
+            console.print(table)
+            console.print(f"\nTotal: {len(tasks)} task{'s' if len(tasks) != 1 else ''}")
+        finally:
+            await db.close()
+
+    asyncio.run(_run())
+
+
+@main.command()
+@click.argument("task_id", required=True)
+@click.pass_context
+def detail(ctx: click.Context, task_id):
+    """Show full task details."""
+
+    async def _run():
+        db = await _get_db(ctx.obj["db"])
+        service = TaskService(db)
+
+        try:
+            try:
+                task = await service.get_task(task_id)
+            except TaskNotFoundError as e:
+                console.print(f"[red]Error: {e}[/]")
+                return
+
+            panel = _format_detail_panel(task)
+            console.print(panel)
+        finally:
+            await db.close()
+
+    asyncio.run(_run())
+
+
+@main.command()
+@click.argument("task_id", required=True)
+@click.pass_context
+def approve(ctx: click.Context, task_id):
     """Approve a planned task for execution."""
-    task = _run_cli(_approve(db_path, config_path, workdir, task_id))
-    console.print(f"Approved [bold]{task.id}[/bold]: {task.title}")
+
+    async def _run():
+        db = await _get_db(ctx.obj["db"])
+        service = TaskService(db)
+
+        try:
+            try:
+                approved = await service.approve_task(task_id)
+            except TaskNotFoundError as e:
+                console.print(f"[red]Error: {e}[/]")
+                return
+            except InvalidTaskApprovalError as e:
+                console.print(f"[red]Error: {e}[/]")
+                return
+
+            console.print(f"✓ Approved task {task_id}")
+            console.print(f"  Status: {approved.status.value}")
+            _notify_daemon()
+        finally:
+            await db.close()
+
+    asyncio.run(_run())
 
 
 @main.command()
-@click.option("--workdir", type=click.Path(path_type=Path), default=None)
-@click.option("--db", "db_path", type=click.Path(path_type=Path), default=None)
-@click.option("--config", "config_path", type=click.Path(path_type=Path), default=DEFAULT_CONFIG_PATH)
-@click.option("--concurrent-tasks", type=int, default=None)
-def run(workdir, db_path, config_path, concurrent_tasks):
-    """Run one local CelloS heartbeat."""
-    result = _run_cli(_run(db_path, config_path, workdir, concurrent_tasks))
-    if not result.attention_tasks and not result.planning_tasks and not result.execution_tasks:
-        console.print("No tasks to run.")
-        return
-    for task in result.attention_tasks:
-        console.print(f"{task.id}: attention - {task.attention.reason}")
-    for task in result.planning_tasks:
-        console.print(f"{task.id}: scheduled planning - {task.title}")
-    for task in result.execution_tasks:
-        console.print(f"{task.id}: scheduled execution - {task.title}")
+@click.argument("task_id", required=True)
+@click.option("-m", "--message", required=True, help="Comment text.")
+@click.pass_context
+def comment(ctx: click.Context, task_id, message):
+    """Add a human comment to a task."""
+
+    async def _run():
+        db = await _get_db(ctx.obj["db"])
+        service = TaskService(db)
+
+        try:
+            try:
+                current_task = await service.get_task(task_id)
+            except TaskNotFoundError as e:
+                console.print(f"[red]Error: {e}[/]")
+                return
+
+            comment_obj = await service.add_human_comment(task_id, message)
+
+            # Check if attention was triggered (non-approved tasks)
+            attention_triggered = current_task.status not in (
+                TaskStatus.APPROVED,
+                TaskStatus.DONE,
+                TaskStatus.CANCELLED,
+            )
+
+            console.print(f"✓ Comment added to {task_id}")
+            if attention_triggered:
+                console.print("  ⚠️ Attention triggered: Human commented")
+            _notify_daemon()
+        finally:
+            await db.close()
+
+    asyncio.run(_run())
 
 
-@main.command(hidden=True)
+@main.command()
+@click.argument("task_id", required=True)
+@click.option("--limit", default=10, help="Max events to show.")
+@click.pass_context
+def events(ctx: click.Context, task_id, limit):
+    """Show audit trail events for a task."""
+
+    async def _run():
+        db = await _get_db(ctx.obj["db"])
+        service = TaskService(db)
+
+        try:
+            try:
+                # Verify task exists first
+                await service.get_task(task_id)
+            except TaskNotFoundError as e:
+                console.print(f"[red]Error: {e}[/]")
+                return
+
+            event_list = await db.list_events(task_id, limit=limit)
+
+            if not event_list:
+                console.print("No events found.")
+                return
+
+            table = _format_events_table(event_list, limit)
+            console.print(table)
+        finally:
+            await db.close()
+
+    asyncio.run(_run())
+
+
+@main.command()
+@click.argument("task_id", required=True)
+@click.option("--title", default=None, help="New title.")
+@click.option("-d", "--details", default=None, help="New details/description.")
+@click.option("-s", "--success-criteria", default=None, help="New success criteria.")
+@click.option("-f", "--failure-criteria", default=None, help="New failure criteria.")
+@click.option("--add-dep", multiple=True, default=(), help="Add dependency task ID (can specify multiple).")
+@click.option("--remove-dep", multiple=True, default=(), help="Remove dependency task ID (can specify multiple).")
+@click.pass_context
+def update(ctx: click.Context, task_id, title, details, success_criteria, failure_criteria, add_dep, remove_dep):
+    """Update any field on a task."""
+
+    async def _run():
+        db = await _get_db(ctx.obj["db"])
+        service = TaskService(db)
+
+        try:
+            deps_to_add = [TaskDependency(task_id=d) for d in add_dep] if add_dep else None
+            deps_to_remove = list(remove_dep) if remove_dep else None
+
+            try:
+                updated = await service.update_task(
+                    task_id=task_id,
+                    title=title,
+                    details=details,
+                    success_criteria=success_criteria,
+                    failure_criteria=failure_criteria,
+                    add_dependencies=deps_to_add,
+                    remove_dependencies=deps_to_remove,
+                )
+            except TaskNotFoundError as e:
+                console.print(f"[red]Error: {e}[/]")
+                return
+            except EmptyTaskUpdateError as e:
+                console.print(f"[red]Error: {e}[/]")
+                return
+
+            changes = []
+            if title:
+                changes.append(f"title → '{title}'")
+            if details is not None:
+                changes.append("details updated")
+            if success_criteria is not None:
+                changes.append("success criteria updated")
+            if failure_criteria is not None:
+                changes.append("failure criteria updated")
+            if add_dep:
+                changes.append(f"added deps: {', '.join(add_dep)}")
+            if remove_dep:
+                changes.append(f"removed deps: {', '.join(remove_dep)}")
+
+            console.print(f"✓ Updated task {task_id}")
+            for c in changes:
+                console.print(f"  - {c}")
+
+            if updated.attention.required:
+                console.print("  ⚠️ Attention triggered by content change")
+            _notify_daemon()
+        finally:
+            await db.close()
+
+    asyncio.run(_run())
+
+
+@main.command("worker")
 @click.argument("task_id")
-@click.option("--mode", type=click.Choice(["planning", "execution"]), required=True)
-@click.option("--workdir", type=click.Path(path_type=Path), default=None)
-@click.option("--db", "db_path", type=click.Path(path_type=Path), default=None)
-@click.option("--config", "config_path", type=click.Path(path_type=Path), default=DEFAULT_CONFIG_PATH)
-def worker(task_id, mode, workdir, db_path, config_path):
-    """Run one task worker process."""
-    _run_cli(_worker(task_id, mode, db_path, config_path, workdir))
+@click.option("--mode", required=True, type=click.Choice(["planning", "execution"]), help="Worker mode: planning or execution.")
+@click.pass_context
+def worker(ctx: click.Context, task_id, mode):
+    """Execute a single worker (called by spawner or manually).
+
+    Spawns the full worker lifecycle: load task → build connector → run agent → save result.
+    Used both directly for testing and via WorkerSpawner subprocesses.
+    """
+
+    async def _run():
+        db = await _get_db(ctx.obj["db"])
+        config_dir = ctx.obj.get("config_dir") or DEFAULT_CONFIG_DIR
+        try:
+            from cellos.config import load_config, ConfigError as CfgErr
+            config = load_config(config_dir)
+        except (CfgErr, FileNotFoundError):
+            console.print(f"[red]Config not found in {config_dir}. Run 'cellos init' first.[/]")
+            return
+
+        try:
+            from cellos.services.worker_service import run_task_worker, WorkerError as WkErr
+            result = await run_task_worker(db=db, task_id=task_id, mode=mode, config=config)
+            console.print(f"✓ Worker completed for {task_id} (status={result.status.value})")
+        except WkErr as e:
+            console.print(f"[red]Worker error: {e}[/]")
+        except Exception as e:
+            console.print(f"[red]Unexpected error: {type(e).__name__}: {e}[/]")
+        finally:
+            await db.close()
+
+    asyncio.run(_run())
 
 
-# -- Async helpers (thin wrappers over services) --
+@main.command("run")
+@click.pass_context
+def run(ctx: click.Context):
+    """Start the event-driven daemon scheduler.
 
+    Watches for work and spawns worker subprocesses. No polling — uses
+    asyncio.Event() to sleep until signaled by worker exits or human CLI actions.
+    Press Ctrl+C for graceful shutdown.
+    """
 
-async def _add_task(db_path, config_path, workdir, task):
-    app = await _open_app(db_path, config_path, workdir)
-    try:
-        if task.agent_id is not None:
-            try:
-                app.config.get_agent(task.agent_id)
-            except ValueError as exc:
-                raise click.ClickException(str(exc)) from exc
-        await TaskService(app.db).create_task(task)
-    finally:
-        await app.db.close()
+    async def _run():
+        db = await _get_db(ctx.obj["db"])
+        config_dir = ctx.obj.get("config_dir") or DEFAULT_CONFIG_DIR
 
+        try:
+            from cellos.config import load_config, ConfigError as CfgErr
+            config = load_config(config_dir)
+        except (CfgErr, FileNotFoundError) as e:
+            console.print(f"[red]Config error: {e}[/]")
+            console.print(f"  Run 'cellos init' first.")
+            return
 
-async def _status(db_path, config_path, workdir):
-    app = await _open_app(db_path, config_path, workdir)
-    try:
-        tasks = await app.db.list_tasks()
-    finally:
-        await app.db.close()
-    status_formatter(tasks)
+        console.print(f"Starting daemon (concurrent_tasks={config.scheduler.concurrent_tasks})...")
+        console.print("  Press Ctrl+C to stop.")
 
+        from cellos.services.scheduler import DaemonService
 
-async def _events(db_path, config_path, workdir, task_id, limit):
-    app = await _open_app(db_path, config_path, workdir)
-    try:
-        events = await app.db.list_task_events(task_id=task_id, limit=limit)
-    finally:
-        await app.db.close()
-    events_formatter(events)
-
-
-async def _detail(db_path, config_path, workdir, task_id, event_limit):
-    app = await _open_app(db_path, config_path, workdir)
-    try:
-        task = await app.db.get_task(task_id)
-        if task is None:
-            raise click.ClickException(f"Task not found: {task_id}")
-        events = await app.db.list_task_events(task_id=task_id, limit=event_limit)
-        comments = await app.db.list_task_comments(task_id=task_id, limit=10)
-        attempts = await app.db.list_task_attempts(task_id=task_id, limit=10)
-    finally:
-        await app.db.close()
-    detail_formatter(task, comments, attempts, events)
-
-
-async def _update(db_path, config_path, workdir, task_id, title, details, success_criteria, failure_criteria, plan, prompt, status, parent_id, add_dependencies, remove_dependencies, agent_id, clear_agent):
-    app = await _open_app(db_path, config_path, workdir)
-    try:
-        if agent_id is not None:
-            try:
-                app.config.get_agent(agent_id)
-            except ValueError as exc:
-                raise click.ClickException(str(exc)) from exc
-        return await TaskService(app.db).update_task(
-            task_id,
-            title=title,
-            details=details,
-            success_criteria=success_criteria,
-            failure_criteria=failure_criteria,
-            plan=plan,
-            prompt=prompt,
-            status=TaskStatus(status) if status is not None else None,
-            parent_id=parent_id,
-            add_dependencies=add_dependencies,
-            remove_dependencies=remove_dependencies,
-            agent_id=agent_id,
-            clear_agent=clear_agent,
+        daemon = DaemonService(
+            db=db,
+            config=config,
+            config_dir=config_dir,
+            workdir=".",
         )
-    except EmptyTaskUpdateError as exc:
-        raise click.ClickException(str(exc)) from exc
-    except TaskNotFoundError as exc:
-        raise click.ClickException(str(exc)) from exc
-    finally:
-        await app.db.close()
+
+        try:
+            await daemon.start()
+        except KeyboardInterrupt:
+            console.print("\n[yellow]Daemon stopped.[/]")
+
+    asyncio.run(_run())
 
 
-async def _comment(db_path, config_path, workdir, task_id, message, author_id):
-    app = await _open_app(db_path, config_path, workdir)
-    try:
-        await TaskService(app.db).add_human_comment(task_id, message, author_id)
-    except TaskNotFoundError as exc:
-        raise click.ClickException(str(exc)) from exc
-    finally:
-        await app.db.close()
+@main.command()
+@click.argument("task_id", required=True)
+@click.pass_context
+def plan(ctx: click.Context, task_id):
+    """Generate a plan for a task via agent (manual trigger).
+
+    Triggers a planning agent to generate an implementation plan.
+    Task must be in DRAFT status. Falls back to fake_acp if the configured
+    agent connector is unavailable.
+    """
+
+    async def _run():
+        db = await _get_db(ctx.obj["db"])
+        config_dir = ctx.obj.get("config_dir") or DEFAULT_CONFIG_DIR
+
+        try:
+            from cellos.config import load_config, ConfigError as CfgErr
+            config = load_config(config_dir)
+        except (CfgErr, FileNotFoundError):
+            console.print(f"[red]Config not found in {config_dir}. Run 'cellos init' first.[/]")
+            return
+
+        task = await db.get_task(task_id)
+        if task is None:
+            console.print(f"[red]Error: Task {task_id} not found[/]")
+            await db.close()
+            return
+
+        if task.status != TaskStatus.DRAFT:
+            console.print(f"[red]Error: Cannot plan task in status '{task.status.value}'. Must be 'draft'.[/]")
+            await db.close()
+            return
+
+        if task.role not in (AgentRole.ARCHITECT, AgentRole.COORDINATOR):
+            console.print(f"[red]Error: Cannot plan task with role '{task.role.value}'. Planning is restricted to architect and coordinator roles.[/]")
+            await db.close()
+            return
+
+        console.print(f"▶ Planning {task_id}: {task.title}")
+
+        try:
+            from cellos.services.worker_service import run_task_worker, WorkerError as WkErr
+            result = await run_task_worker(db=db, task_id=task_id, mode="planning", config=config)
+            console.print(f"✓ Plan generated for {task_id}")
+            console.print(f"  Status: {result.status.value}")
+            _notify_daemon()
+        except WkErr as e:
+            console.print(f"[red]Planning error: {e}[/]")
+        except Exception as e:
+            console.print(f"[red]Unexpected error: {type(e).__name__}: {e}[/]")
+        finally:
+            await db.close()
+
+    asyncio.run(_run())
 
 
-async def _add_conversation(db_path, config_path, workdir, task_id, raw_message):
-    app = await _open_app(db_path, config_path, workdir)
-    try:
-        await TaskService(app.db).add_conversation_message(task_id, raw_message)
-    except TaskNotFoundError as exc:
-        raise click.ClickException(str(exc)) from exc
-    except ValueError as exc:
-        raise click.ClickException(str(exc)) from exc
-    finally:
-        await app.db.close()
+@main.command()
+@click.argument("task_id", required=True)
+@click.pass_context
+def execute(ctx: click.Context, task_id):
+    """Execute an approved task via agent (manual trigger).
 
+    Triggers an execution agent to run the approved task's plan.
+    Task must be in APPROVED status. Falls back to fake_acp if the configured
+    agent connector is unavailable.
+    """
 
-async def _approve(db_path, config_path, workdir, task_id):
-    app = await _open_app(db_path, config_path, workdir)
-    try:
-        return await TaskService(app.db).approve_task(task_id)
-    except (TaskNotFoundError, InvalidTaskApprovalError) as exc:
-        raise click.ClickException(str(exc)) from exc
-    finally:
-        await app.db.close()
+    async def _run():
+        db = await _get_db(ctx.obj["db"])
+        config_dir = ctx.obj.get("config_dir") or DEFAULT_CONFIG_DIR
 
+        try:
+            from cellos.config import load_config, ConfigError as CfgErr
+            config = load_config(config_dir)
+        except (CfgErr, FileNotFoundError):
+            console.print(f"[red]Config not found in {config_dir}. Run 'cellos init' first.[/]")
+            return
 
-async def _run(db_path, config_path, workdir, concurrent_tasks):
-    app = await _open_app(db_path, config_path, workdir)
-    resolved_db_path = _resolve_db_path(db_path, app.workdir)
-    try:
-        return await SchedulerService(
-            db=app.db,
-            config=app.config,
-            workdir=app.workdir,
-            db_path=resolved_db_path,
-            config_path=config_path,
-        ).run_once(concurrent_tasks)
-    finally:
-        await app.db.close()
+        task = await db.get_task(task_id)
+        if task is None:
+            console.print(f"[red]Error: Task {task_id} not found[/]")
+            await db.close()
+            return
 
+        if task.status != TaskStatus.APPROVED:
+            console.print(f"[red]Error: Cannot execute task in status '{task.status.value}'. Must be 'approved'.[/]")
+            await db.close()
+            return
 
-async def _worker(task_id, mode, db_path, config_path, workdir):
-    app = await _open_app(db_path, config_path, workdir)
-    try:
-        await WorkerService(db=app.db, config=app.config, workdir=app.workdir).run_task_worker(task_id, mode)
-    finally:
-        await app.db.close()
+        console.print(f"▶ Executing {task_id}: {task.title}")
+
+        try:
+            from cellos.services.worker_service import run_task_worker, WorkerError as WkErr
+            result = await run_task_worker(db=db, task_id=task_id, mode="execution", config=config)
+            console.print(f"✓ Task completed with status: {result.status.value}")
+            if result.result:
+                console.print(f"  Result: {result.result.summary}")
+            _notify_daemon()
+        except WkErr as e:
+            console.print(f"[red]Execution error: {e}[/]")
+        except Exception as e:
+            console.print(f"[red]Unexpected error: {type(e).__name__}: {e}[/]")
+        finally:
+            await db.close()
+
+    asyncio.run(_run())
 
 
 if __name__ == "__main__":
