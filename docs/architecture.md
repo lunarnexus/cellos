@@ -1,110 +1,255 @@
 # CelloS Architecture
 
-## Source-of-Truth Docs
-
-| Doc | What it covers |
-|---|---|
-| `roles-and-lifecycle.md` | Canonical roles, task lifecycle, approval model, attention signals |
-| `acp.md` | Agent execution via ACP-compatible backends |
-| `prompting.md` | Prompt stack, planning/execution boundaries, structured task creation |
-| `communication.md` | Proposals, reports, approval requests, comments |
-| `pm-adapters.md` | PM-neutral adapter contract |
-| `trello.md` | Trello-specific mapping |
-| `refactoring-spec.md` | Structural refactor plan and service contracts |
-
-## Runtime Flows
-
-### `cellos run` (scheduler heartbeat)
+## Component Diagram
 
 ```
-CLI command -> CellosApp bootstrap -> SchedulerService.run_once()
-  -> select attention → planning → execution work
-  -> mark scheduled tasks in_progress
-  -> record scheduling events
-  -> WorkerSpawner starts background worker processes
-  -> CLI prints scheduled work and exits
+┌─────────────────────────────────────────────────────────────┐
+│                        CLI Layer                            │
+│  Click commands → Rich output (tables, panels, markdown)    │
+│  Commands: init, add-task, status, detail, approve,         │
+│            comment, events, update, run, plan, execute      │
+└──────────────┬──────────────────────────────┬───────────────┘
+               │                              │
+               ▼                              ▼
+┌────────────────────────┐    ┌──────────────────────────────┐
+│     Services Layer     │    │   Event-Driven Daemon        │
+│                        │    │                              │
+│  TaskService           │    │  asyncio.Event-based wake:   │
+│  PlanningService       │    │    - Worker completes →      │
+│  ExecutionService      │    │      signals scheduler       │
+│  WorkerService         │    │    - Human action (approve,  │
+│                        │    │      update) → signals        │
+│  Responsibility:       │    │                              │
+│  Business logic, state │    │  pick_work() →               │
+│  machine enforcement   │    │    1. Attention tasks         │
+└───────────┬────────────┘    │    2. Planning candidates     │
+            │                 │    3. Approved unblocked      │
+            ▼                 │                              │
+                           spawn_workers() →                │
+                             subprocess.Popen(              │
+                               python -m cellos.cli        │
+                               worker <id> --mode ...)      │
+            ▼                                │
+┌────────────────────────┐                   │
+│     Persistence Layer  │◄──────────────────┘
+│                        │   (workers connect to same SQLite)
+│  CellosDatabase        │
+│    → TaskRepository    │
+│    → ResultRepo        │
+│    → EventRepository   │
+│    → CommentRepository │
+│    → AttemptRepository │
+│                        │
+│  Pattern: function-based repos               │
+│  taking aiosqlite.Connection as first param  │
+└───────────┬────────────┘
+            ▼
+┌────────────────────────┐
+│      SQLite Database   │
+│    (aiosqlite)         │
+│                        │
+│  Tables: tasks, task_dependencies,           │
+│          task_results, task_events,          │
+│          task_comments, task_attempts        │
+│                        │
+│  Complex data stored as JSON columns:        │
+│  conversation[], dependencies[],             │
+│  attention{}, processing{}                   │
+└────────────────────────┘
+
+┌────────────────────────┐
+│   ACP Connector Layer  │
+│                        │
+│  TaskConnector (Protocol):                    │
+│    async run_task(task, workdir, mode,        │
+│                  prompt_text) → TaskResult    │
+│                        │
+│  Implementations:                              │
+│    - OpenCodeConnector: subprocess             │
+│      `opencode acp` with JSON-RPC 2.0         │
+│    - FakeAcpConnector: canned responses        │
+│      for testing (fixture-based or defaults)   │
+└────────────────────────┘
 ```
 
-### `cellos worker TASK_ID --mode planning|execution`
+## Module Boundaries
+
+### CLI (`cellos/cli.py`)
+- Click command group with `--db` and `--config` global options
+- Each command wraps async logic in `asyncio.run(_inner())`
+- Rich output: tables for status, panels for detail, markdown rendering
+- Attention markers (⚠️) shown inline in task lists
+- **No business logic** — delegates to services
+
+### Services (`cellos/services/`)
+
+| Module | Responsibility | Key Methods |
+|--------|---------------|-------------|
+| `task_service.py` | Task CRUD, attention tracking, approval gates | `create_task`, `update_task`, `approve_task`, `add_comment`, `add_conversation_message` |
+| `planning_service.py` | Plan generation via ACP + result persistence | `run_planning(db, task_id)`, `_build_planning_prompt(task)` |
+| `execution_service.py` | Task execution via ACP + structured action parsing | `run_execution(db, task_id)`, `_parse_structured_actions(text)` |
+| `scheduler.py` | Event-driven daemon (asyncio.Event wake) + work selection | `run_daemon()`, `pick_work()`, `spawn_workers(tasks)`, `_signal_work_available()` |
+| `worker_service.py` | Worker lifecycle: build connector → run prompt → save result | `run_task_worker(task_id, mode)`, `_build_connector(agent_config)` |
+| `worker_spawner.py` | Subprocess spawning with process isolation | `spawn(task_id, mode)` via `subprocess.Popen(start_new_session=True)` |
+
+### Persistence (`cellos/persistence/`)
+
+**Pattern**: Function-based repositories (not classes). Each module exports async functions taking `aiosqlite.Connection` as first parameter. This keeps things simple — no shared connection management in repos, the caller owns the connection lifecycle.
+
+| Module | Responsibility |
+|--------|---------------|
+| `schema.py` | SQL DDL strings + `init_db()` + `ensure_initialized()` |
+| `task_repository.py` | Task CRUD + scheduler queries (`list_attention_tasks`, `list_planning_candidates`, `list_approved_unblocked`) |
+| `result_repository.py` | Result saving + side effects (wake blocked dependents, add dependency result comments) |
+| `event_repository.py` | Event logging for audit trail |
+| `comment_repository.py` | Comment storage and retrieval |
+| `attempt_repository.py` | Attempt tracking per task execution try |
+
+**Database facade**: `cellos/db.py` wraps all repository operations, handles commits, event recording, and side effects at transactional boundaries.
+
+### ACP Integration (`cellos/acp.py`)
+
+Full JSON-RPC 2.0 client for subprocess communication:
+1. Spawn agent process with configured command
+2. Send `initialize` request (protocol version + capabilities)
+3. Create session via `session/new` → get session ID
+4. Send prompt via `session/prompt` → stream events
+5. Extract text from `agent_message_chunk` events
+6. Close session via `session/close` (graceful — some agents don't support it)
+
+Timeout handling at each step. Debug logging to file when enabled.
+
+### Connectors (`cellos/connectors/`)
+
+**Protocol-based interface** (duck typing without inheritance):
+
+```python
+class TaskConnector(Protocol):
+    async def run_task(task: Task, workdir: str, mode: str, prompt_text: str) -> TaskResult: ...
+```
+
+- **OpenCodeConnector**: Runs `opencode acp` subprocess. Auto-discovers binary in standard paths + `$PATH`. Sends JSON-RPC 2.0 requests. Parses response (full JSON or last-line pattern). Returns raw text if no JSON found.
+
+- **FakeAcpConnector**: Deterministic test connector. Fixture-based lookup: `{task_id}-{mode}.json` → `{mode}.json` → `default.json`. Falls back to configurable defaults (`default_success`, `default_summary`). Supports simulated delay for timing tests.
+
+### Configuration (`cellos/config.py`)
+
+Config files live in the **project directory** (not `~/.cellos/`). Example files shipped with the repo are copied on first init. The CLI accepts `--config <path>` to point to a different config directory; defaults to the project directory if omitted.
+
+Three JSON files loaded into Pydantic models:
+
+| File | Purpose |
+|------|---------|
+| `config.json` | Scheduler (concurrent_tasks), worker (backend, timeout), agents runtime (default_agent_id), approvals (preapprove_research_tasks) |
+| `agentcatalog.json` | Map of agent_id → AgentConfig (connector type, model name, options dict) |
+| `promptprofiles.json` | Role instructions, mode-specific sections (planning/execution), output format requirements, final instructions |
+
+Example files shipped at repo root: `cellos.config.example.json`, `agentcatalog.example.json`, `promptprofiles.example.json`. On first `init --overwrite`, these are copied to the project directory as `config.json` / `agentcatalog.json` / `promptprofiles.json`.
+
+**preapprove_research_tasks**: Boolean flag (default: false). When true, child tasks of type `research` created via structured actions auto-transition to APPROVED status instead of NEEDS_APPROVAL. All other task types still require human approval.
+
+### Prompt Builder (`cellos/prompt_builder.py`)
+
+Assembles prompts from configurable parts:
+1. Task metadata (role, type, title, status)
+2. Role instructions from profiles ("You are an engineer...")
+3. Mode-specific instructions (planning vs execution)
+4. Task details, success/failure criteria, plan text
+5. Comments separated into research results and normal comments
+6. Conversation history (for planning mode)
+7. Output section format requirements from profiles
+8. Final instructions
+
+All externalized to `promptprofiles.json` — no hardcoded prompt strings.
+
+### Structured Actions (`cellos/task_actions.py`)
+
+Parses agent output for child task creation:
+
+```json
+{
+  "actions": [
+    {
+      "type": "create_task",
+      "title": "Implement authentication module",
+      "role": "engineer",
+      "task_type": "implementation",
+      "prompt": "...",
+      "dependencies": ["parent-task-id"],
+      "blocks_parent": true
+    }
+  ]
+}
+```
+
+Supports: fenced code blocks, plain JSON, nested action format. Validates with Pydantic. Creates child tasks with dependency tracking and parent blocking logic.
+
+## Runtime Flow: Event-Driven Daemon (`cellos run`)
+
+The daemon uses `asyncio.Event` instead of polling/heartbeat. It sleeps until signaled that work is available, then wakes up and processes it. This eliminates wasted CPU cycles and SQLite contention from constant polling.
+
+**Signal sources (anything that makes work available):**
+1. **Worker completion**: When a worker subprocess exits, the scheduler detects this via process status check → signals itself to re-evaluate scheduling (completed workers may have unblocked dependents or created child tasks)
+2. **Human CLI actions**: `approve`, `update`, `add-task` commands write to a notification file in `notify/` (project directory) that the daemon watches — any change wakes it up
 
 ```
-CLI command -> CellosApp bootstrap -> WorkerService.run_task_worker()
-  -> load task/config/comments
-  -> build prompt -> create task_attempt -> call backend
-  -> PlanningService or ExecutionService saves result
-  -> complete task_attempt -> record events -> close DB
+1. Load config + connect to SQLite
+2. Run initial work selection pass (pick_work)
+3. Enter event loop:
+   a. await asyncio.Event() — blocks until signaled
+   b. On wake: pick_work in priority order:
+      - Tasks requiring attention (attention.required = true)
+      - Planning candidates (draft tasks ready for planning)
+      - Approved unblocked tasks (dependencies satisfied)
+   c. For each task to schedule: spawn worker subprocess via WorkerSpawner
+   d. Register callback: when spawned workers exit → set event again
+4. Graceful shutdown on SIGINT/SIGTERM: wait for running workers, cleanup connections
 ```
 
-## Module Responsibilities
+**Why not heartbeat polling?** Polling every N seconds wastes CPU and creates SQLite write contention (each poll opens a connection). Event-driven only wakes when something actually changed — worker finished or human took action.
 
-| Change needed | Target module |
-|---|---|
-| CLI flags/output | `cellos/cli.py` |
-| App bootstrap / path resolution | `cellos/cli_app.py` |
-| Rich table rendering | `cellos/cli_formatting.py` |
-| Scheduler / heartbeat logic | `cellos/services/scheduler.py` |
-| Task create/update/comment/approve | `cellos/services/task_service.py` |
-| Worker subprocess spawning | `cellos/services/worker_spawner.py` |
-| Worker attempts / prompt / backend runtime | `cellos/services/worker_service.py` |
-| Worker agent selection | `cellos/services/worker_service.py` + `cellos/config.py` |
-| Planning result handling | `cellos/services/planning_service.py` |
-| Execution result / child tasks | `cellos/services/execution_service.py` |
-| SQL and persistence | `cellos/db.py` facade → `cellos/persistence/` repos |
-| Domain DTOs / enums | `cellos/models.py` (canonical monolithic schema/types module) |
-| Config loading / init | `cellos/config.py` (canonical monolithic config module) |
-| Prompt construction | `cellos/prompt_builder.py` |
-| Task action parsing | `cellos/task_actions.py` |
-| ACP agent execution | `cellos/acp.py`, `cellos/acp_worker.py` |
-| Agent connectors | `cellos/connectors/` |
+## Runtime Flow: Worker Subprocess (`cellos.cli worker`)
 
-## Where Do I Change X?
-
-- **Scheduling rules?** → `cellos/services/scheduler.py` + `docs/refactoring-spec.md`
-- **Task lifecycle / approval?** → `cellos/services/task_service.py` + `docs/roles-and-lifecycle.md`
-- **Worker backend / prompt?** → `cellos/services/worker_service.py` + `cellos/prompt_builder.py`
-- **CLI output format?** → `cellos/cli_formatting.py`
-- **DB schema / queries?** → `cellos/persistence/` repos (facade in `cellos/db.py`)
-- **Config structure?** → `cellos/config.py`
-- **Schema/types?** → `cellos/models.py`
-- **Agent connector?** → `cellos/connectors/<name>.py`
-
-## Task-Specific Agents
-
-Tasks can optionally specify an ACP agent from `agentcatalog.json`.
-
-```bash
-cellos add-task "Refactor CLI" --agent qwen
-cellos update TASK_ID --agent claude
-cellos update TASK_ID --clear-agent
+```
+1. Load config + connect to SQLite (separate connection from scheduler)
+2. Fetch task by ID
+3. Transition task status → IN_PROGRESS (signals "a worker has this")
+4. Build connector from agent config in catalog
+5. Build prompt via PromptBuilder with mode-specific sections
+6. Run connector → get TaskResult
+7. Save result:
+   - Planning mode: save_planning_result() → sets NEEDS_APPROVAL
+   - Execution mode: save_execution_result() → parse actions, create children, set DONE/FAILED
+8. Record attempt + event in database
+9. Write log to logs/worker-{id}.log (project directory)
+10. Exit subprocess
 ```
 
-- If `agent_id` is unset on a task, the worker uses `agents.default` from config (current behavior).
-- If `agent_id` is set, `WorkerService` resolves that agent from `agentcatalog.json` and uses it for ACP execution and attempt records.
-- Invalid agent IDs are rejected at task creation/update with a clear error.
+The IN_PROGRESS transition at step 3 is meaningful — it prevents the scheduler from picking up the same task again if a worker crashes mid-execution, and provides visibility into which tasks are currently being worked on. If the worker fails before completing, the next scheduling pass sees IN_PROGRESS and can retry (after timeout) or mark FAILED.
 
-### How it works
+## Error Handling Strategy
 
-1. `Task` model carries an optional `agent_id: str | None`.
-2. `CellosConfig.get_agent(agent_id)` resolves the agent: if `None` it returns the default; if set it looks up the catalog entry.
-3. `WorkerService.run_task_worker()` calls `config.get_agent(task.agent_id)` to get the agent for the attempt record and ACP backend.
-4. `TaskService.update_task()` accepts `agent_id` and `clear_agent` parameters.
-5. `cli_formatting.py` detail view shows the task-specific agent if present.
+| Scenario | Behavior |
+|----------|----------|
+| Worker subprocess hangs | Timeout kills it; scheduler wakes on event and reschedules remaining work |
+| ACP agent crashes | Caught by worker_service → attempt marked FAILED → event logged |
+| Database locked | SQLite handles concurrent reads; writes are serialized via aiosqlite |
+| Config file missing/invalid | Pydantic validation error with clear message at startup |
+| Task in wrong state for operation | Custom exception (e.g., `InvalidTaskApprovalError`) → CLI prints error |
+| OpenCode binary not found | Falls back to fake_acp connector if configured, else clear error |
 
-### Where to change
+## Testing Strategy
 
-- **Task model field** → `cellos/models.py`
-- **Agent resolution** → `cellos/config.py` (`get_agent`)
-- **CLI flags** → `cellos/cli.py` (`add-task`, `update`)
-- **Service validation** → `cellos/services/task_service.py`
-- **Worker execution** → `cellos/services/worker_service.py`
-- **Display** → `cellos/cli_formatting.py`
+### Unit Tests (`tests/test_*.py`)
+- **No mocking of DB layer** — use real temp SQLite databases via pytest fixtures
+- Test all models: enums, Pydantic validation, backward-compat migrations
+- Test services: full lifecycle flows with in-memory DBs
+- Test CLI integration: Click's `CliRunner` for end-to-end command testing
 
-## Known Open Questions
+### Fake Agent Testing
+- **FakeAcpConnector** enables complete lifecycle testing without real ACP agents
+- Fixture-based responses: task-specific, mode-specific, or default canned results
+- Supports structured action JSON in fixtures to test child task creation flow
 
-- Should `attention_required` be cleared before a worker starts, after local success, or only after PM sync succeeds?
-- How should dependency completion create attention for downstream tasks?
-- How should child `change_requested` tasks create attention for parent tasks?
-- Should one heartbeat prioritize planning/revision work before execution work?
-- What worker timeout and stale-task rules are safe for long-running tasks?
-- How should attention signals be stored?
-- How does the heartbeat avoid reprocessing the same task when no human or dependency state changed?
+### Smoke Test (`docs/smoke-test.md`)
+Sequential validation covering: init → create tasks → daemon scheduler picks work → planning generates plan + children → human approves → execution completes → results visible. ~15 steps validating the full system integration.
