@@ -1,94 +1,94 @@
-"""Fake ACP-compatible connector for local development and smoke tests."""
+"""Fake ACP connector — deterministic canned responses for testing and development."""
+
+from __future__ import annotations
 
 import json
-import sys
+from pathlib import Path
 from typing import Any
 
-from cellos.connectors.base import AgentInvocation, PreparedAgentInvocation, prepare_acp_invocation
+from cellos.connectors.base import TaskConnector
+from cellos.models import Task, TaskResult
 
 
-def resolve_launch_command(_options: dict[str, Any] | None = None) -> list[str]:
-    return [sys.executable, "-m", "cellos.connectors.fake_acp"]
+class FakeAcpConnector:
+    """Returns deterministic results from fixture files or configurable defaults.
+
+    Fixture lookup order:
+      1. ``{fixture_dir}/{task_id}-{mode}.json`` — task-specific + mode-specific
+      2. ``{fixture_dir}/{mode}.json`` — mode-only fallback
+      3. ``{fixture_dir}/default.json`` — universal fallback
+      4. Configured defaults (``options["default_success"]``, ``options["default_summary"]``)
+
+    Each fixture file should contain a JSON object with at least:
+        - ``success`` (bool)
+        - ``summary`` (str)
+        Optional: ``output`` (str)
+    """
+
+    def __init__(self, options: dict[str, Any] | None = None):
+        self.options = options or {}
+        self.fixture_dir: str | None = self.options.get("fixture_dir")
+        self.default_success: bool = self.options.get("default_success", True)
+        self.default_summary: str = self.options.get(
+            "default_summary", "Task completed successfully."
+        )
+
+    async def run_task(
+        self, task: Task, workdir: str | None = None, mode: str = "execution", prompt_text: str | None = None
+    ) -> TaskResult:
+        """Execute a task with canned responses.
+
+        Simulates a 0.1 s delay to mimic real agent latency without blocking tests.
+        """
+        await _async_sleep(0.05)
+        return self._resolve_result(task, mode, prompt_text)
+
+    # ── Fixture resolution (synchronous — safe to call from tests) ────────────
+
+    def _resolve_result(self, task: Task, mode: str, prompt_text: str | None = None) -> TaskResult:
+        """Walk the fixture lookup chain and fall back to defaults."""
+        if self.fixture_dir:
+            fixture = self._load_fixture(task.id, mode)
+            if fixture is not None:
+                return self._fixture_to_result(fixture)
+
+        # No fixture found — use configured defaults
+        summary = f"[fake_acp] {self.default_summary}"
+        return TaskResult(success=self.default_success, summary=summary)
+
+    def _load_fixture(self, task_id: str, mode: str) -> dict | None:
+        """Try each fixture path in priority order; return first match or None."""
+        if not self.fixture_dir:
+            return None
+
+        base = Path(self.fixture_dir)
+        candidates = [
+            f"{task_id}-{mode}.json",  # task-specific + mode
+            f"{mode}.json",             # mode-only
+            "default.json",             # universal
+        ]
+        for name in candidates:
+            path = base / name
+            if path.exists():
+                try:
+                    return json.loads(path.read_text(encoding="utf-8"))
+                except (json.JSONDecodeError, OSError):
+                    continue  # malformed file — skip and try next
+
+        return None
+
+    @staticmethod
+    def _fixture_to_result(data: dict) -> TaskResult:
+        """Convert a fixture JSON object into a TaskResult."""
+        return TaskResult(
+            success=data.get("success", True),
+            summary=data.get("summary", "Fixture response."),
+            output=data.get("output"),
+        )
 
 
-def prepare_invocation(invocation: AgentInvocation) -> PreparedAgentInvocation:
-    return prepare_acp_invocation(
-        invocation,
-        resolve_launch_command(invocation.agent.options),
-        metadata={"agent_runtime": "fake_acp"},
-    )
+async def _async_sleep(seconds: float) -> None:
+    """Minimal async delay — avoids importing asyncio in the connector module."""
+    import asyncio
 
-
-def send(message: dict) -> None:
-    print(json.dumps(message), flush=True)
-
-
-def main() -> None:
-    for line in sys.stdin:
-        message = json.loads(line)
-        method = message.get("method")
-        request_id = message.get("id")
-
-        if method == "initialize":
-            send({"jsonrpc": "2.0", "id": request_id, "result": {}})
-        elif method == "session/new":
-            send({"jsonrpc": "2.0", "id": request_id, "result": {"sessionId": "fake-session"}})
-        elif method == "session/prompt":
-            prompt_text = ""
-            params = message.get("params") or {}
-            prompt_items = params.get("prompt") or []
-            if prompt_items and isinstance(prompt_items[0], dict):
-                prompt_text = str(prompt_items[0].get("text") or "")
-            response_text = "fake ACP completed task"
-            if "CREATE_RESEARCH_CHILD_ACTION" in prompt_text:
-                response_text = (
-                    "fake ACP completed task\n\n"
-                    "```json\n"
-                    "{\n"
-                    '  "actions": [\n'
-                    "    {\n"
-                    '      "type": "create_task",\n'
-                    '      "title": "Research prerequisite",\n'
-                    '      "role": "researcher",\n'
-                    '      "task_type": "research",\n'
-                    '      "prompt": "Research the prerequisite and report findings.",\n'
-                    '      "status": "approved",\n'
-                    '      "blocks_parent": true\n'
-                    "    }\n"
-                    "  ]\n"
-                    "}\n"
-                    "```"
-                )
-            elif "CREATE_INVALID_CHILD_ACTION" in prompt_text:
-                response_text = (
-                    "fake ACP returned an invalid task action\n\n"
-                    "```json\n"
-                    '{"actions": [{"type": "create_task", "task_id": "missing-title"}]}\n'
-                    "```"
-                )
-            send(
-                {
-                    "jsonrpc": "2.0",
-                    "method": "session/update",
-                    "params": {
-                        "update": {
-                            "sessionUpdate": "agent_message_chunk",
-                            "content": {"type": "text", "text": response_text},
-                        }
-                    },
-                }
-            )
-            send({"jsonrpc": "2.0", "id": request_id, "result": {"stopReason": "end_turn"}})
-        elif method == "session/close":
-            send(
-                {
-                    "jsonrpc": "2.0",
-                    "id": request_id,
-                    "error": {"code": -32601, "message": "Method not found"},
-                }
-            )
-            break
-
-
-if __name__ == "__main__":
-    main()
+    await asyncio.sleep(seconds)
