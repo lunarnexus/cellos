@@ -1,6 +1,10 @@
 # CelloS
 
+This is pre-alpha software.  Use appropriate guardrails when working with AI workflows.  
+
 Human-governed AI orchestration system that decomposes project work into small, reviewable tasks routed to specialized worker agents. The human stays in control at every meaningful decision point.
+
+Compliance and auditing of AI workflows aligned with SOC 2, NIST AI RMF, ISO 27001 and MITRE ATLAS among others.  
 
 ## Installation
 
