@@ -14,7 +14,6 @@ from pydantic import BaseModel, Field, model_validator
 
 class AgentRole(StrEnum):
     """Agent roles with inferred task types."""
-    COORDINATOR = "coordinator"
     RESEARCHER = "researcher"
     ARCHITECT = "architect"
     ENGINEER = "engineer"
@@ -45,7 +44,6 @@ class TaskType(StrEnum):
 
 # Role → task_type inference map
 ROLE_TO_TASK_TYPE: dict[AgentRole, TaskType] = {
-    AgentRole.COORDINATOR: TaskType.PROPOSAL,
     AgentRole.RESEARCHER: TaskType.RESEARCH,
     AgentRole.ARCHITECT: TaskType.ARCHITECTURE,
     AgentRole.ENGINEER: TaskType.IMPLEMENTATION,

@@ -592,8 +592,8 @@ def plan(ctx: click.Context, task_id):
             await db.close()
             return
 
-        if task.role not in (AgentRole.ARCHITECT, AgentRole.COORDINATOR):
-            console.print(f"[red]Error: Cannot plan task with role '{task.role.value}'. Planning is restricted to architect and coordinator roles.[/]")
+        if task.role != AgentRole.ARCHITECT:
+            console.print(f"[red]Error: Cannot plan task with role '{task.role.value}'. Planning is restricted to architect role.[/]")
             await db.close()
             return
 

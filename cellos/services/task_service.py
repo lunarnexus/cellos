@@ -207,8 +207,8 @@ class TaskService:
     async def approve_task(self, task_id: str) -> Task:
         """Approve a task for execution. Only works on NEEDS_APPROVAL tasks.
 
-        All roles transition to APPROVED on approval. Architect and coordinator
-        tasks remain in APPROVED until their child tasks complete successfully.
+        All roles transition to APPROVED on approval. Architect tasks remain
+        in APPROVED until their child tasks complete successfully.
 
         Args:
             task_id: The task to approve.

@@ -32,15 +32,13 @@ class TestAgentRole:
 
     def test_all_roles_defined(self):
         assert set(AgentRole) == {
-            "coordinator",
-            "researcher", 
+            "researcher",
             "architect",
             "engineer",
             "tester",
         }
 
     def test_role_to_task_type_mapping(self):
-        assert ROLE_TO_TASK_TYPE[AgentRole.COORDINATOR] == TaskType.PROPOSAL
         assert ROLE_TO_TASK_TYPE[AgentRole.RESEARCHER] == TaskType.RESEARCH
         assert ROLE_TO_TASK_TYPE[AgentRole.ARCHITECT] == TaskType.ARCHITECTURE
         assert ROLE_TO_TASK_TYPE[AgentRole.ENGINEER] == TaskType.IMPLEMENTATION
