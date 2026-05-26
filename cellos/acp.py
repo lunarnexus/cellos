@@ -38,11 +38,14 @@ class AcpRunResult:
     Attributes:
         session_id: Session ID returned by the agent (may be None).
         text: Full concatenated response text from all message chunks.
+        thinking: Full concatenated thinking/reasoning text from thought chunks.
+            May contain the agent's internal reasoning. Empty if no thought events.
         stop_reason: Final stop reason reported by the agent, if any.
     """
 
     session_id: str | None = None
     text: str = ""
+    thinking: str = ""
     stop_reason: str | None = None
 
 
@@ -123,7 +126,8 @@ async def exec_task(
 
         return AcpRunResult(
             session_id=session_id,
-            text="".join(chunks) or "".join(thought_chunks) or "(no response text)",
+            text="".join(chunks),
+            thinking="".join(thought_chunks),
             stop_reason=stop_reason,
         )
 
@@ -168,32 +172,32 @@ async def _send(proc: asyncio.subprocess.Process, obj: dict) -> None:
 
 
 async def _recv(proc: asyncio.subprocess.Process, deadline: float) -> Any:
-    """Read one JSON line from stdout with a deadline.
+    """Read one JSON line from stdout with a deadline, skipping debug output.
 
     Raises:
         AcpTimeoutError: If the deadline is exceeded or the agent closes without response.
         AcpError: If the subprocess has no stdout pipe.
     """
-    remaining = max(deadline - asyncio.get_running_loop().time(), 0.5)
     if not proc.stdout:
         raise AcpError("Subprocess has no stdout")
 
-    try:
-        raw = await asyncio.wait_for(proc.stdout.readline(), timeout=remaining)
-    except asyncio.TimeoutError:
-        raise AcpTimeoutError(
-            "Agent did not respond within deadline"
-        ) from None
+    while True:
+        remaining = max(deadline - asyncio.get_running_loop().time(), 0.1)
+        try:
+            raw = await asyncio.wait_for(proc.stdout.readline(), timeout=remaining)
+        except asyncio.TimeoutError:
+            raise AcpTimeoutError(
+                "Agent did not respond within deadline"
+            ) from None
 
-    line = raw.decode("utf-8", errors="replace").strip()
-    if not line:
-        raise AcpTimeoutError("Agent subprocess closed without response")
+        line = raw.decode("utf-8", errors="replace").strip()
+        if not line:
+            raise AcpTimeoutError("Agent subprocess closed without response")
 
-    try:
-        return json.loads(line)
-    except json.JSONDecodeError:
-        logger.debug("Non-JSON output from agent: %s", line[:200])
-        return {"raw": line}
+        try:
+            return json.loads(line)
+        except json.JSONDecodeError:
+            continue  # skip non-JSON debug output
 
 
 def _extract_session_id(resp: Any) -> str | None:

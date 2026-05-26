@@ -231,6 +231,47 @@ class TestPlanningService:
         with pytest.raises(ValueError, match="not found"):
             await save_planning_result(db, "ghost", "Plan text")
 
+    async def test_strip_thinking_text_removes_preamble(self, db):
+        from cellos.models import Task
+        from cellos.services.planning_service import _strip_thinking_text
+
+        # Plan with thinking preamble before --- separator
+        raw_plan = "Let me check the file first.The file has 120 lines.\n\n---\n\n## Architecture Plan\n\n### Objective\nCount lines.\n\n### Steps\n1. Read file\n"
+        t = Task(title="Test thinking strip")
+        await db.create_task(t)
+        await save_planning_result(db, t.id, raw_plan, "")
+        updated = await db.get_task(t.id)
+        assert "Let me check" not in updated.plan
+        assert "Architecture Plan" in updated.plan
+        assert "Objective" in updated.plan
+
+    async def test_strip_thinking_text_handles_heading_only(self, db):
+        from cellos.models import Task
+        from cellos.services.planning_service import _strip_thinking_text
+
+        # Plan with thinking preamble before ## heading (no ---)
+        raw_plan = "Thinking about this task... Here's my plan:\n\n## Plan\n\n### Steps\n1. Do thing\n"
+        t = Task(title="Test heading strip")
+        await db.create_task(t)
+        await save_planning_result(db, t.id, raw_plan, "")
+        updated = await db.get_task(t.id)
+        assert "Thinking about" not in updated.plan
+        assert "Plan" in updated.plan
+        assert "Steps" in updated.plan
+
+    async def test_strip_thinking_text_preserves_clean_plan(self, db):
+        from cellos.models import Task
+        from cellos.services.planning_service import _strip_thinking_text
+
+        # Clean plan without thinking preamble
+        raw_plan = "## Plan\n\n### Steps\n1. Do thing\n"
+        t = Task(title="Test clean plan")
+        await db.create_task(t)
+        await save_planning_result(db, t.id, raw_plan, "")
+        updated = await db.get_task(t.id)
+        assert "Plan" in updated.plan
+        assert "Steps" in updated.plan
+
 
 # ── Execution service ──────────────────────────────────────────────
 

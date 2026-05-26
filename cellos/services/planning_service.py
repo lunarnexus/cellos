@@ -3,19 +3,49 @@
 from __future__ import annotations
 
 import datetime
+import re
 
 from cellos.db import CellosDatabase
 from cellos.models import AttentionReason, TaskStatus
 
 
+def _strip_thinking_text(plan_text: str) -> str:
+    """Strip thinking/thought text from plan output.
+
+    Opencode routes all content through agent_thought_chunk events, so the
+    plan often starts with thinking text like 'Let me check the file...'
+    before the actual structured plan. This function strips that preamble
+    by finding the first horizontal rule (---), section heading (##), or
+    fenced code block.
+
+    Args:
+        plan_text: Raw plan text from the agent, possibly with thinking preamble.
+
+    Returns:
+        Cleaned plan text with thinking preamble removed.
+    """
+    # Strategy 1: Find first horizontal rule or section heading
+    match = re.search(r'\n*(---\s*|\s*##\s)', plan_text)
+    if match:
+        return plan_text[match.end():].lstrip('\n')
+
+    # Strategy 2: Find first fenced code block (JSON actions or structured output)
+    match = re.search(r'\n*(```)', plan_text)
+    if match:
+        return plan_text[match.end():].lstrip('\n')
+
+    return plan_text.strip()
+
+
 async def save_planning_result(
     db: CellosDatabase, task_id: str, plan_text: str, prompt_text: str = "", success: bool = True
 ) -> None:
-    """Save the agent's planning result to a task and transition to NEEDS_APPROVAL.
+    """Save the agent's planning result and transition tasks to NEEDS_APPROVAL.
 
     The planner (architect agent) generates a structured plan with analysis,
-    steps, and verification approach. This function persists that output and
-    moves the task to the approval gate where humans review before execution.
+    steps, and verification approach. This function strips thinking text from
+    the plan output, persists it, and moves the task to the approval gate
+    where humans review before execution.
 
     Args:
         db: Database facade instance.
@@ -30,6 +60,9 @@ async def save_planning_result(
     current = await db.get_task(task_id)
     if current is None:
         raise ValueError(f"Task {task_id} not found")
+
+    # Strip thinking text from plan output
+    plan_text = _strip_thinking_text(plan_text)
 
     if not success:
         # Planning failed — transition directly to FAILED

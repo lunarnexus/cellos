@@ -76,7 +76,7 @@ cellos status
 Generate a plan via agent (opencode).
 
 ```bash
-cellos plan $TASK_ID
+cellos --debug plan $TASK_ID
 ```
 
 **Expected:** "Plan generated for <id>", Status: needs_approval.
@@ -152,7 +152,7 @@ To test execution, create an engineer task with a concrete plan:
 ```bash
 ENG_ID=$(cellos add-task "Count lines in README.md" -d "Use wc -l to count lines" -r engineer | grep -oP 'Created task \K[^:\s]+')
 cellos approve $ENG_ID  # Engineer tasks need approval without planning — requires 'ready' command (future)
-cellos execute $ENG_ID
+cellos execute --debug $ENG_ID
 cellos detail $ENG_ID
 ```
 
@@ -220,7 +220,7 @@ Start daemon, verify it picks up work.
 
 ```bash
 cellos add-task "Daemon test task" -r engineer
-cellos run
+cellos run --debug
 ```
 
 **Expected:** Daemon starts, picks up draft task for planning, fake_acp generates plan, status shows needs_approval.
