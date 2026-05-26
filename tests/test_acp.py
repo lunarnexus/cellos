@@ -1,22 +1,15 @@
-"""Tests for ACP client, connectors (fake_acp, acpx), and base protocol."""
+"""Tests for connectors (fake_acp, cellos_acp) and base protocol."""
 
 from __future__ import annotations
 
-import asyncio
 import json
-import os
-import shutil
-import sys
-import tempfile
-from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from cellos.acp import AcpError, AcpRunResult, exec_task
 from cellos.connectors.base import TaskConnector
 from cellos.connectors.fake_acp import FakeAcpConnector
-from cellos.connectors.acpx import AcpxConnector
+from cellos.connectors.cellos_acp import CellosAcpConnector
 from cellos.models import AgentRole, Task
 
 
@@ -31,27 +24,6 @@ def _make_task(**kwargs) -> Task:
     }
     defaults.update(kwargs)
     return Task(**defaults)
-
-
-def _make_fake_proc(responses: list[str]) -> MagicMock:
-    """Create a mocked subprocess that emits the given JSON lines on readline()."""
-    proc = MagicMock()
-    # Use plain MagicMock for stdin — we only call .write() and .at_eof(), both sync
-    stdin_mock = MagicMock()
-    stdin_mock.at_eof.return_value = False
-    proc.stdin = stdin_mock
-
-    async def fake_readline():
-        if responses:
-            return (responses.pop(0) + "\n").encode()
-        raise asyncio.TimeoutError()
-
-    # stdout.readline is the only async method we call on it
-    stdout_mock = AsyncMock()
-    stdout_mock.readline.side_effect = fake_readline
-    proc.stdout = stdout_mock
-    proc.returncode = None
-    return proc
 
 
 # ── Fake ACP Connector tests ─────────────────────────────────────────────────
@@ -142,234 +114,113 @@ class TestFakeAcpConnectorFixtures:
         assert "Config default" in result.summary
 
 
-# ── Acpx Connector tests ─────────────────────────────────────────────────────
+# ── Cellos ACP Connector tests ───────────────────────────────────────────────
 
-class TestAcpxConnectorInit:
-    """Test acpx connector initialization."""
+class TestCellosAcpConnectorInit:
+    """Test cellos_acp connector initialization."""
 
     def test_default_options(self):
-        conn = AcpxConnector()
-        assert conn.timeout == 1200
-        assert conn.approve_mode == "approve-all"
+        conn = CellosAcpConnector()
+        assert conn.agent_name == "opencode"
+        assert conn.timeout == 300
+        assert conn.auto_approve is True
+        assert conn.text_wait == 1.0
         assert conn.model is None
 
     def test_custom_options(self):
-        conn = AcpxConnector(options={
-            "timeout_seconds": 300,
-            "approve_mode": "approve-reads",
+        conn = CellosAcpConnector(options={
+            "agent": "hermes",
+            "timeout_seconds": 600,
+            "auto_approve": False,
+            "text_wait": 2.5,
             "model": "test-model",
         })
-        assert conn.timeout == 300
-        assert conn.approve_mode == "approve-reads"
+        assert conn.agent_name == "hermes"
+        assert conn.timeout == 600
+        assert conn.auto_approve is False
+        assert conn.text_wait == 2.5
         assert conn.model == "test-model"
 
 
-class TestAcpxConnectorExtractOutput:
-    """Test output extraction from acpx NDJSON stream."""
+class TestCellosAcpConnectorRunTask:
+    """Test cellos_acp connector task execution."""
 
-    def test_extract_message_chunks(self):
-        conn = AcpxConnector()
-        raw = json.dumps({
-            "jsonrpc": "2.0",
-            "method": "session/update",
-            "params": {
-                "update": {
-                    "sessionUpdate": "agent_message_chunk",
-                    "content": {"type": "text", "text": "Hello world"}
-                }
-            }
-        })
-        result = conn._extract_output(raw)
-        assert result == "Hello world"
+    async def test_successful_execution(self):
+        conn = CellosAcpConnector(options={"agent": "opencode"})
+        mock_result = MagicMock()
+        mock_result.success = True
+        mock_result.combined_text = "Task completed successfully."
+        mock_result.stop_reason = "end_turn"
 
-    def test_extract_thought_chunks_fallback(self):
-        conn = AcpxConnector()
-        raw = json.dumps({
-            "jsonrpc": "2.0",
-            "method": "session/update",
-            "params": {
-                "update": {
-                    "sessionUpdate": "agent_thought_chunk",
-                    "content": {"type": "text", "text": "Thinking..."}
-                }
-            }
-        })
-        result = conn._extract_output(raw)
-        assert result == "Thinking..."
+        with patch("cellos_acp.AcpClient") as MockClient:
+            mock_instance = MagicMock()
+            mock_instance.run = AsyncMock(return_value=mock_result)
+            MockClient.return_value = mock_instance
+            result = await conn.run_task(_make_task(), workdir="/tmp", mode="execution", prompt_text="test prompt")
 
-    def test_prefer_message_over_thought(self):
-        conn = AcpxConnector()
-        raw = (
-            json.dumps({
-                "jsonrpc": "2.0",
-                "method": "session/update",
-                "params": {
-                    "update": {
-                        "sessionUpdate": "agent_thought_chunk",
-                        "content": {"type": "text", "text": "Thinking..."}
-                    }
-                }
-            }) + "\n" +
-            json.dumps({
-                "jsonrpc": "2.0",
-                "method": "session/update",
-                "params": {
-                    "update": {
-                        "sessionUpdate": "agent_message_chunk",
-                        "content": {"type": "text", "text": "Final answer"}
-                    }
-                }
-            })
-        )
-        result = conn._extract_output(raw)
-        assert result == "Final answer"
-        assert "Thinking" not in result
+        assert result.success is True
+        assert "Task completed" in result.summary
+        assert result.output == "Task completed successfully."
 
-    def test_multiple_chunks_concatenated(self):
-        conn = AcpxConnector()
-        raw = (
-            json.dumps({
-                "jsonrpc": "2.0",
-                "method": "session/update",
-                "params": {
-                    "update": {
-                        "sessionUpdate": "agent_message_chunk",
-                        "content": {"type": "text", "text": "Part A"}
-                    }
-                }
-            }) + "\n" +
-            json.dumps({
-                "jsonrpc": "2.0",
-                "method": "session/update",
-                "params": {
-                    "update": {
-                        "sessionUpdate": "agent_message_chunk",
-                        "content": {"type": "text", "text": " Part B"}
-                    }
-                }
-            })
-        )
-        result = conn._extract_output(raw)
-        assert result == "Part A Part B"
+    async def test_exception_handling(self):
+        conn = CellosAcpConnector()
+        with patch("cellos_acp.AcpClient") as MockClient:
+            mock_instance = MagicMock()
+            mock_instance.run = AsyncMock(side_effect=RuntimeError("connection refused"))
+            MockClient.return_value = mock_instance
+            result = await conn.run_task(_make_task(), prompt_text="prompt")
 
-    def test_empty_input_returns_empty(self):
-        conn = AcpxConnector()
-        assert conn._extract_output("") == ""
+        assert result.success is False
+        assert "connection refused" in result.summary
 
-    def test_invalid_json_ignored(self):
-        conn = AcpxConnector()
-        raw = "not valid json\n" + json.dumps({
-            "jsonrpc": "2.0",
-            "method": "session/update",
-            "params": {
-                "update": {
-                    "sessionUpdate": "agent_message_chunk",
-                    "content": {"type": "text", "text": "Valid"}
-                }
-            }
-        })
-        result = conn._extract_output(raw)
-        assert result == "Valid"
+    async def test_model_override_passes_env(self):
+        conn = CellosAcpConnector(options={"agent": "opencode", "model": "claude-sonnet-4-20250514"})
+        mock_result = MagicMock()
+        mock_result.success = True
+        mock_result.combined_text = "done"
+        mock_result.stop_reason = "end_turn"
 
+        with patch("cellos_acp.AcpClient") as MockClient:
+            mock_instance = MagicMock()
+            mock_instance.run = AsyncMock(return_value=mock_result)
+            MockClient.return_value = mock_instance
+            await conn.run_task(_make_task(), prompt_text="test")
 
-# ── ACP Client tests ─────────────────────────────────────────────────────────
+        call_kwargs = MockClient.call_args.kwargs
+        assert call_kwargs["env"] is not None
+        assert json.loads(call_kwargs["env"]["OPENCODE_CONFIG_CONTENT"])["model"] == "claude-sonnet-4-20250514"
 
-class TestAcpClient:
-    """Test the standalone ACP client with mocked subprocess."""
+    async def test_no_model_no_env(self):
+        conn = CellosAcpConnector(options={"agent": "opencode"})
+        mock_result = MagicMock()
+        mock_result.success = True
+        mock_result.combined_text = "done"
+        mock_result.stop_reason = "end_turn"
 
-    async def test_full_protocol_flow(self):
-        fake_proc = _make_fake_proc([
-            json.dumps({"jsonrpc": "2.0", "id": 1, "result": {}}),
-            json.dumps({"jsonrpc": "2.0", "id": 2, "result": {"id": "sess-42"}}),
-            json.dumps({
-                "type": "agent_message_chunk",
-                "params": {"text": "Hello from agent"},
-            }),
-            json.dumps({"jsonrpc": "2.0", "result": {"stopReason": "end_turn"}}),
-        ])
+        with patch("cellos_acp.AcpClient") as MockClient:
+            mock_instance = MagicMock()
+            mock_instance.run = AsyncMock(return_value=mock_result)
+            MockClient.return_value = mock_instance
+            await conn.run_task(_make_task(), prompt_text="test")
 
-        with patch("asyncio.create_subprocess_exec", new_callable=AsyncMock) as mock_spawn:
-            mock_spawn.return_value = fake_proc
-            result = await exec_task(["fake_acp"], "test prompt", timeout_seconds=10, spawn_timeout=2.0)
+        call_kwargs = MockClient.call_args.kwargs
+        assert call_kwargs["env"] is None
 
-        assert isinstance(result, AcpRunResult)
-        assert result.session_id == "sess-42"
-        assert result.text == "Hello from agent"
-        assert result.stop_reason == "end_turn"
+    async def test_empty_output_returns_default_message(self):
+        conn = CellosAcpConnector()
+        mock_result = MagicMock()
+        mock_result.success = True
+        mock_result.combined_text = ""
+        mock_result.stop_reason = "end_turn"
 
-    async def test_multiple_chunks_concatenated(self):
-        fake_proc = _make_fake_proc([
-            json.dumps({"jsonrpc": "2.0", "id": 1, "result": {}}),
-            json.dumps({"jsonrpc": "2.0", "id": 2, "result": {"session_id": "s"}}),
-            json.dumps({"type": "agent_message_chunk", "params": {"text": "Part A"}}),
-            json.dumps({"type": "agent_message_chunk", "params": {"content": " Part B"}}),
-            json.dumps({"jsonrpc": "2.0", "result": {"stopReason": "end_turn"}}),
-        ])
+        with patch("cellos_acp.AcpClient") as MockClient:
+            mock_instance = MagicMock()
+            mock_instance.run = AsyncMock(return_value=mock_result)
+            MockClient.return_value = mock_instance
+            result = await conn.run_task(_make_task(), prompt_text="test")
 
-        with patch("asyncio.create_subprocess_exec", new_callable=AsyncMock) as mock_spawn:
-            mock_spawn.return_value = fake_proc
-            result = await exec_task(["fake"], "prompt")
-
-        assert result.text == "Part A Part B"
-
-    async def test_binary_not_found_raises_acp_error(self):
-        with patch("asyncio.create_subprocess_exec", side_effect=FileNotFoundError()):
-            with pytest.raises(AcpError, match="not found"):
-                await exec_task(["nonexistent"], "prompt")
-
-    async def test_no_response_text_returns_empty(self):
-        fake_proc = _make_fake_proc([
-            json.dumps({"jsonrpc": "2.0", "id": 1, "result": {}}),
-            json.dumps({"jsonrpc": "2.0", "id": 2, "result": {"id": "s"}}),
-            # No message chunks — just a stop signal
-            json.dumps({"jsonrpc": "2.0", "result": {"stopReason": "end_turn"}}),
-        ])
-
-        with patch("asyncio.create_subprocess_exec", new_callable=AsyncMock) as mock_spawn:
-            mock_spawn.return_value = fake_proc
-            result = await exec_task(["fake"], "prompt")
-
-        assert result.text == ""
-        assert result.thinking == ""
-
-
-class TestAcpClientProtocolCompatibility:
-    """Test handling of different agent protocol variations."""
-
-    async def test_thinking_block_events_ignored(self):
-        """Opencode routes all content through agent_thought_chunk — only message chunks collected."""
-        fake_proc = _make_fake_proc([
-            json.dumps({"jsonrpc": "2.0", "id": 1, "result": {}}),
-            json.dumps({"jsonrpc": "2.0", "id": 2, "result": {"id": "s"}}),
-            # Thinking block — should NOT be collected as text (no 'message' in type)
-            json.dumps({"type": "agent_thought_chunk", "params": {"text": "thinking..."}}),
-            # Actual message — should be collected
-            json.dumps({"type": "agent_message_chunk", "params": {"text": "real response"}}),
-            json.dumps({"jsonrpc": "2.0", "result": {"stopReason": "end_turn"}}),
-        ])
-
-        with patch("asyncio.create_subprocess_exec", new_callable=AsyncMock) as mock_spawn:
-            mock_spawn.return_value = fake_proc
-            result = await exec_task(["fake"], "prompt")
-
-        assert "real response" in result.text
-        assert "thinking..." not in result.text
-
-    async def test_stop_reason_in_params(self):
-        """Some agents put stopReason in params instead of result."""
-        fake_proc = _make_fake_proc([
-            json.dumps({"jsonrpc": "2.0", "id": 1, "result": {}}),
-            json.dumps({"jsonrpc": "2.0", "id": 2, "result": {"id": "s"}}),
-            json.dumps({"type": "agent_message_chunk", "params": {"text": "done"}}),
-            # stopReason in params (non-standard but supported)
-            json.dumps({"type": "session_update", "params": {"stopReason": "max_tokens"}}),
-        ])
-
-        with patch("asyncio.create_subprocess_exec", new_callable=AsyncMock) as mock_spawn:
-            mock_spawn.return_value = fake_proc
-            result = await exec_task(["fake"], "prompt")
-
-        assert result.stop_reason == "max_tokens"
+        assert result.success is True
+        assert "No output from agent" in result.summary
 
 
 # ── Protocol conformance test ────────────────────────────────────────────────
@@ -385,5 +236,10 @@ class TestTaskConnectorProtocol:
         params = list(sig.parameters.keys())
         assert "task" in params
 
-    def test_acpx_class_has_run_task(self):
-        assert hasattr(AcpxConnector, "run_task")
+    def test_cellos_acp_implements_protocol(self):
+        conn = CellosAcpConnector()
+        assert hasattr(conn, "run_task")
+        import inspect
+        sig = inspect.signature(conn.run_task)
+        params = list(sig.parameters.keys())
+        assert "task" in params

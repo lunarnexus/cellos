@@ -44,13 +44,15 @@ def _build_connector(agent: AgentCatalogEntry, timeout_seconds: int) -> TaskConn
 
         return FakeAcpConnector(options=agent.options)
 
-    if agent.connector == "acpx":
+    if agent.connector == "cellos_acp":
         try:
-            from cellos.connectors.acpx import AcpxConnector
+            from cellos.connectors.cellos_acp import CellosAcpConnector
         except ImportError as e:
-            raise WorkerError(f"Failed to import acpx connector: {e}") from e
+            raise WorkerError(f"Failed to import cellos-acp connector: {e}") from e
 
-        return AcpxConnector(options=agent.options)
+        options = dict(agent.options or {})
+        options.setdefault("timeout_seconds", timeout_seconds)
+        return CellosAcpConnector(options=options)
 
     raise WorkerError(f"Unknown connector type: {agent.connector}")
 

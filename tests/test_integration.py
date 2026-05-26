@@ -224,7 +224,7 @@ class TestConfigAndAgents:
         config = load_config(str(project_dir / ".cellos"))
         agent = config.get_agent()
         assert agent is not None
-        assert agent.connector in ("fake_acp", "acpx")
+        assert agent.connector in ("fake_acp", "cellos_acp")
 
 
 class TestDependencyTracking:

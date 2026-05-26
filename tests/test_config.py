@@ -52,9 +52,9 @@ class TestAgentCatalogEntry:
 
     def test_with_model_and_options(self):
         entry = AgentCatalogEntry(
-            connector="acpx", model="qwen-2.5-7b-instruct", options={"timeout": 60}
+            connector="cellos_acp", model="qwen-2.5-7b-instruct", options={"timeout": 60}
         )
-        assert entry.connector == "acpx"
+        assert entry.connector == "cellos_acp"
         assert entry.model == "qwen-2.5-7b-instruct"
         assert entry.options["timeout"] == 60
 
@@ -72,7 +72,7 @@ class TestCellosConfig:
         cfg = CellosConfig(
             agent_catalog={
                 "engineer": AgentCatalogEntry(connector="fake_acp"),
-                "architect": AgentCatalogEntry(connector="acpx", model="qwen-2.5-7b-instruct"),
+                "architect": AgentCatalogEntry(connector="cellos_acp", model="qwen-2.5-7b-instruct"),
             }
         )
         agent = cfg.get_agent()
@@ -83,12 +83,12 @@ class TestCellosConfig:
         cfg = CellosConfig(
             agent_catalog={
                 "engineer": AgentCatalogEntry(connector="fake_acp"),
-                "architect": AgentCatalogEntry(connector="acpx", model="qwen-2.5-7b-instruct"),
+                "architect": AgentCatalogEntry(connector="cellos_acp", model="qwen-2.5-7b-instruct"),
             }
         )
         agent = cfg.get_agent("architect")
         assert agent is not None
-        assert agent.connector == "acpx"
+        assert agent.connector == "cellos_acp"
 
     def test_get_agent_missing(self):
         cfg = CellosConfig(agent_catalog={"engineer": AgentCatalogEntry(connector="fake_acp")})
@@ -106,7 +106,7 @@ class TestLoadConfig:
         }))
         (tmp_path / "agentcatalog.json").write_text(json.dumps({
             "engineer": {"connector": "fake_acp", "options": {}},
-            "architect": {"connector": "acpx", "model": "qwen-2.5-7b-instruct"},
+            "architect": {"connector": "cellos_acp", "model": "qwen-2.5-7b-instruct"},
         }))
         (tmp_path / "promptprofiles.json").write_text(json.dumps({
             "role_instructions": {"engineer": "You are an engineer."},
@@ -122,7 +122,7 @@ class TestLoadConfig:
         assert cfg.agents.default_agent_id == "architect"
         assert cfg.approvals.preapprove_research_tasks is True
         assert len(cfg.agent_catalog) == 2
-        assert cfg.get_agent().connector == "acpx"
+        assert cfg.get_agent().connector == "cellos_acp"
 
     def test_load_missing_config_raises(self, tmp_path):
         with pytest.raises(ConfigError, match="Config file not found"):
