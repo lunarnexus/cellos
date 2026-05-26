@@ -1,10 +1,10 @@
 [build-system]
-requires = ["setuptools>=61", "wheel"]
+requires = ["setuptools>=61", "wheel", "setuptools-scm>=8"]
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "cellos"
-version = "0.1.0"
+dynamic = ["version"]
 description = "Human-governed AI orchestration system with deterministic task scheduling and agent routing"
 readme = "README.md"
 requires-python = ">=3.12"
@@ -21,10 +21,14 @@ dependencies = [
 dev = [
     "pytest",
     "pytest-asyncio",
+    "setuptools-scm>=8",
 ]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
+
+[tool.setuptools_scm]
+version_file = "cellos/_version.py"
 
 [project.scripts]
 cellos = "cellos.cli:main"
