@@ -73,7 +73,7 @@ cellos status
 
 ## Step 5: Plan Task
 
-Generate a plan via agent (opencode).
+Generate a plan via agent (cellos_acp with opencode agent).
 
 ```bash
 cellos --debug plan $TASK_ID

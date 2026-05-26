@@ -173,32 +173,32 @@ cellos/
 ---
 
 ## Phase 6: ACP Integration + Connectors
-**Goal**: Full JSON-RPC 2.0 ACP client, protocol-based connectors (opencode + fake_acp).
+**Goal**: Protocol-based connectors using cellos-acp package (official agent-client-protocol SDK) + fake_acp for testing.
 
 ### Files to Create
 ```
 cellos/
-├── acp.py                      # AcpClient with full JSON-RPC 2.0 protocol
 └── connectors/
     ├── __init__.py
     ├── base.py                 # TaskConnector Protocol definition
-    ├── opencode.py             # OpenCode subprocess connector
+    ├── cellos_acp.py           # CellosAcpConnector wrapping AcpClient
     └── fake_acp.py             # Canned response connector for testing
 ```
 
-### Key Design Decisions  
+### Key Design Decisions
 - `TaskConnector` is a typing.Protocol (duck typing, no inheritance)
-- ACP client handles: initialize → session/new → session/prompt → stream events → session/close
-- Timeout at each step with clear error messages
+- cellos-acp package provides `AcpClient` with official SDK — no hand-rolled JSON-RPC
+- Agent registry in cellos-acp: opencode, hermes, claude, codex, openclaw, pi
+- Model override via `OPENCODE_CONFIG_CONTENT` env var for opencode
 - fake_acp supports fixture-based responses AND configurable defaults
 
 ### Acceptance Criteria
-- [ ] AcpClient spawns subprocess, sends JSON-RPC 2.0 requests, streams events
-- [ ] OpenCodeConnector auto-discovers binary in standard paths + $PATH
+- [ ] CellosAcpConnector wraps AcpClient, passes agent name, cwd, env, timeout
+- [ ] Agent resolved from cellos-acp registry (opencode default)
 - [ ] FakeAcpConnector returns deterministic results from fixtures or defaults
 - [ ] Both connectors implement TaskConnector Protocol correctly
 - [ ] Timeout handling works (no hanging on unresponsive agents)
-- [ ] Test file `tests/test_acp.py` covers ACP client with mocks (~8 tests)
+- [ ] Test file `tests/test_acp.py` covers connectors with mocks (~8 tests)
 - [ ] fake_acp fixture-based testing enables full lifecycle without real agents
 - [ ] `pytest -q` passes
 
@@ -330,7 +330,7 @@ Update this section as each phase completes:
 | 3. Config | ✅ Done | Three-file config loading + example configs |
 | 4. Services | ✅ Done | TaskService CRUD/approval/attention, Planning/Execution services |
 | 5. CLI Foundation | ✅ Done | 8 commands: init, add-task, status, detail, approve, comment, events, update (17 tests) |
-|| 6. ACP + Connectors | ✅ Complete | acp.py (JSON-RPC client), connectors/ (base protocol, opencode, fake_acp) — 23 new tests |
+|| 6. ACP + Connectors | ✅ Complete | cellos-acp package integration, connectors/ (base protocol, cellos_acp, fake_acp) — migrated from acpx |
 | 7. Prompt Builder + Actions | ✅ Done | prompt_builder.py, task_actions.py (+28 tests) |
 | 8. Worker Isolation | ✅ Done (2026-05-21) | `worker_service.py` + `worker_spawner.py`, CLI worker cmd, 20 tests (agent resolution by role, attempt tracking, failed connector handling, e2e CLI) |
 | 9. Daemon Scheduler | ✅ Done | `scheduler.py` (SchedulerService + DaemonService), CLI run cmd, notification file, 15 tests (217 total) |

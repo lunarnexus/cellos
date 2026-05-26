@@ -75,7 +75,7 @@ Three JSON files in `~/.cellos/`:
 **agentcatalog.json** — Agent definitions:
 ```json
 {
-  "engineer": { "connector": "fake_acp", "options": { "default_success": true } }
+  "engineer": { "connector": "cellos_acp", "options": { "agent": "opencode", "auto_approve": true } }
 }
 ```
 
@@ -120,5 +120,5 @@ See `docs/smoke-test.md` for the 15-step sequential validation flow.
 |-------|-----|
 | Config not found | Run `cellos init` |
 | Cannot approve draft task | Task must be in `needs_approval` status |
-| Worker error with acpx | Falls back to `fake_acp` automatically |
+| Worker error with cellos_acp | Check agent binary is available; falls back to `fake_acp` for testing |
 | Daemon exits quickly | Exits after 60 idle cycles (~5 min); ensure tasks exist |

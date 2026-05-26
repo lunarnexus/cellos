@@ -65,8 +65,9 @@
 │                  prompt_text) → TaskResult    │
 │                        │
 │  Implementations:                              │
-│    - OpenCodeConnector: subprocess             │
-│      `opencode acp` with JSON-RPC 2.0         │
+│    - CellosAcpConnector: wraps cellos-acp      │
+│      AcpClient (official agent-client-protocol │
+│      SDK) with built-in agent registry         │
 │    - FakeAcpConnector: canned responses        │
 │      for testing (fixture-based or defaults)   │
 └────────────────────────┘
@@ -107,17 +108,19 @@
 
 **Database facade**: `cellos/db.py` wraps all repository operations, handles commits, event recording, and side effects at transactional boundaries.
 
-### ACP Integration (`cellos/acp.py`)
+### ACP Integration (`cellos-acp` package)
 
-Full JSON-RPC 2.0 client for subprocess communication:
-1. Spawn agent process with configured command
-2. Send `initialize` request (protocol version + capabilities)
-3. Create session via `session/new` → get session ID
-4. Send prompt via `session/prompt` → stream events
-5. Extract text from `agent_message_chunk` events
-6. Close session via `session/close` (graceful — some agents don't support it)
+Cellos uses the `cellos-acp` package, which wraps the official
+`agent-client-protocol` Python SDK. The `CellosAcpConnector` creates an
+`AcpClient` instance per task execution:
 
-Timeout handling at each step. Debug logging to file when enabled.
+1. Resolve agent from cellos-acp registry (opencode, hermes, claude, codex, etc.)
+2. Spawn agent subprocess with proper environment
+3. Send prompt → stream events via official SDK
+4. Collect text, thinking, and tool call results
+5. Return structured `AcpRunResult` with combined output
+
+Model override is supported via `OPENCODE_CONFIG_CONTENT` env var for opencode agent.
 
 ### Connectors (`cellos/connectors/`)
 
@@ -128,7 +131,7 @@ class TaskConnector(Protocol):
     async def run_task(task: Task, workdir: str, mode: str, prompt_text: str) -> TaskResult: ...
 ```
 
-- **OpenCodeConnector**: Runs `opencode acp` subprocess. Auto-discovers binary in standard paths + `$PATH`. Sends JSON-RPC 2.0 requests. Parses response (full JSON or last-line pattern). Returns raw text if no JSON found.
+- **CellosAcpConnector**: Wraps cellos-acp `AcpClient` which uses the official `agent-client-protocol` SDK. Agent resolved from built-in registry (opencode, hermes, claude, codex, openclaw, pi). Model override via `OPENCODE_CONFIG_CONTENT` env var.
 
 - **FakeAcpConnector**: Deterministic test connector. Fixture-based lookup: `{task_id}-{mode}.json` → `{mode}.json` → `default.json`. Falls back to configurable defaults (`default_success`, `default_summary`). Supports simulated delay for timing tests.
 
@@ -236,7 +239,7 @@ The IN_PROGRESS transition at step 3 is meaningful — it prevents the scheduler
 | Database locked | SQLite handles concurrent reads; writes are serialized via aiosqlite |
 | Config file missing/invalid | Pydantic validation error with clear message at startup |
 | Task in wrong state for operation | Custom exception (e.g., `InvalidTaskApprovalError`) → CLI prints error |
-| OpenCode binary not found | Falls back to fake_acp connector if configured, else clear error |
+| Agent binary not found | CellosAcpConnector returns failure result; use fake_acp for testing |
 
 ## Testing Strategy
 

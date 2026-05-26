@@ -52,7 +52,7 @@ User creates top-level task (title, details, pass/fail criteria)
 - Full task lifecycle: draft → planning → approval → execution → done/failed
 - Structured action parsing for child task creation from agent output
 - Subprocess worker isolation (hung workers don't kill scheduler)
-- Protocol-based ACP connectors (opencode + fake_acp for testing)
+- Protocol-based ACP connectors (cellos_acp + fake_acp for testing)
 - Rich CLI output (tables, panels, attention markers ⚠️)
 - Attention system with reason codes and auto-triggering
 - Dependency tracking between tasks
@@ -77,8 +77,8 @@ These are the actual execution backends — protocol-based connectors implementi
 
 | Connector | Description |
 |-----------|-------------|
+| `cellos_acp` | Wraps cellos-acp `AcpClient` (official agent-client-protocol SDK). Built-in agent registry: opencode, hermes, claude, codex, openclaw, pi. Model override via env var. |
 | `fake_acp` | Deterministic canned responses for testing. Fixture-based or configurable defaults. No subprocess spawned — returns instantly. |
-| `opencode` | Real ACP agent via OpenCode subprocess. Full JSON-RPC 2.0 over stdin/stdout. Planning, execution, and child task creation capabilities. |
 
 ### Registry Entries (configuration)
 
@@ -86,7 +86,7 @@ Each entry in `agentcatalog.json` is a named agent referencing one of the connec
 
 ```json
 {
-  "engineer": { "connector": "opencode", "model": "qwen-2.5-7b-instruct" },
+  "engineer": { "connector": "cellos_acp", "options": { "agent": "opencode", "auto_approve": true } },
   "test-agent": { "connector": "fake_acp", "options": { "default_success": true } }
 }
 ```

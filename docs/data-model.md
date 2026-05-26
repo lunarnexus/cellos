@@ -5,7 +5,6 @@
 ### AgentRole
 | Value | Inferred TaskType | Description |
 |-------|------------------|-------------|
-| `coordinator` | proposal | High-level task decomposition and coordination |
 | `researcher` | research | Investigation, information gathering |
 | `architect` | architecture | Design planning, technical decisions |
 | `engineer` | implementation | Code writing, feature building |
@@ -40,7 +39,6 @@ Alternative terminal states: blocked, failed, change_requested, cancelled
 ### TaskType
 | Value | Description |
 |-------|-------------|
-| `proposal` | High-level project proposal or coordination task |
 | `research` | Investigation with findings as output |
 | `architecture` | Design document, technical decisions |
 | `implementation` | Code changes, feature development |
