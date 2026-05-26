@@ -44,18 +44,13 @@ def _build_connector(agent: AgentCatalogEntry, timeout_seconds: int) -> TaskConn
 
         return FakeAcpConnector(options=agent.options)
 
-    if agent.connector == "opencode":
+    if agent.connector == "acpx":
         try:
-            from cellos.connectors.opencode import OpenCodeConnector, OpenCodeError
+            from cellos.connectors.acpx import AcpxConnector
         except ImportError as e:
-            raise WorkerError(f"Failed to import opencode connector: {e}") from e
+            raise WorkerError(f"Failed to import acpx connector: {e}") from e
 
-        try:
-            return OpenCodeConnector(
-                options=agent.options, timeout_seconds=timeout_seconds
-            )
-        except (OpenCodeError, FileNotFoundError) as e:
-            raise WorkerError(f"Cannot initialize opencode connector: {e}") from e
+        return AcpxConnector(options=agent.options)
 
     raise WorkerError(f"Unknown connector type: {agent.connector}")
 

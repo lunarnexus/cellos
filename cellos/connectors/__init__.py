@@ -2,10 +2,10 @@
 
 from cellos.connectors.base import TaskConnector
 from cellos.connectors.fake_acp import FakeAcpConnector
-from cellos.connectors.opencode import OpenCodeConnector
+from cellos.connectors.acpx import AcpxConnector
 
 __all__ = [
     "TaskConnector",
     "FakeAcpConnector",
-    "OpenCodeConnector",
+    "AcpxConnector",
 ]

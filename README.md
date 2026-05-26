@@ -120,5 +120,5 @@ See `docs/smoke-test.md` for the 15-step sequential validation flow.
 |-------|-----|
 | Config not found | Run `cellos init` |
 | Cannot approve draft task | Task must be in `needs_approval` status |
-| Worker error with opencode | Falls back to `fake_acp` automatically |
+| Worker error with acpx | Falls back to `fake_acp` automatically |
 | Daemon exits quickly | Exits after 60 idle cycles (~5 min); ensure tasks exist |

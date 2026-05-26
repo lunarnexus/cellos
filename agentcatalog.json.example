@@ -1,17 +1,30 @@
 {
-  "coordinator": {
-    "connector": "opencode"
-  },
-  "researcher": {
-    "connector": "opencode"
-  },
   "architect": {
-    "connector": "opencode"
+    "connector": "acpx",
+    "options": {
+      "timeout_seconds": 300,
+      "approve_mode": "approve-all"
+    }
   },
   "engineer": {
-    "connector": "opencode"
+    "connector": "acpx",
+    "options": {
+      "timeout_seconds": 300,
+      "approve_mode": "approve-all"
+    }
+  },
+  "researcher": {
+    "connector": "acpx",
+    "options": {
+      "timeout_seconds": 300,
+      "approve_mode": "approve-all"
+    }
   },
   "tester": {
-    "connector": "opencode"
+    "connector": "acpx",
+    "options": {
+      "timeout_seconds": 300,
+      "approve_mode": "approve-all"
+    }
   }
 }

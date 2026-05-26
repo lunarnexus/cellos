@@ -1,4 +1,4 @@
-"""Tests for ACP client, connectors (fake_acp, opencode), and base protocol."""
+"""Tests for ACP client, connectors (fake_acp, acpx), and base protocol."""
 
 from __future__ import annotations
 
@@ -16,7 +16,7 @@ import pytest
 from cellos.acp import AcpError, AcpRunResult, exec_task
 from cellos.connectors.base import TaskConnector
 from cellos.connectors.fake_acp import FakeAcpConnector
-from cellos.connectors.opencode import OpenCodeConnector, OpenCodeError, resolve_opencode_command
+from cellos.connectors.acpx import AcpxConnector
 from cellos.models import AgentRole, Task
 
 
@@ -142,79 +142,134 @@ class TestFakeAcpConnectorFixtures:
         assert "Config default" in result.summary
 
 
-# ── OpenCode Connector tests ─────────────────────────────────────────────────
+# ── Acpx Connector tests ─────────────────────────────────────────────────────
 
-class TestResolveOpencodeCommand:
-    """Test binary resolution logic."""
+class TestAcpxConnectorInit:
+    """Test acpx connector initialization."""
 
-    def test_finds_binary_in_path(self):
-        with tempfile.NamedTemporaryFile(delete=False) as f:
-            fake_bin = f.name
-        os.chmod(fake_bin, 0o755)
-        try:
-            # Patch both the standard path check AND shutil.which
-            import cellos.connectors.opencode as oc_mod
+    def test_default_options(self):
+        conn = AcpxConnector()
+        assert conn.timeout == 1200
+        assert conn.approve_mode == "approve-all"
+        assert conn.model is None
 
-            original_paths = list(oc_mod._OPENCODE_PATHS)
-            try:
-                oc_mod._OPENCODE_PATHS.clear()  # force fallback to PATH
-                with patch("shutil.which", return_value=fake_bin):
-                    cmd = resolve_opencode_command()
-                    assert len(cmd) == 2
-                    assert cmd[1] == "acp"
-            finally:
-                oc_mod._OPENCODE_PATHS[:] = original_paths
-        finally:
-            os.unlink(fake_bin)
-
-    def test_raises_when_not_found(self):
-        import cellos.connectors.opencode as oc_mod
-
-        original_paths = list(oc_mod._OPENCODE_PATHS)
-        try:
-            oc_mod._OPENCODE_PATHS.clear()  # force fallback to PATH
-            with patch("shutil.which", return_value=None):
-                with pytest.raises(FileNotFoundError, match="OpenCode binary not found"):
-                    resolve_opencode_command()
-        finally:
-            oc_mod._OPENCODE_PATHS[:] = original_paths
+    def test_custom_options(self):
+        conn = AcpxConnector(options={
+            "timeout_seconds": 300,
+            "approve_mode": "approve-reads",
+            "model": "test-model",
+        })
+        assert conn.timeout == 300
+        assert conn.approve_mode == "approve-reads"
+        assert conn.model == "test-model"
 
 
-class TestOpenCodeConnectorInit:
-    """Test connector initialization."""
+class TestAcpxConnectorExtractOutput:
+    """Test output extraction from acpx NDJSON stream."""
 
-    def test_raises_open_code_error_when_binary_missing(self):
-        import cellos.connectors.opencode as oc_mod
+    def test_extract_message_chunks(self):
+        conn = AcpxConnector()
+        raw = json.dumps({
+            "jsonrpc": "2.0",
+            "method": "session/update",
+            "params": {
+                "update": {
+                    "sessionUpdate": "agent_message_chunk",
+                    "content": {"type": "text", "text": "Hello world"}
+                }
+            }
+        })
+        result = conn._extract_output(raw)
+        assert result == "Hello world"
 
-        original_paths = list(oc_mod._OPENCODE_PATHS)
-        try:
-            oc_mod._OPENCODE_PATHS.clear()
-            with patch("shutil.which", return_value=None):
-                with pytest.raises(OpenCodeError, match="Cannot initialize"):
-                    OpenCodeConnector()
-        finally:
-            oc_mod._OPENCODE_PATHS[:] = original_paths
+    def test_extract_thought_chunks_fallback(self):
+        conn = AcpxConnector()
+        raw = json.dumps({
+            "jsonrpc": "2.0",
+            "method": "session/update",
+            "params": {
+                "update": {
+                    "sessionUpdate": "agent_thought_chunk",
+                    "content": {"type": "text", "text": "Thinking..."}
+                }
+            }
+        })
+        result = conn._extract_output(raw)
+        assert result == "Thinking..."
 
+    def test_prefer_message_over_thought(self):
+        conn = AcpxConnector()
+        raw = (
+            json.dumps({
+                "jsonrpc": "2.0",
+                "method": "session/update",
+                "params": {
+                    "update": {
+                        "sessionUpdate": "agent_thought_chunk",
+                        "content": {"type": "text", "text": "Thinking..."}
+                    }
+                }
+            }) + "\n" +
+            json.dumps({
+                "jsonrpc": "2.0",
+                "method": "session/update",
+                "params": {
+                    "update": {
+                        "sessionUpdate": "agent_message_chunk",
+                        "content": {"type": "text", "text": "Final answer"}
+                    }
+                }
+            })
+        )
+        result = conn._extract_output(raw)
+        assert result == "Final answer"
+        assert "Thinking" not in result
 
-class TestOpenCodeConnectorParseResult:
-    """Test result parsing (no subprocess needed)."""
+    def test_multiple_chunks_concatenated(self):
+        conn = AcpxConnector()
+        raw = (
+            json.dumps({
+                "jsonrpc": "2.0",
+                "method": "session/update",
+                "params": {
+                    "update": {
+                        "sessionUpdate": "agent_message_chunk",
+                        "content": {"type": "text", "text": "Part A"}
+                    }
+                }
+            }) + "\n" +
+            json.dumps({
+                "jsonrpc": "2.0",
+                "method": "session/update",
+                "params": {
+                    "update": {
+                        "sessionUpdate": "agent_message_chunk",
+                        "content": {"type": "text", "text": " Part B"}
+                    }
+                }
+            })
+        )
+        result = conn._extract_output(raw)
+        assert result == "Part A Part B"
 
-    def test_success_from_clean_output(self):
-        result = OpenCodeConnector._parse_result("All tests passed.", "execution")
-        assert result.success is True
-        assert "[execution]" in result.summary
+    def test_empty_input_returns_empty(self):
+        conn = AcpxConnector()
+        assert conn._extract_output("") == ""
 
-    def test_failure_detected_by_keyword(self):
-        result = OpenCodeConnector._parse_result("Error: cannot complete build", "planning")
-        assert result.success is False
-        assert "[planning]" in result.summary
-
-    def test_long_output_truncated_in_summary(self):
-        long_text = "x" * 6000
-        result = OpenCodeConnector._parse_result(long_text, "execution")
-        # Summary should be truncated (<520 chars), output preserves full text
-        assert len(result.summary) < 1000
-        assert len(result.output or "") == 6000  # original preserved intact
+    def test_invalid_json_ignored(self):
+        conn = AcpxConnector()
+        raw = "not valid json\n" + json.dumps({
+            "jsonrpc": "2.0",
+            "method": "session/update",
+            "params": {
+                "update": {
+                    "sessionUpdate": "agent_message_chunk",
+                    "content": {"type": "text", "text": "Valid"}
+                }
+            }
+        })
+        result = conn._extract_output(raw)
+        assert result == "Valid"
 
 
 # ── ACP Client tests ─────────────────────────────────────────────────────────
@@ -262,7 +317,7 @@ class TestAcpClient:
             with pytest.raises(AcpError, match="not found"):
                 await exec_task(["nonexistent"], "prompt")
 
-    async def test_no_response_text_returns_placeholder(self):
+    async def test_no_response_text_returns_empty(self):
         fake_proc = _make_fake_proc([
             json.dumps({"jsonrpc": "2.0", "id": 1, "result": {}}),
             json.dumps({"jsonrpc": "2.0", "id": 2, "result": {"id": "s"}}),
@@ -274,7 +329,8 @@ class TestAcpClient:
             mock_spawn.return_value = fake_proc
             result = await exec_task(["fake"], "prompt")
 
-        assert result.text == "(no response text)"
+        assert result.text == ""
+        assert result.thinking == ""
 
 
 class TestAcpClientProtocolCompatibility:
@@ -329,5 +385,5 @@ class TestTaskConnectorProtocol:
         params = list(sig.parameters.keys())
         assert "task" in params
 
-    def test_opencode_class_has_run_task(self):
-        assert hasattr(OpenCodeConnector, "run_task")
+    def test_acpx_class_has_run_task(self):
+        assert hasattr(AcpxConnector, "run_task")
