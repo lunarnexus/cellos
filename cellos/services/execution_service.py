@@ -56,6 +56,7 @@ async def save_execution_result(
     task_id: str,
     result_text: str,
     success: bool | None = None,
+    wait_for_children: bool = False,
 ) -> TaskResult:
     """Save the agent's execution result and transition the task.
 
@@ -69,6 +70,8 @@ async def save_execution_result(
         result_text: Raw output text from the agent execution.
         success: Optional explicit success/failure from the connector.
             If provided, overrides text-based parsing.
+        wait_for_children: If True and execution succeeded, keep the task
+            approved while child tasks complete instead of marking it done.
 
     Returns:
         TaskResult with parsed success/failure status.
@@ -117,7 +120,10 @@ async def save_execution_result(
         )
 
     # Determine new status
-    new_status = TaskStatus.DONE if task_result.success else TaskStatus.FAILED
+    if task_result.success and wait_for_children:
+        new_status = TaskStatus.APPROVED
+    else:
+        new_status = TaskStatus.DONE if task_result.success else TaskStatus.FAILED
     updated = current.model_copy(
         update={
             "status": new_status,

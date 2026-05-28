@@ -87,7 +87,9 @@ async def save_planning_result(
         task_id, len(plan_text), plan_text,
     )
     structured = parse_planning_response(plan_text)
+    stored_prompt_text = prompt_text or current.prompt_text
     if structured is not None:
+        stored_prompt_text = structured.model_dump_json()
         plan_text = plan_to_text(structured)
         logger.debug(
             "Planning result parsed as structured JSON for task %s stored_chars=%d repr=%r",
@@ -106,7 +108,7 @@ async def save_planning_result(
         updated = current.model_copy(
             update={
                 "plan": plan_text,
-                "prompt_text": prompt_text or current.prompt_text,
+                "prompt_text": stored_prompt_text,
                 "status": TaskStatus.FAILED,
                 "updated_at": datetime.datetime.now(),
             }
@@ -115,7 +117,7 @@ async def save_planning_result(
         updated = current.model_copy(
             update={
                 "plan": plan_text,
-                "prompt_text": prompt_text or current.prompt_text,
+                "prompt_text": stored_prompt_text,
                 "status": TaskStatus.NEEDS_APPROVAL,
                 "updated_at": datetime.datetime.now(),
             }

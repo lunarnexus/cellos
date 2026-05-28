@@ -22,6 +22,7 @@ from cellos.models import (
     AgentRole,
     AttentionReason,
     CommentAuthorType,
+    Task,
     TaskDependency,
     TaskStatus,
     TaskType,
@@ -123,7 +124,7 @@ def _format_status_table(tasks, status_filter=None):
     return table
 
 
-def _format_detail_panel(task):
+def _format_detail_panel(task: Task, children: list[Task] | None = None):
     """Format full task details as Rich panel."""
     lines = [
         f"[bold]{task.title}[/]",
@@ -140,6 +141,11 @@ def _format_detail_panel(task):
         lines.append(f"Success Crit: {task.success_criteria}")
     if task.failure_criteria:
         lines.append(f"Failure Crit: {task.failure_criteria}")
+    if task.parent_id:
+        lines.append(f"Parent:       {task.parent_id}")
+    if children:
+        child_ids = ", ".join(child.id for child in children)
+        lines.append(f"Children:     {child_ids}")
     if task.plan:
         lines.extend(["", f"[italic]Plan:[/]\n{task.plan}"])
 
@@ -311,7 +317,8 @@ def detail(ctx: click.Context, task_id):
                 console.print(f"[red]Error: {e}[/]")
                 return
 
-            panel = _format_detail_panel(task)
+            children = await db.list_child_tasks(task.id)
+            panel = _format_detail_panel(task, children=children)
             console.print(panel)
         finally:
             await db.close()

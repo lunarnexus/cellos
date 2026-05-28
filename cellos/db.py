@@ -47,6 +47,7 @@ from cellos.persistence.task_repository import (
     _replace_dependencies,
     create_task as _create_task,
     get_task as _get_task,
+    list_child_tasks as _list_child_tasks,
     list_approved_unblocked_tasks as _list_approved_unblocked,
     list_tasks as _list_tasks,
     list_tasks_depending_on as _list_dependents,
@@ -111,6 +112,9 @@ class CellosDatabase:
         self, status_filter: Optional[str] = None
     ) -> list[Task]:
         return await _list_tasks(self.conn, status_filter=status_filter)
+
+    async def list_child_tasks(self, parent_id: str) -> list[Task]:
+        return await _list_child_tasks(self.conn, parent_id)
 
     async def update_task(self, task: Task) -> bool:
         """Update a task and commit. Returns True if row existed."""

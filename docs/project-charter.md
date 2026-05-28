@@ -114,7 +114,7 @@ Agents can be extended by adding entries to the registry — no code changes req
 ## Success Criteria
 
 1. All unit tests pass (`pytest -q`)
-2. Full smoke test passes: init → create task → daemon picks up work → plan generated → human approves → execution completes → child tasks created and executed → results visible
+2. Full smoke test passes: init → create task → daemon picks up work → plan generated with child task descriptions → human approves → execution creates children → children planned, approved, executed → parent completes → results visible
 3. Worker subprocess isolation verified (hung worker doesn't crash scheduler)
 4. fake_acp connector enables full lifecycle testing without real agents
 5. CLI is usable for all operations without reading documentation

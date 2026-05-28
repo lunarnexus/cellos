@@ -130,6 +130,16 @@ async def list_tasks(
     return [_task_row_to_task(row, cols) for cols, row in results]
 
 
+async def list_child_tasks(conn: Connection, parent_id: str) -> list[Task]:
+    """List direct child tasks for a parent task."""
+    results = await _fetch_columns(
+        conn,
+        "SELECT * FROM tasks WHERE parent_id = ? ORDER BY created_at ASC",
+        (parent_id,),
+    )
+    return [_task_row_to_task(row, cols) for cols, row in results]
+
+
 async def update_task(conn: Connection, task: Task) -> bool:
     """UPDATE an existing task row. Returns True if the row existed."""
     now = datetime.datetime.now(datetime.timezone.utc).isoformat()
@@ -196,12 +206,11 @@ async def list_tasks_ready_for_planning(conn: Connection) -> list[Task]:
 async def list_approved_unblocked_tasks(
     conn: Connection, max_results: int = 10
 ) -> list[Task]:
-    """List approved tasks where all dependencies are satisfied (engineer/researcher/tester only)."""
+    """List approved tasks where all dependencies are satisfied."""
     query = (
         "SELECT t.* FROM tasks t"
         " LEFT JOIN task_dependencies td ON t.id = td.task_id"
         " WHERE t.status = 'approved'"
-        " AND t.role IN ('engineer', 'researcher', 'tester')"
         " GROUP BY t.id"
         " HAVING COUNT(CASE WHEN NOT td.status_satisfied THEN 1 END) = 0"
         " ORDER BY t.created_at ASC"

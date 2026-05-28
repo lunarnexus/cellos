@@ -19,7 +19,7 @@ class CreateTaskAction(BaseModel):
     task_type: Optional[str] = None  # inferred from role if missing
     prompt: Optional[str] = None  # details/description for the child task
     status: Optional[str] = None  # explicit target status (e.g. "approved")
-    dependencies: list[str] = Field(default_factory=list)  # parent task IDs this depends on
+    dependencies: list[str] = Field(default_factory=list)  # explicit task IDs this depends on
 
 
 # ─── Parsing helpers ────────────────────────────────────────────────────────
@@ -135,10 +135,10 @@ def tasks_from_create_actions(
 ) -> list[dict[str, Any]]:
     """Convert parsed CreateTaskActions into task dicts ready for TaskService.create_task.
 
-    Each child task gets the parent's ID as a dependency and inherits sensible defaults.
+    Each child task records the parent and inherits sensible defaults.
 
     Args:
-        parent_id: The task that generated these actions (becomes a dependency).
+        parent_id: The task that generated these actions.
         actions: Parsed list of CreateTaskAction instances.
         preapprove_research_tasks: If True, research-type tasks default to APPROVED status;
                                    otherwise they stay at DRAFT/NEEDS_APPROVAL based on explicit status.
@@ -146,7 +146,7 @@ def tasks_from_create_actions(
     Returns:
         List of dicts suitable for passing to TaskService.create_task().
         Each dict contains: title, role (optional), task_type (optional), details/prompt_text,
-                           dependencies=[parent_id], and optional status override.
+                           parent_id, explicit dependencies, and optional status override.
     """
     from cellos.models import AgentRole, ROLE_TO_TASK_TYPE, TaskDependency
 
@@ -167,7 +167,7 @@ def tasks_from_create_actions(
             "title": action.title,
             "details": action.prompt or None,
             "parent_id": parent_id,
-            "dependencies": [TaskDependency(task_id=pid) for pid in (action.dependencies + [parent_id])],
+            "dependencies": [TaskDependency(task_id=pid) for pid in action.dependencies],
         }
 
         if resolved_role:

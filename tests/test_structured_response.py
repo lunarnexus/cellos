@@ -317,6 +317,24 @@ class TestPlanToText:
         assert "## Risks" not in text
         assert "## Dependencies" not in text
 
+    def test_includes_child_tasks(self):
+        response = PlanningResponse(
+            plan=PlanSpec(objective="Go", steps=["Delegate work"]),
+            child_tasks=[
+                ChildTaskSpec(
+                    title="Count lines",
+                    role="engineer",
+                    details="Use wc -l",
+                )
+            ],
+        )
+
+        text = plan_to_text(response)
+
+        assert "## Child Tasks" in text
+        assert "Will create a engineer child task: Count lines" in text
+        assert "Details: Use wc -l" in text
+
 
 # ─── Child task conversion ───────────────────────────────────────────────
 
@@ -344,7 +362,7 @@ class TestChildTasksFromResponse:
         assert child["parent_id"] == "parent123"
         assert child["success_criteria"] == "Tests pass"
 
-    def test_adds_parent_as_dependency(self):
+    def test_does_not_add_parent_as_dependency(self):
         response = PlanningResponse(
             plan=PlanSpec(objective="Go", steps=["Do"]),
             child_tasks=[ChildTaskSpec(title="Child")],
@@ -352,7 +370,7 @@ class TestChildTasksFromResponse:
         result = child_tasks_from_response(response, "parent123")
         child = result[0]
         dep_ids = [d.task_id for d in child["dependencies"]]
-        assert "parent123" in dep_ids
+        assert "parent123" not in dep_ids
 
     def test_handles_empty_child_tasks(self):
         response = PlanningResponse(

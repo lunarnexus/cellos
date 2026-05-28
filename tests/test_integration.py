@@ -352,7 +352,7 @@ class TestStructuredActions:
         assert len(children) == 1
         assert children[0]["parent_id"] == parent.id
 
-        # Create the child task directly (convert dependency model to TaskDependency)
+        # Create the child task directly (explicit child dependencies only)
         child_deps = [TaskDependency(task_id=d.task_id) for d in children[0].get("dependencies", [])]
         child = await service.create_task(
             title=children[0]["title"],
@@ -361,7 +361,7 @@ class TestStructuredActions:
             dependencies=child_deps,
         )
         assert child.parent_id == parent.id
-        assert len(child.dependencies) >= 1
+        assert child.dependencies == []
 
 
 class TestPromptBuilder:

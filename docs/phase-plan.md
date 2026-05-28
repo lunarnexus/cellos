@@ -205,7 +205,7 @@ cellos/
 ---
 
 ## Phase 7: Prompt Builder + Structured Actions
-**Goal**: Configurable prompt assembly and child task creation from agent output.
+**Goal**: Configurable prompt assembly and child task planning from agent output.
 
 ### Files to Create/Update
 ```
@@ -217,13 +217,13 @@ cellos/
 ### Key Design Decisions
 - ALL prompts built from configurable parts — zero hardcoded strings
 - Structured actions parsed from fenced code blocks, plain JSON, or nested format
-- Child tasks created with dependency tracking and parent blocking logic
+- Child tasks created with parent_id reference; parent depends on children (not vice versa)
 - Research tasks can be pre-approved (configurable) vs defaulting to NEEDS_APPROVAL
 
 ### Acceptance Criteria  
 - [ ] Prompt builder assembles: role instructions + mode sections + task details + criteria + plan + comments + conversation + output format
 - [ ] Structured action parsing handles all three formats (fenced/plain/nested)
-- [ ] Child tasks created with correct parent_id, dependencies, and blocking logic
+- [ ] Child tasks created with correct parent_id; parent depends on children (not vice versa)
 - [ ] Pydantic validation on parsed actions with clear error messages
 - [ ] Test file `tests/test_prompt_builder.py` covers all prompt sections (~13 tests)
 - [ ] Test file `tests/test_task_actions.py` covers parsing + child creation (~12 tests)
@@ -312,7 +312,7 @@ README.md                       # Full documentation with examples
 - [ ] `plan <task_id>` command: manual planning trigger via ACP (with fake_acp fallback)  
 - [ ] `execute <task_id>` command: manual execution trigger via ACP (with fake_acp fallback)
 - [ ] Full test suite passes: models, config, persistence, services, CLI, ACP, prompt_builder, task_actions, worker, scheduler (~107+ tests total)
-- [ ] Smoke test document covers: init → create tasks → daemon picks work → planning generates plan + children → human approves → execution completes → results visible
+- [ ] Smoke test document covers: init → create tasks → daemon picks work → planning generates plan with child task descriptions → human approves → execution creates children → children planned, approved, executed → parent completes → results visible
 - [ ] README has full lifecycle example with commands and expected output
 - [ ] Example configs are functional (fake_acp agents, complete prompt profiles)
 - [ ] `pytest -q` passes all tests

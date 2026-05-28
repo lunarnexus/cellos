@@ -179,26 +179,32 @@ async def run_task_worker(
         # 7. Save result via appropriate service
         if mode == "planning":
             from cellos.services.planning_service import save_planning_result
-            from cellos.structured_response import (
-                parse_planning_response,
-                child_tasks_from_response,
-            )
 
             plan_text = result.output or result.summary
             await save_planning_result(db, task_id, plan_text=plan_text, success=result.success)
-
-            # Create child tasks from structured planning response
-            structured = parse_planning_response(plan_text)
-            if structured and structured.child_tasks:
-                from cellos.services.task_service import TaskService as TSvc
-
-                children_data = child_tasks_from_response(structured, task_id)
-                tservice = TSvc(db)
-                for child_data in children_data:
-                    await tservice.create_task(**child_data)  # type: ignore[arg-type]
-                    logger.info("Child task created from planning of %s", task_id)
         else:
-            # Parse structured actions (child tasks) before saving execution result
+            created_child_ids: list[str] = []
+
+            # Create planned child tasks only after the parent plan is approved
+            # and the parent task enters execution.
+            current_task = await db.get_task(task_id)
+            if current_task and current_task.prompt_text:
+                from cellos.structured_response import (
+                    child_tasks_from_response,
+                    parse_planning_response,
+                )
+
+                planned = parse_planning_response(current_task.prompt_text)
+                if result.success and planned and planned.child_tasks:
+                    from cellos.services.task_service import TaskService as TSvc
+
+                    children_data = child_tasks_from_response(planned, task_id)
+                    tservice = TSvc(db)
+                    for child_data in children_data:
+                        child = await tservice.create_task(**child_data)  # type: ignore[arg-type]
+                        created_child_ids.append(child.id)
+                        logger.info("Child task %s created from execution of %s", child.id, task_id)
+
             action_output = result.output or ""
             if action_output.strip():
                 from cellos.task_actions import parse_create_task_actions, tasks_from_create_actions
@@ -212,12 +218,25 @@ async def run_task_worker(
                 from cellos.services.task_service import TaskService as TSvc
                 tservice = TSvc(db)
                 for child_data in children_data:
-                    await tservice.create_task(**child_data)  # type: ignore[arg-type]
-                    logger.info("Child task created from execution of %s", task_id)
+                    child = await tservice.create_task(**child_data)  # type: ignore[arg-type]
+                    created_child_ids.append(child.id)
+                    logger.info("Child task %s created from execution of %s", child.id, task_id)
+
+            if created_child_ids:
+                from cellos.models import TaskDependency
+
+                await db.add_dependencies(
+                    task_id,
+                    [TaskDependency(task_id=child_id) for child_id in created_child_ids],
+                )
 
             from cellos.services.execution_service import save_execution_result
             exec_result = await save_execution_result(
-                db, task_id, action_output or result.summary, success=result.success
+                db,
+                task_id,
+                action_output or result.summary,
+                success=result.success,
+                wait_for_children=bool(created_child_ids),
             )
 
         # 8. Complete attempt — mark as succeeded or failed based on connector result

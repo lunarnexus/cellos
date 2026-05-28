@@ -157,7 +157,7 @@ class TestValidation:
 
 class TestTasksFromCreateActions:
 
-    def test_creates_child_with_parent_dependency(self):
+    def test_creates_child_with_parent_reference(self):
         from cellos.task_actions import (
             CreateTaskAction,
             tasks_from_create_actions,
@@ -170,9 +170,8 @@ class TestTasksFromCreateActions:
         child = result[0]
         assert child["title"] == "Child task"
         assert child["parent_id"] == "parent123"
-        # Parent should be in dependencies
         dep_ids = [d.task_id for d in child.get("dependencies", [])]
-        assert "parent123" in dep_ids
+        assert "parent123" not in dep_ids
 
     def test_role_inference_from_agent(self):
         from cellos.models import AgentRole, TaskType
@@ -280,12 +279,12 @@ class TestNestedFormatWithSiblings:
         assert actions[0].title == "Inner title"
 
 
-# ─── Multiple child tasks with parent deps ──────────────────────────────
+# ─── Multiple child tasks with parent refs ──────────────────────────────
 
 
 class TestMultipleChildTasks:
 
-    def test_each_child_gets_parent_dependency(self):
+    def test_each_child_gets_parent_reference(self):
         from cellos.task_actions import (
             CreateTaskAction,
             tasks_from_create_actions,
@@ -299,6 +298,6 @@ class TestMultipleChildTasks:
 
         assert len(result) == 2
         for child in result:
+            assert child["parent_id"] == "parent123"
             dep_ids = [d.task_id for d in child.get("dependencies", [])]
-            assert "parent123" in dep_ids, f"{child['title']} missing parent dependency"
-
+            assert "parent123" not in dep_ids

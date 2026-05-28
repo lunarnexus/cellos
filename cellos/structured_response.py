@@ -259,6 +259,14 @@ def plan_to_text(response: PlanningResponse) -> str:
         for dep in plan.dependencies:
             parts.append(f"- {dep}")
 
+    if response.child_tasks:
+        parts.append("## Child Tasks")
+        for child in response.child_tasks:
+            role = child.role or "engineer"
+            parts.append(f"- Will create a {role} child task: {child.title}")
+            if child.details:
+                parts.append(f"  Details: {child.details}")
+
     if plan.risks:
         parts.append("## Risks")
         for risk in plan.risks:
@@ -275,7 +283,7 @@ def child_tasks_from_response(
 ) -> list[dict[str, Any]]:
     """Convert child task specs from a planning response to task creation dicts.
 
-    Each child task gets the parent's ID as a dependency.
+    Each child task records its parent, but does not depend on the parent.
 
     Args:
         response: Validated planning response.
@@ -304,7 +312,7 @@ def child_tasks_from_response(
             "parent_id": parent_id,
             "dependencies": [
                 TaskDependency(task_id=pid)
-                for pid in (spec.dependencies + [parent_id])
+                for pid in spec.dependencies
             ],
         }
 

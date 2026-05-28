@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 import pathlib
 import shutil
@@ -144,6 +145,48 @@ class TestRunTaskWorkerPlanning:
 
         result = await run_task_worker(database, task.id, "planning", config)
 
+    async def test_planning_stores_child_specs_without_creating_children(self, db, config):
+        """Planning records planned child tasks but does not create them yet."""
+        from cellos.services.worker_service import run_task_worker
+        database, _, tmpdir = db
+
+        fixture_dir = pathlib.Path(tmpdir) / "fixtures"
+        fixture_dir.mkdir()
+        output = json.dumps({
+            "plan": {
+                "objective": "Count README lines",
+                "approach": "Delegate to an engineer",
+                "steps": ["Create an engineer child task to count README lines"],
+            },
+            "child_tasks": [
+                {
+                    "title": "Count lines in README.md",
+                    "role": "engineer",
+                    "details": "Run wc -l README.md",
+                    "blocks_parent": True,
+                }
+            ],
+        })
+        (fixture_dir / "planning.json").write_text(
+            json.dumps({"success": True, "summary": "planned", "output": output}),
+            encoding="utf-8",
+        )
+        config.agent_catalog["architect"].options["fixture_dir"] = str(fixture_dir)
+
+        task = _make_task(title="Plan line count", role=AgentRole.ARCHITECT)
+        await database.create_task(task)
+
+        await run_task_worker(database, task.id, "planning", config)
+
+        final = await database.get_task(task.id)
+        children = await database.list_child_tasks(task.id)
+
+        assert final is not None
+        assert final.status == TaskStatus.NEEDS_APPROVAL
+        assert "## Child Tasks" in final.plan
+        assert final.prompt_text
+        assert children == []
+
 
 # ── Execution mode tests ────────────────
 
@@ -170,6 +213,49 @@ class TestRunTaskWorkerExecution:
         assert final is not None
         # fake_acp returns success=True by default → DONE
         assert final.status == TaskStatus.DONE
+
+    async def test_architect_execution_creates_planned_children(self, db, config):
+        """Architect execution creates approved-plan children and waits on them."""
+        from cellos.services.worker_service import run_task_worker
+        database = db[0]
+
+        planned = {
+            "plan": {
+                "objective": "Count README lines",
+                "steps": ["Create an engineer child task to count README lines"],
+            },
+            "child_tasks": [
+                {
+                    "title": "Count lines in README.md",
+                    "role": "engineer",
+                    "details": "Run wc -l README.md",
+                    "blocks_parent": True,
+                }
+            ],
+        }
+        task = _make_task(title="Plan line count", role=AgentRole.ARCHITECT)
+        await database.create_task(task)
+
+        created = await database.get_task(task.id)
+        approved = created.model_copy(update={
+            "status": TaskStatus.APPROVED,
+            "plan": "## Child Tasks\n- Will create a engineer child task: Count lines in README.md",
+            "prompt_text": json.dumps(planned),
+        })
+        await database.update_task(approved)
+
+        await run_task_worker(database, task.id, "execution", config)
+
+        final = await database.get_task(task.id)
+        children = await database.list_child_tasks(task.id)
+
+        assert final is not None
+        assert final.status == TaskStatus.APPROVED
+        assert len(children) == 1
+        assert children[0].parent_id == task.id
+        assert children[0].status == TaskStatus.DRAFT
+        assert [d.task_id for d in final.dependencies] == [children[0].id]
+        assert children[0].dependencies == []
 
 
 # ── Attempt tracking tests ───────────────

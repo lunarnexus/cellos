@@ -172,7 +172,7 @@ All externalized to `promptprofiles.json` — no hardcoded prompt strings.
 
 Parses agent output into typed Pydantic models using bracket-scanning JSON extraction that handles chatty LLM output with prose mixed in.
 
-**Planning responses**: `parse_planning_response(text)` → `PlanningResponse` with `PlanSpec` (objective, steps, approach, verification, dependencies, risks) and `ChildTaskSpec` list (title, role, task_type, details, success/failure criteria, dependencies, blocks_parent). The `plan_to_text()` helper converts a `PlanningResponse` to readable markdown for storage as `task.plan`. The `child_tasks_from_response()` helper converts child task specs to task creation dicts with parent dependency tracking.
+**Planning responses**: `parse_planning_response(text)` → `PlanningResponse` with `PlanSpec` (objective, steps, approach, verification, dependencies, risks) and `ChildTaskSpec` list (title, role, task_type, details, success/failure criteria, dependencies, blocks_parent). The `plan_to_text()` helper converts a `PlanningResponse` to readable markdown for storage as `task.plan`, including a "Child Tasks" section that lists planned child tasks. The `child_tasks_from_response()` helper converts child task specs to task creation dicts where each child records its parent_id but does not depend on the parent; instead, the parent depends on its children.
 
 **Execution responses**: `parse_execution_response(text)` → `ExecutionResponse` with summary, success flag, actions_taken, files_changed, commands_run, criteria_met, and issues lists.
 
@@ -198,7 +198,7 @@ Parses agent output for child task creation:
 }
 ```
 
-Supports: fenced code blocks, plain JSON, nested action format. Validates with Pydantic. Creates child tasks with dependency tracking and parent blocking logic.
+Supports: fenced code blocks, plain JSON, nested action format. Validates with Pydantic. Creates child tasks with parent_id reference; parent depends on children (not vice versa).
 
 ## Runtime Flow: Event-Driven Daemon (`cellos run`)
 

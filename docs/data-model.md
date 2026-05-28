@@ -18,10 +18,18 @@ draft ──────▶ needs_approval ──────▶ approved ──
   │              [plan]                  execute        (completion)
   │          (any role)              (ACP agent)
   └────────────────────┴────────────────▼
-                           approve ←──────┘
-                            (human gate)
+                            approve ←──────┘
+                             (human gate)
 
 Comment on needs_approval task: needs_approval ──▶ draft ──▶ [re-plan] ──▶ needs_approval
+
+Architect (parent) lifecycle:
+  draft ──▶ needs_approval ──▶ approved ──▶ in_progress ──▶ approved (waiting for children) ──▶ done
+  (plan describes child tasks)  (human gate)    (children created)                              (all children done)
+
+Child lifecycle:
+  draft ──▶ needs_approval ──▶ approved ──▶ in_progress ──▶ done
+  (executed by daemon)   (human gate)      (daemon)
 ```
 
 | Value | Description | Transitions To |
@@ -35,6 +43,11 @@ Comment on needs_approval task: needs_approval ──▶ draft ──▶ [re-pla
 | `failed` | Execution failed | draft (for retry via update) |
 | `change_requested` | Child task requested changes to parent plan | needs_approval, approved (if auto-accepted) |
 | `cancelled` | Task explicitly cancelled by human | — (terminal) |
+
+**Architect-specific notes**:
+- Planning generates a plan that describes child tasks but does not create them
+- Execution (after approval) creates child tasks and transitions back to `approved` while waiting for children
+- Parent auto-transitions to `done` when all children complete successfully
 
 ### TaskType
 | Value | Description |
@@ -150,6 +163,11 @@ class TaskDependency(BaseModel):
     task_id: str                                 # ID of the dependency target
     status_satisfied: bool = False               # Whether this dependency is met
 ```
+
+**Dependency semantics**:
+- Parent tasks depend on their children (parent cannot complete until all children are done)
+- Child tasks do not depend on their parent (children can execute independently)
+- The `parent_id` field tracks hierarchy; the `dependencies` array tracks blocking relationships
 
 ### ConversationMessage
 

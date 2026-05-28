@@ -79,9 +79,9 @@ Generate a plan via agent (cellos_acp with opencode agent). Planning works for a
 cellos --debug plan $TASK_ID
 ```
 
-**Expected:** "Plan generated for <id>", Status: needs_approval.
+**Expected:** "Plan generated for <id>", Status: needs_approval. Architect plans should describe the child task(s) that will be created after approval; no child tasks are created during planning.
 
-**Debug verification:** With `--debug`, `~/.cellos/debug.log` should include the exact prompt sent from Cellos to cellos-acp and the raw response returned from cellos-acp before Cellos parses or saves it. Look for `cellos-acp request body`, `cellos-acp response metadata`, `cellos-acp response combined body`, and `Planning result raw input`. The default `text_wait` for late ACP text chunks is `2.0` seconds.
+**Debug verification:** With `--debug`, `~/.cellos/debug.log` should include the exact prompt sent from Cellos to cellos-acp and the raw response returned from cellos-acp before Cellos parses or saves it. Look for `cellos-acp request body`, `cellos-acp response metadata`, `cellos-acp response combined body`, and `Planning result raw input`. The default `text_wait` for late ACP text chunks is `2.0` seconds. The default agent catalog also enables cellos-acp library debug logging at `~/.cellos/cellos-acp.log` via the `log_file` option, equivalent to using `cellos-acp ... --log-file ~/.cellos/cellos-acp.log` in the standalone CLI.
 
 ---
 
@@ -93,7 +93,7 @@ View full task information.
 cellos detail $TASK_ID
 ```
 
-**Expected:** Panel showing title, status=needs_approval, role, type, details, plan text, and ⚠️ attention marker.
+**Expected:** Panel showing title, status=needs_approval, role, type, details, plan text including planned child task(s), and ⚠️ attention marker.
 
 ---
 
@@ -129,26 +129,24 @@ Confirm final task state.
 cellos detail $TASK_ID
 ```
 
-**Expected:** Status: approved (waiting for child tasks to complete). If the architect created child tasks and they complete, the parent auto-transitions to done.
+**Expected:** Status: approved. Child tasks are not created until the approved parent task executes.
 
 ---
 
 ## Step 10: Child Tasks — Plan, Approve, Execute via Daemon
 
-Verify the full child-task lifecycle: daemon plans children, human approves, daemon executes, parent auto-completes.
+Verify the full child-task lifecycle: daemon executes approved parent to create children, daemon plans children, human approves children, daemon executes children, parent auto-completes.
 
 ```bash
-# List child tasks created by the architect (should be in draft status)
-cellos status -s draft
-
-# Start daemon in background — it will plan all draft children
+# Start daemon in background — it will execute the approved architect parent,
+# create child tasks, then plan those draft children
 # Redirect output to log to avoid interfering with other CLI commands
 cellos run --debug > /tmp/cellos_daemon.log 2>&1 &
 DAEMON_PID=$!
 
-# Wait for daemon to plan children (draft → needs_approval)
+# Wait for daemon to create and plan children (parent execution → child draft → needs_approval)
 # Adjust sleep if your agent is slower/faster
-sleep 5
+sleep 10
 cellos status -s needs_approval
 
 # Approve all planned children (extract hex task IDs from Rich table output)
@@ -167,7 +165,7 @@ wait $DAEMON_PID 2>/dev/null
 cellos detail $TASK_ID
 ```
 
-**Expected:** Children planned (needs_approval), approved, executed by daemon (done). Parent task status: done (all child tasks completed). If any child failed, parent shows ⚠️ attention with reason child_failed.
+**Expected:** Approved parent executes and creates child tasks. Children are planned (needs_approval), approved, executed by daemon (done). Parent task status: done (all child tasks completed). Parent detail lists Children; child detail lists Parent. If any child failed, parent shows ⚠️ attention with reason child_failed.
 
 ---
 
@@ -295,6 +293,7 @@ Press Ctrl+C to stop.
 | 3 | Config not found | Delete `~/.cellos` and re-run `cellos init` |
 | 5 | Planning error | Check cellos_acp config in agentcatalog.json |
 | 5 | Plan appears truncated or incomplete | Compare `cellos-acp response combined body` with `Planning result raw input` in `~/.cellos/debug.log` to determine whether truncation happened before or after Cellos received the ACP response |
+| 5 | Need lower-level ACP diagnostics | Check `~/.cellos/cellos-acp.log`; it is enabled by `log_file` in `agentcatalog.json` |
 | 8 | Cannot approve | Task must be in needs_approval status |
 | 10 | Children not planned | Check daemon output, verify children are in draft status |
 | 10 | Children not executed | Verify children were approved, check daemon picked them up |

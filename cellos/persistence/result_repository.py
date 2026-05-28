@@ -263,8 +263,8 @@ async def complete_parent_if_all_children_done(
     if statuses <= {"done"}:
         # All children done → parent is done
         await conn.execute(
-            "UPDATE tasks SET status = 'done', updated_at = ? WHERE id = ?",
-            (_now_iso(), parent_id),
+            "UPDATE tasks SET status = 'done', attention = ?, updated_at = ? WHERE id = ?",
+            (_json_dumps(AttentionMetadata().model_dump()), _now_iso(), parent_id),
         )
         return parent_id
     elif statuses <= {"done", "in_progress", "approved"}:
