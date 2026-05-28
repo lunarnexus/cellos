@@ -5,6 +5,7 @@
       "agent": "opencode",
       "timeout_seconds": 300,
       "text_wait": 2.0,
+      "log_file": "~/.cellos/cellos-acp.log",
       "auto_approve": true
     }
   },
@@ -14,6 +15,7 @@
       "agent": "opencode",
       "timeout_seconds": 300,
       "text_wait": 2.0,
+      "log_file": "~/.cellos/cellos-acp.log",
       "auto_approve": true
     }
   },
@@ -23,6 +25,7 @@
       "agent": "opencode",
       "timeout_seconds": 300,
       "text_wait": 2.0,
+      "log_file": "~/.cellos/cellos-acp.log",
       "auto_approve": true
     }
   },
@@ -32,6 +35,7 @@
       "agent": "opencode",
       "timeout_seconds": 300,
       "text_wait": 2.0,
+      "log_file": "~/.cellos/cellos-acp.log",
       "auto_approve": true
     }
   }

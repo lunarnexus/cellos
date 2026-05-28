@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+from pathlib import Path
 from typing import Any
 
 from cellos.connectors.base import TaskConnector
@@ -21,6 +22,7 @@ class CellosAcpConnector:
             - timeout_seconds: Max wait time (default: 300)
             - auto_approve: Auto-approve permissions (default: true)
             - text_wait: Seconds to wait for late chunks (default: 2.0)
+            - log_file: Enable cellos-acp DEBUG logging to this file (optional)
             - model: Model ID - passed via agent-specific env var (optional)
     """
 
@@ -30,15 +32,21 @@ class CellosAcpConnector:
         self.timeout = int(self.options.get("timeout_seconds", 300))
         self.auto_approve = self.options.get("auto_approve", True)
         self.text_wait = float(self.options.get("text_wait", 2.0))
+        self.log_file = self.options.get("log_file")
         self.model = self.options.get("model")
 
     async def run_task(
         self, task: Task, workdir: str | None = None, mode: str = "execution", prompt_text: str | None = None
     ) -> TaskResult:
         """Execute a task via cellos-acp AcpClient."""
-        from cellos_acp import AcpClient
+        from cellos_acp import AcpClient, configure_logging
 
         cwd = workdir or "."
+
+        if self.log_file:
+            acp_log_file = str(Path(str(self.log_file)).expanduser())
+            configure_logging(acp_log_file)
+            logger.debug("cellos-acp library debug logging enabled at %s", acp_log_file)
 
         # Build env for model override (opencode uses OPENCODE_CONFIG_CONTENT)
         env = None

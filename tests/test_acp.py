@@ -125,6 +125,7 @@ class TestCellosAcpConnectorInit:
         assert conn.timeout == 300
         assert conn.auto_approve is True
         assert conn.text_wait == 2.0
+        assert conn.log_file is None
         assert conn.model is None
 
     def test_custom_options(self):
@@ -133,12 +134,14 @@ class TestCellosAcpConnectorInit:
             "timeout_seconds": 600,
             "auto_approve": False,
             "text_wait": 2.5,
+            "log_file": "/tmp/cellos-acp-test.log",
             "model": "test-model",
         })
         assert conn.agent_name == "hermes"
         assert conn.timeout == 600
         assert conn.auto_approve is False
         assert conn.text_wait == 2.5
+        assert conn.log_file == "/tmp/cellos-acp-test.log"
         assert conn.model == "test-model"
 
 
@@ -205,6 +208,24 @@ class TestCellosAcpConnectorRunTask:
 
         call_kwargs = MockClient.call_args.kwargs
         assert call_kwargs["env"] is None
+
+    async def test_log_file_configures_cellos_acp_logging(self):
+        conn = CellosAcpConnector(options={"log_file": "~/cellos-acp-test.log"})
+        mock_result = MagicMock()
+        mock_result.success = True
+        mock_result.combined_text = "done"
+        mock_result.text = "done"
+        mock_result.thinking = ""
+        mock_result.stop_reason = "end_turn"
+
+        with patch("cellos_acp.AcpClient") as MockClient, patch("cellos_acp.configure_logging") as configure_logging:
+            mock_instance = MagicMock()
+            mock_instance.run = AsyncMock(return_value=mock_result)
+            MockClient.return_value = mock_instance
+            await conn.run_task(_make_task(), prompt_text="test")
+
+        configure_logging.assert_called_once()
+        assert configure_logging.call_args.args[0].endswith("/cellos-acp-test.log")
 
     async def test_empty_output_returns_default_message(self):
         conn = CellosAcpConnector()
