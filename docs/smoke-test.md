@@ -194,21 +194,7 @@ cellos detail $ENG_ID
 
 ---
 
-## Step 12: Comments & Attention
-
-Add comment and verify attention triggers.
-
-```bash
-COMMENT_TASK_ID=$(cellos add-task "Task for comment test" -r engineer | grep -oP 'Created task \K[^:\s]+')
-cellos comment $COMMENT_TASK_ID -m "Please use approach X"
-cellos status
-```
-
-**Expected:** Comment added, ⚠️ attention marker visible in status table.
-
----
-
-## Step 13: Comment Revision Flow
+## Step 12: Comment Revision Flow
 
 Commenting on a `needs_approval` task sends it back to `draft` for re-planning.
 
@@ -231,7 +217,7 @@ cellos detail $REV_ID  # Should show needs_approval again, plan includes checkbo
 
 ---
 
-## Step 14: Dependencies
+## Step 13: Dependencies
 
 Create tasks with dependencies.
 
@@ -246,7 +232,7 @@ cellos detail $PARENT_ID
 
 ---
 
-## Step 15: Invalid Approval Guard
+## Step 14: Invalid Approval Guard
 
 Attempt to approve a draft task (should fail).
 
@@ -259,7 +245,7 @@ cellos approve $DRAFT_ID
 
 ---
 
-## Step 16: Empty Update Guard
+## Step 15: Empty Update Guard
 
 Attempt to update with no fields (should fail).
 
@@ -271,13 +257,13 @@ cellos update $DRAFT_ID
 
 ---
 
-## Step 17: Daemon Scheduler
+## Step 16: Daemon Scheduler
 
 Start daemon, verify it picks up work. The daemon only plans (draft → needs_approval) — execution requires manual approval.
 
 ```bash
 cellos add-task "Daemon test task" -r engineer
-cellos run --debug
+cellos --debug run
 ```
 
 **Expected:** Daemon starts, picks up draft task for planning, generates plan, status shows needs_approval. Execution requires human approval gate.
@@ -298,5 +284,5 @@ Press Ctrl+C to stop.
 | 10 | Children not planned | Check daemon output, verify children are in draft status |
 | 10 | Children not executed | Verify children were approved, check daemon picked them up |
 | 11 | Execution error | Verify task is approved, check agent config |
-| 13 | Comment doesn't send to draft | Verify task was in needs_approval before commenting |
-| 17 | Daemon hangs | Check concurrent_tasks config, verify cellos_acp works |
+| 12 | Comment doesn't send to draft | Verify task was in needs_approval before commenting |
+| 16 | Daemon hangs | Check concurrent_tasks config, verify cellos_acp works |

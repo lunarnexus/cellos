@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 from pathlib import Path
 from typing import Optional
 
@@ -45,15 +46,6 @@ DEFAULT_CONFIG_DIR = str(Path.home() / ".cellos")
 DEFAULT_DEBUG_LOG = str(Path.home() / ".cellos" / "debug.log")
 
 
-def _debug_callback(ctx: click.Context, param: click.Parameter, value: str | bool | None) -> str | None:
-    """Handle --debug flag with optional path argument."""
-    if value is True:  # Flag used without argument
-        return DEFAULT_DEBUG_LOG
-    if isinstance(value, str):
-        return value
-    return None
-
-
 @click.group(context_settings={"help_option_names": ["-h", "--help"]})
 @click.option("--db", default=DEFAULT_DB_PATH, help="Path to SQLite database.")
 @click.option(
@@ -73,9 +65,17 @@ def main(ctx: click.Context, db: str, config_dir: str, debug: str | None):
     ctx.obj["db"] = db
     ctx.obj["config_dir"] = config_dir
 
+    debug_path = None
     if debug is not None:
         debug_path = Path(debug)
+    else:
+        env_debug = os.environ.get("CELLOS_DEBUG_LOG")
+        if env_debug:
+            debug_path = Path(env_debug)
+
+    if debug_path is not None:
         debug_path.parent.mkdir(parents=True, exist_ok=True)
+        os.environ["CELLOS_DEBUG_LOG"] = str(debug_path)
         logging.basicConfig(
             filename=str(debug_path), level=logging.DEBUG,
             format="%(asctime)s [%(levelname)s] %(name)s: %(message)s"
@@ -275,9 +275,13 @@ def add_task(ctx: click.Context, title, details, role, task_type, success_criter
 
 @main.command()
 @click.option("-s", "--status-filter", type=click.Choice([s.value for s in TaskStatus]), default=None, help="Filter by status.")
+@click.option("--all", "show_all", is_flag=True, default=False, help="Include completed tasks (done, cancelled).")
 @click.pass_context
-def status(ctx: click.Context, status_filter):
-    """List tasks with attention markers."""
+def status(ctx: click.Context, status_filter, show_all):
+    """List tasks with attention markers.
+
+    By default, hides completed tasks (done, cancelled). Use --all to show everything.
+    """
 
     async def _run():
         db = await _get_db(ctx.obj["db"])
@@ -286,6 +290,12 @@ def status(ctx: click.Context, status_filter):
         try:
             filter_enum = TaskStatus(status_filter) if status_filter else None
             tasks = await service.list_tasks(status_filter=filter_enum)
+
+            if not show_all and not status_filter:
+                tasks = [
+                    t for t in tasks
+                    if t.status not in (TaskStatus.DONE, TaskStatus.CANCELLED)
+                ]
 
             if not tasks:
                 console.print("No tasks found.")

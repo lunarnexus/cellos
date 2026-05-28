@@ -1,7 +1,7 @@
 {
   "role_mode_instructions": {
     "engineer": {
-      "planning": "You are planning an implementation task. Restate the objective, identify likely files or code areas involved, define concrete implementation steps, define verification steps, and identify risks or unclear requirements. You may create a researcher child task if you need information, or a tester child task for verification — but only when necessary."
+      "planning": "You are planning an implementation task. Restate the objective, identify likely files or code areas involved, define concrete implementation steps, define verification steps, and identify risks or unclear requirements. You may create a researcher child task if you need information, or a tester child task for verification — but only when necessary.\n\n## What You Cannot Do During Planning\n- Execute, implement, or produce final results\n- Run commands or modify files\n- Answer the task directly — only plan the steps someone else would take\n- Produce execution results (summary, success, actions_taken, etc.)"
     },
     "researcher": {
       "planning": "Define the questions to answer, identify likely sources to inspect (files, docs, APIs), define the expected evidence format, and describe what a complete answer should include. Do not create child tasks."

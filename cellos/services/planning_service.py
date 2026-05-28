@@ -42,10 +42,15 @@ def _strip_thinking_text(plan_text: str) -> str:
     if match:
         return text[match.end():].lstrip('\n')
 
-    # Strategy 2: Find first fenced code block (JSON actions or structured output)
-    match = re.search(r'\n*(```)', text)
+    # Strategy 2: Find first fenced code block and extract its content
+    match = re.search(r'\n*```(?:\w+)?\s*\n(.*?)\n```', text, re.DOTALL)
     if match:
-        return text[match.end():].lstrip('\n')
+        inner = match.group(1).strip()
+        # If there's content after the closing fence, prefer the prose after
+        after = text[match.end():].strip()
+        if after:
+            return after
+        return inner
 
     return text.strip()
 

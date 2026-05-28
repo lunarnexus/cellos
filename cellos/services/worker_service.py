@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 import datetime
 import logging
+import os
 from typing import Any
 
 from cellos.config import AgentCatalogEntry, CellosConfig
@@ -52,6 +53,10 @@ def _build_connector(agent: AgentCatalogEntry, timeout_seconds: int) -> TaskConn
 
         options = dict(agent.options or {})
         options.setdefault("timeout_seconds", timeout_seconds)
+        if "log_file" not in options:
+            debug_log = os.environ.get("CELLOS_DEBUG_LOG")
+            if debug_log:
+                options["log_file"] = debug_log
         return CellosAcpConnector(options=options)
 
     raise WorkerError(f"Unknown connector type: {agent.connector}")

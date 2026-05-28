@@ -10,3 +10,4 @@ dist/
 .cellos
 .brv/
 .opencode/
+logs/

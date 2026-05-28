@@ -298,6 +298,20 @@ class TestPlanningService:
         assert "Objective" in updated.plan
         assert "Steps" in updated.plan
 
+    async def test_strip_thinking_text_extracts_fenced_json_only(self, db):
+        from cellos.models import Task
+        from cellos.services.planning_service import _strip_thinking_text
+
+        # Entire output is a fenced JSON block (no prose after) — extract inner content
+        raw_plan = "```json\n{\"summary\": \"Counted lines\", \"success\": true}\n```"
+        t = Task(title="Test fenced json only")
+        await db.create_task(t)
+        await save_planning_result(db, t.id, raw_plan, "")
+        updated = await db.get_task(t.id)
+        assert "```" not in updated.plan
+        assert "json" not in updated.plan
+        assert "Counted lines" in updated.plan
+
 
 # ── Execution service ──────────────────────────────────────────────
 
