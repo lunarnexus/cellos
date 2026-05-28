@@ -190,6 +190,45 @@ class TestEdgeCases:
         assert "structured JSON" not in prompt.lower() or True  # just verify it doesn't crash
 
 
+class TestRoleModeInstructions:
+    """Test role+mode-specific instruction overrides."""
+
+    def test_role_mode_instruction_overrides_generic(self):
+        from cellos.prompt_builder import build_task_prompt
+
+        profiles = PromptProfilesConfig(
+            role_instructions={"engineer": "You are an engineer."},
+            role_mode_instructions={
+                "engineer": {
+                    "planning": "Restate objective, identify files, define steps."
+                }
+            },
+            modes={
+                "planning": ModeProfile(instructions="Generic planning instruction.", output_sections=[])
+            },
+            final_instructions="",
+        )
+
+        prompt = build_task_prompt(_base_task(), profiles, mode="planning")
+        assert "Restate objective, identify files, define steps." in prompt
+        assert "Generic planning instruction" not in prompt
+
+    def test_falls_back_to_generic_when_no_role_mode(self):
+        from cellos.prompt_builder import build_task_prompt
+
+        profiles = PromptProfilesConfig(
+            role_instructions={"engineer": "You are an engineer."},
+            role_mode_instructions={},  # empty — should fall back to generic
+            modes={
+                "planning": ModeProfile(instructions="Generic planning instruction.", output_sections=[])
+            },
+            final_instructions="",
+        )
+
+        prompt = build_task_prompt(_base_task(), profiles, mode="planning")
+        assert "Generic planning instruction" in prompt
+
+
 class TestPromptStructure:
     """Verify the overall structure of generated prompts."""
 

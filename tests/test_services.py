@@ -201,6 +201,18 @@ class TestCommentsConversation:
         updated = await task_service.get_task(t.id)
         assert len(updated.comments) >= 1
 
+    async def test_comment_on_needs_approval_sends_to_draft(self, task_service):
+        """Commenting on a needs_approval task transitions it back to draft for re-planning."""
+        from cellos.models import Task, TaskStatus
+        t = await task_service.create_task(title="Plan me")
+        # Simulate task being in needs_approval (after planning)
+        needs_approval = t.model_copy(update={"status": TaskStatus.NEEDS_APPROVAL})
+        await task_service.db.update_task(needs_approval)
+
+        await task_service.add_human_comment(t.id, "Please revise approach")
+        updated = await task_service.get_task(t.id)
+        assert updated.status == TaskStatus.DRAFT
+
     async def test_add_conversation_message(self, task_service):
         from cellos.models import Task
         t = await task_service.create_task(title="Chat")
@@ -270,6 +282,20 @@ class TestPlanningService:
         await save_planning_result(db, t.id, raw_plan, "")
         updated = await db.get_task(t.id)
         assert "Plan" in updated.plan
+        assert "Steps" in updated.plan
+
+    async def test_strip_thinking_text_strips_leading_json_block(self, db):
+        from cellos.models import Task
+        from cellos.services.planning_service import _strip_thinking_text
+
+        # JSON code block before plan prose — should strip the block, keep prose
+        raw_plan = "```json\n{\"actions\": [{\"type\": \"create_task\"}]}\n```\n\n## Objective\nCount lines.\n\n## Steps\n1. Read file\n"
+        t = Task(title="Test json strip")
+        await db.create_task(t)
+        await save_planning_result(db, t.id, raw_plan, "")
+        updated = await db.get_task(t.id)
+        assert "actions" not in updated.plan
+        assert "Objective" in updated.plan
         assert "Steps" in updated.plan
 
 

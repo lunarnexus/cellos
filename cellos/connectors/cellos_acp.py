@@ -20,7 +20,7 @@ class CellosAcpConnector:
             - agent: Agent name from cellos-acp registry (default: "opencode")
             - timeout_seconds: Max wait time (default: 300)
             - auto_approve: Auto-approve permissions (default: true)
-            - text_wait: Seconds to wait for late chunks (default: 1.0)
+            - text_wait: Seconds to wait for late chunks (default: 2.0)
             - model: Model ID - passed via agent-specific env var (optional)
     """
 
@@ -29,7 +29,7 @@ class CellosAcpConnector:
         self.agent_name = self.options.get("agent", "opencode")
         self.timeout = int(self.options.get("timeout_seconds", 300))
         self.auto_approve = self.options.get("auto_approve", True)
-        self.text_wait = float(self.options.get("text_wait", 1.0))
+        self.text_wait = float(self.options.get("text_wait", 2.0))
         self.model = self.options.get("model")
 
     async def run_task(
@@ -58,14 +58,49 @@ class CellosAcpConnector:
             "Running cellos-acp for task %s mode=%s agent=%s",
             task.id, mode, self.agent_name,
         )
+        logger.debug(
+            "cellos-acp request for task %s mode=%s prompt_chars=%d prompt_repr=%r",
+            task.id, mode, len(prompt_text or ""), prompt_text or "",
+        )
+        logger.debug(
+            "cellos-acp request body for task %s mode=%s BEGIN\n%s\ncellos-acp request body END",
+            task.id, mode, prompt_text or "",
+        )
 
         try:
             result = await client.run(prompt_text or "")
 
             output = result.combined_text
+            raw_text = getattr(result, "text", "")
+            raw_thinking = getattr(result, "thinking", "")
+            if not isinstance(raw_text, str):
+                raw_text = ""
+            if not isinstance(raw_thinking, str):
+                raw_thinking = ""
             logger.info(
                 "cellos-acp returned for task %s: success=%s chars=%d stop=%s",
                 task.id, result.success, len(output), result.stop_reason,
+            )
+            logger.debug(
+                "cellos-acp response metadata for task %s mode=%s success=%s stop=%s text_chars=%d thinking_chars=%d combined_chars=%d",
+                task.id, mode, result.success, result.stop_reason,
+                len(raw_text), len(raw_thinking), len(output),
+            )
+            logger.debug(
+                "cellos-acp response text for task %s mode=%s repr=%r",
+                task.id, mode, raw_text,
+            )
+            logger.debug(
+                "cellos-acp response thinking for task %s mode=%s repr=%r",
+                task.id, mode, raw_thinking,
+            )
+            logger.debug(
+                "cellos-acp response combined for task %s mode=%s repr=%r",
+                task.id, mode, output,
+            )
+            logger.debug(
+                "cellos-acp response combined body for task %s mode=%s BEGIN\n%s\ncellos-acp response combined body END",
+                task.id, mode, output,
             )
 
             return TaskResult(

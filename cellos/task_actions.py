@@ -148,7 +148,7 @@ def tasks_from_create_actions(
         Each dict contains: title, role (optional), task_type (optional), details/prompt_text,
                            dependencies=[parent_id], and optional status override.
     """
-    from cellos.models import AgentRole, ROLE_TO_TASK_TYPE
+    from cellos.models import AgentRole, ROLE_TO_TASK_TYPE, TaskDependency
 
     result = []
     for action in actions:
@@ -167,7 +167,7 @@ def tasks_from_create_actions(
             "title": action.title,
             "details": action.prompt or None,
             "parent_id": parent_id,
-            "dependencies": [TaskDependencyModel(task_id=pid) for pid in (action.dependencies + [parent_id])],
+            "dependencies": [TaskDependency(task_id=pid) for pid in (action.dependencies + [parent_id])],
         }
 
         if resolved_role:
@@ -196,13 +196,6 @@ def tasks_from_create_actions(
         result.append(task_data)
 
     return result
-
-
-class TaskDependencyModel(BaseModel):
-    """Minimal dependency for child tasks."""
-
-    task_id: str
-    status_satisfied: bool = False
 
 
 __all__ = [

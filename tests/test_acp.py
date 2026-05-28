@@ -124,7 +124,7 @@ class TestCellosAcpConnectorInit:
         assert conn.agent_name == "opencode"
         assert conn.timeout == 300
         assert conn.auto_approve is True
-        assert conn.text_wait == 1.0
+        assert conn.text_wait == 2.0
         assert conn.model is None
 
     def test_custom_options(self):

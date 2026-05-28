@@ -184,9 +184,9 @@ class TestSchedulerQueries:
         results = await db.list_tasks_ready_for_planning()
         ids = {r.id for r in results}
         assert draft.id in ids
-        assert needs_approval.id in ids
+        assert needs_approval.id not in ids  # Only draft, not needs_approval
         assert done.id not in ids
-        assert engineer_draft.id not in ids  # Engineer tasks don't plan
+        assert engineer_draft.id in ids  # All draft tasks can be planned
 
     async def test_list_approved_unblocked(self, db):
         approved_no_deps = _make_task(

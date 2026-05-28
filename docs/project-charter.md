@@ -69,7 +69,7 @@ User creates top-level task (title, details, pass/fail criteria)
 
 ## Agent Registry
 
-The agent registry (`agentcatalog.json`) maps named agents to connector implementations and configuration options. It lives in the project directory alongside `config.json` and `promptprofiles.json`.
+The agent registry (`agentcatalog.json`) maps named agents to connector implementations and configuration options. It lives in `~/.cellos/` alongside `config.json` and `promptprofiles.json`.
 
 ### Connector Implementations (code)
 

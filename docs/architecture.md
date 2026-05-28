@@ -87,8 +87,8 @@
 | Module | Responsibility | Key Methods |
 |--------|---------------|-------------|
 | `task_service.py` | Task CRUD, attention tracking, approval gates | `create_task`, `update_task`, `approve_task`, `add_comment`, `add_conversation_message` |
-| `planning_service.py` | Plan generation via ACP + result persistence | `run_planning(db, task_id)`, `_build_planning_prompt(task)` |
-| `execution_service.py` | Task execution via ACP + structured action parsing | `run_execution(db, task_id)`, `_parse_structured_actions(text)` |
+| `planning_service.py` | Plan generation via ACP + result persistence with structured response parsing and thinking text stripping | `save_planning_result(db, task_id, plan_text)`, `_strip_thinking_text(plan_text)` |
+| `execution_service.py` | Task execution result saving with structured response parsing, keyword fallback, and dependent wake-up | `save_execution_result(db, task_id, result_text)`, `_parse_execution_result(text)` |
 | `scheduler.py` | Event-driven daemon (asyncio.Event wake) + work selection | `run_daemon()`, `pick_work()`, `spawn_workers(tasks)`, `_signal_work_available()` |
 | `worker_service.py` | Worker lifecycle: build connector → run prompt → save result | `run_task_worker(task_id, mode)`, `_build_connector(agent_config)` |
 | `worker_spawner.py` | Subprocess spawning with process isolation | `spawn(task_id, mode)` via `subprocess.Popen(start_new_session=True)` |
@@ -105,6 +105,7 @@
 | `event_repository.py` | Event logging for audit trail |
 | `comment_repository.py` | Comment storage and retrieval |
 | `attempt_repository.py` | Attempt tracking per task execution try |
+| `json_util.py` | JSON serialization/deserialization helpers for SQLite JSON columns, with datetime handling and Pydantic model round-tripping |
 
 **Database facade**: `cellos/db.py` wraps all repository operations, handles commits, event recording, and side effects at transactional boundaries.
 
@@ -131,23 +132,25 @@ class TaskConnector(Protocol):
     async def run_task(task: Task, workdir: str, mode: str, prompt_text: str) -> TaskResult: ...
 ```
 
-- **CellosAcpConnector**: Wraps cellos-acp `AcpClient` which uses the official `agent-client-protocol` SDK. Agent resolved from built-in registry (opencode, hermes, claude, codex, openclaw, pi). Model override via `OPENCODE_CONFIG_CONTENT` env var.
+  - **CellosAcpConnector**: Wraps cellos-acp `AcpClient` which uses the official `agent-client-protocol` SDK. Agent resolved from built-in registry (opencode, hermes, claude, codex, openclaw, pi). Model override via `model` field in agent catalog entry, passed through `OPENCODE_CONFIG_CONTENT` env var.
 
 - **FakeAcpConnector**: Deterministic test connector. Fixture-based lookup: `{task_id}-{mode}.json` → `{mode}.json` → `default.json`. Falls back to configurable defaults (`default_success`, `default_summary`). Supports simulated delay for timing tests.
 
 ### Configuration (`cellos/config.py`)
 
-Config files live in the **project directory** (not `~/.cellos/`). Example files shipped with the repo are copied on first init. The CLI accepts `--config <path>` to point to a different config directory; defaults to the project directory if omitted.
+Config files live in `~/.cellos/` by default. Example files shipped with the repo are copied on first init. The CLI accepts `--config-dir <path>` to point to a different config directory.
 
 Three JSON files loaded into Pydantic models:
 
 | File | Purpose |
 |------|---------|
-| `config.json` | Scheduler (concurrent_tasks), worker (backend, timeout), agents runtime (default_agent_id), approvals (preapprove_research_tasks) |
-| `agentcatalog.json` | Map of agent_id → AgentConfig (connector type, model name, options dict) |
+| `config.json` | Scheduler (concurrent_tasks), worker (backend, timeout), agents runtime (default_agent_id, catalog_path), approvals (preapprove_research_tasks), prompts (profiles_path) |
+| `agentcatalog.json` | Map of agent_id → AgentCatalogEntry (connector type, model, options dict) |
 | `promptprofiles.json` | Role instructions, mode-specific sections (planning/execution), output format requirements, final instructions |
 
-Example files shipped at repo root: `cellos.config.example.json`, `agentcatalog.example.json`, `promptprofiles.example.json`. On first `init --overwrite`, these are copied to the project directory as `config.json` / `agentcatalog.json` / `promptprofiles.json`.
+Example files shipped at repo root: `cellos.config.json.example`, `agentcatalog.json.example`, `promptprofiles.json.example`. On first `init --overwrite`, these are copied to the config directory as `config.json` / `agentcatalog.json` / `promptprofiles.json`.
+
+**Config sub-models**: `SchedulerConfig` (concurrent_tasks, heartbeat_interval_seconds), `WorkerConfig` (backend, timeout_seconds), `AgentRuntimeConfig` (default_agent_id, catalog_path), `ApprovalConfig` (preapprove_research_tasks), `PromptRuntimeConfig` (profiles_path). The `AgentCatalogEntry` model includes a `model` field for per-agent model override, passed via agent-specific env var.
 
 **preapprove_research_tasks**: Boolean flag (default: false). When true, child tasks of type `research` created via structured actions auto-transition to APPROVED status instead of NEEDS_APPROVAL. All other task types still require human approval.
 
@@ -164,6 +167,16 @@ Assembles prompts from configurable parts:
 8. Final instructions
 
 All externalized to `promptprofiles.json` — no hardcoded prompt strings.
+
+### Structured Response Parsing (`cellos/structured_response.py`)
+
+Parses agent output into typed Pydantic models using bracket-scanning JSON extraction that handles chatty LLM output with prose mixed in.
+
+**Planning responses**: `parse_planning_response(text)` → `PlanningResponse` with `PlanSpec` (objective, steps, approach, verification, dependencies, risks) and `ChildTaskSpec` list (title, role, task_type, details, success/failure criteria, dependencies, blocks_parent). The `plan_to_text()` helper converts a `PlanningResponse` to readable markdown for storage as `task.plan`. The `child_tasks_from_response()` helper converts child task specs to task creation dicts with parent dependency tracking.
+
+**Execution responses**: `parse_execution_response(text)` → `ExecutionResponse` with summary, success flag, actions_taken, files_changed, commands_run, criteria_met, and issues lists.
+
+Both planning and execution services attempt structured response parsing first, falling back to keyword/regex-based parsing for non-JSON output.
 
 ### Structured Actions (`cellos/task_actions.py`)
 

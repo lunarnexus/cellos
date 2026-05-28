@@ -4,6 +4,7 @@
     "options": {
       "agent": "opencode",
       "timeout_seconds": 300,
+      "text_wait": 2.0,
       "auto_approve": true
     }
   },
@@ -12,6 +13,7 @@
     "options": {
       "agent": "opencode",
       "timeout_seconds": 300,
+      "text_wait": 2.0,
       "auto_approve": true
     }
   },
@@ -20,6 +22,7 @@
     "options": {
       "agent": "opencode",
       "timeout_seconds": 300,
+      "text_wait": 2.0,
       "auto_approve": true
     }
   },
@@ -28,6 +31,7 @@
     "options": {
       "agent": "opencode",
       "timeout_seconds": 300,
+      "text_wait": 2.0,
       "auto_approve": true
     }
   }

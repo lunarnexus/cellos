@@ -186,9 +186,9 @@ async def list_tasks_requiring_attention(conn: Connection) -> list[Task]:
 
 
 async def list_tasks_ready_for_planning(conn: Connection) -> list[Task]:
-    """List tasks ready for planning: draft/needs_approval with architect role."""
+    """List tasks ready for planning: any role in draft status."""
     results = await _fetch_columns(
-        conn, "SELECT * FROM tasks WHERE status IN ('draft', 'needs_approval') AND role = 'architect' ORDER BY created_at DESC"
+        conn, "SELECT * FROM tasks WHERE status = 'draft' ORDER BY created_at DESC"
     )
     return [_task_row_to_task(row, cols) for cols, row in results]
 

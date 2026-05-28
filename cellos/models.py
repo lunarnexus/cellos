@@ -143,6 +143,11 @@ class TaskResult(BaseModel):
     success: bool
     summary: str
     output: Optional[str] = None
+    actions_taken: list[str] = Field(default_factory=list)
+    files_changed: list[str] = Field(default_factory=list)
+    commands_run: list[str] = Field(default_factory=list)
+    criteria_met: list[str] = Field(default_factory=list)
+    issues: list[str] = Field(default_factory=list)
     timestamp: datetime = Field(default_factory=datetime.now)
 
 

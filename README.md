@@ -54,7 +54,7 @@ cellos run
 | `comment <task_id> -m message` | Add human comment + trigger attention |
 | `events <task_id> [--limit N]` | Show audit trail |
 | `update <task_id> [--title] [--status] [--add-dep] [--remove-dep]` | Update any field |
-| `plan <task_id>` | Generate plan via agent (manual trigger) |
+| `plan <task_id>` | Generate plan via agent (any role, task must be draft) |
 | `execute <task_id>` | Execute approved task via agent (manual trigger) |
 | `worker <task_id> --mode planning\|execution` | Run single worker (called by spawner) |
 | `run` | Start event-driven daemon scheduler |

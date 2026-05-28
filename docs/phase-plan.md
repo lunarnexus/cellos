@@ -90,11 +90,11 @@ cellos/
 ```
 
 Plus example files at repo root:
-- `cellos.config.example.json` — Main config with scheduler, worker, agents settings (copied to project dir on init)
-- `agentcatalog.example.json` — 5 agents (coordinator/researcher/architect/engineer/tester) using fake_acp
-- `promptprofiles.example.json` — Role instructions + mode sections for all roles
+- `cellos.config.json.example` — Main config with scheduler, worker, agents settings (copied to ~/.cellos/ on init)
+- `agentcatalog.json.example` — 4 agents (architect/engineer/researcher/tester) using cellos_acp
+- `promptprofiles.json.example` — Role instructions + mode sections for all roles
 
-Config files live in the **project directory** by default. The CLI accepts `--config <path>` to point to a different config directory; defaults to the project directory if omitted.
+Config files live in `~/.cellos/` by default. The CLI accepts `--config-dir <path>` to point to a different config directory.
 
 ### Acceptance Criteria
 - [ ] CellosConfig loads from three JSON files with Pydantic validation
@@ -151,7 +151,7 @@ cellos/
 ### Commands
 | Command | Description |
 |---------|-------------|
-| `init [--overwrite]` | Create config files in project directory, init SQLite DB |
+| `init [--overwrite]` | Create config files in ~/.cellos/, init SQLite DB |
 | `add-task <title> [-d details] [-r role] [-t type] [-s success_criteria] [-f failure_criteria] [--depends ids]` | Create task |
 | `status [-s status_filter]` | Rich table of tasks with ⚠️ attention markers |
 | `detail <task_id>` | Rich panel showing full task info including plan, conversation, comments |
@@ -332,6 +332,8 @@ Update this section as each phase completes:
 | 5. CLI Foundation | ✅ Done | 8 commands: init, add-task, status, detail, approve, comment, events, update (17 tests) |
 || 6. ACP + Connectors | ✅ Complete | cellos-acp package integration, connectors/ (base protocol, cellos_acp, fake_acp) — migrated from acpx |
 | 7. Prompt Builder + Actions | ✅ Done | prompt_builder.py, task_actions.py (+28 tests) |
-| 8. Worker Isolation | ✅ Done (2026-05-21) | `worker_service.py` + `worker_spawner.py`, CLI worker cmd, 20 tests (agent resolution by role, attempt tracking, failed connector handling, e2e CLI) |
-| 9. Daemon Scheduler | ✅ Done | `scheduler.py` (SchedulerService + DaemonService), CLI run cmd, notification file, 15 tests (217 total) |
-| 10. Integration Polish | ✅ Done | plan/execute CLI commands, 16 integration tests, smoke-test.md, README (233 total tests) |
+| 8. Worker Isolation | ✅ Done (2026-05-21) | `worker_service.py` + `worker_spawner.py`, CLI worker cmd, 19 tests (agent resolution by role, attempt tracking, failed connector handling, e2e CLI) |
+| 9. Daemon Scheduler | ✅ Done | `scheduler.py` (SchedulerService + DaemonService), CLI run cmd, notification file, 34 tests |
+| 10. Integration Polish | ✅ Done | plan/execute CLI commands, 41 integration tests, smoke-test.md, README |
+| — | | `structured_response.py` with 44 tests, `json_util.py` in persistence |
+| **Total** | | **282 tests** across 12 test files |

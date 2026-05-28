@@ -43,9 +43,14 @@ def build_task_prompt(
     if role_instruction:
         parts.append(f"{role_instruction}\n")
 
-    # 2. Mode-specific instructions
+    # 1.5. Role+mode-specific instruction (overrides generic mode instruction)
+    role_mode = (profiles.role_mode_instructions or {}).get(role_str, {}).get(mode)
+    if role_mode:
+        parts.append(f"## Instructions\n{role_mode}\n")
+
+    # 2. Mode-specific instructions (fallback when no role+mode override exists)
     mode_profile = profiles.modes.get(mode)
-    if mode_profile and mode_profile.instructions:
+    if not role_mode and mode_profile and mode_profile.instructions:
         parts.append(f"## Instructions\n{mode_profile.instructions}\n")
 
     # 3. Task metadata header

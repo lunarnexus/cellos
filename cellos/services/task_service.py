@@ -263,10 +263,18 @@ class TaskService:
 
         # Append to in-memory conversation list on the task model
         updated_comments = list(current.comments) + [comment]
-        new_task = current.model_copy(update={"comments": updated_comments})
+
+        # Commenting on needs_approval sends task back to draft for re-planning
+        status_update = TaskStatus.DRAFT if current.status == TaskStatus.NEEDS_APPROVAL else current.status
+
+        new_task = current.model_copy(update={
+            "comments": updated_comments,
+            "status": status_update,
+            "updated_at": datetime.datetime.now(),
+        })
 
         # Trigger attention for non-approved tasks
-        if current.status not in (TaskStatus.APPROVED, TaskStatus.DONE, TaskStatus.CANCELLED):
+        if status_update not in (TaskStatus.APPROVED, TaskStatus.DONE, TaskStatus.CANCELLED):
             new_task = new_task.requires_attention(
                 AttentionReason.HUMAN_COMMENTED,
                 detail=f"Human commented: {content[:80]}",

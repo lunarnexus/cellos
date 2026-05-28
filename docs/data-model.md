@@ -16,18 +16,18 @@ draft ──────▶ needs_approval ──────▶ approved ──
   │                    ▲                      │   │                       │
   │                    │                      │   └───────────────────────┘
   │              [plan]                  execute        (completion)
-  │                    │                 (ACP agent)
+  │          (any role)              (ACP agent)
   └────────────────────┴────────────────▼
-                          approve ←──────┘
-                           (human gate)
+                           approve ←──────┘
+                            (human gate)
 
-Alternative terminal states: blocked, failed, change_requested, cancelled
+Comment on needs_approval task: needs_approval ──▶ draft ──▶ [re-plan] ──▶ needs_approval
 ```
 
 | Value | Description | Transitions To |
 |-------|-------------|----------------|
-| `draft` | Newly created task | needs_approval (via planning) |
-| `needs_approval` | Plan generated, awaiting human review | approved (via approve), draft (if plan rejected) |
+| `draft` | Newly created task | needs_approval (via planning — any role) |
+| `needs_approval` | Plan generated, awaiting human review | approved (via approve), draft (via comment to revise) |
 | `approved` | Human approved the plan | in_progress (via scheduler picking it up) |
 | `in_progress` | Worker executing task | done, failed |
 | `done` | Task completed successfully | — (terminal) |
@@ -39,6 +39,7 @@ Alternative terminal states: blocked, failed, change_requested, cancelled
 ### TaskType
 | Value | Description |
 |-------|-------------|
+| `proposal` | Initial proposal or suggestion |
 | `research` | Investigation with findings as output |
 | `architecture` | Design document, technical decisions |
 | `implementation` | Code changes, feature development |
@@ -51,6 +52,7 @@ Alternative terminal states: blocked, failed, change_requested, cancelled
 | `human_changed_task` | Human edited title/details/criteria via update |
 | `dependency_done` | A dependency completed, potentially unblocking this task |
 | `child_change_requested` | Child execution requested changes to parent plan |
+| `child_failed` | A child task failed execution |
 | `approved` | Task approved and ready for human awareness before execution |
 | `execution_failed` | Worker failed, needs human review |
 | `human_commented` | Human added comment on draft/needs_approval task |
@@ -88,7 +90,7 @@ class Task(BaseModel):
     details: Optional[str] = None              # Detailed description/instructions for agent
     status: TaskStatus = TaskStatus.DRAFT      # Current lifecycle state
     role: AgentRole = AgentRole.ENGINEER       # Which agent type handles this
-    task_type: TaskType                        # Inferred from role or explicit
+    task_type: TaskType                        # Inferred from role if not explicit; defaults to implementation
     plan: Optional[str] = None                 # Generated plan text (after planning)
     prompt_text: Optional[str] = None          # Additional prompt instructions
     
@@ -177,7 +179,21 @@ class TaskResult(BaseModel):
     success: bool                                  # Did execution succeed?
     summary: str                                   # Brief result description
     output: Optional[str] = None                   # Full agent output (truncated to 5000 chars)
+    actions_taken: list[str] = []                  # Actions performed during execution
+    files_changed: list[str] = []                  # Files modified during execution
+    commands_run: list[str] = []                   # Commands executed during task
+    criteria_met: list[str] = []                   # Success criteria that were met
+    issues: list[str] = []                         # Issues encountered during execution
     timestamp: datetime                            # When result was recorded
+```
+
+### ChangeRequestReport
+
+```python
+class ChangeRequestReport(BaseModel):
+    reason: str                                    # Why changes are requested
+    requested_changes: list[str]                   # List of changes requested
+    timestamp: datetime                            # When report was created
 ```
 
 ### TaskAttempt
@@ -334,4 +350,4 @@ Task model has `model_validator(mode="before")` that maps legacy field names to 
 This allows loading tasks created by older versions without data migration scripts.
 
 ### Config Location
-Config files live in the **project directory** (not `~/.cellos/`). Example files shipped with the repo are copied on first init. This supports per-project isolation — each cellos instance has its own config, agents, and prompt profiles alongside the codebase.
+Config files live in `~/.cellos/` by default. The CLI accepts `--config-dir <path>` to point to a different config directory. Example files shipped with the repo are copied on first init.

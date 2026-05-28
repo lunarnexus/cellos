@@ -52,13 +52,16 @@ def _parse_execution_result(text: str) -> bool:
 
 
 async def save_execution_result(
-    db: CellosDatabase, task_id: str, result_text: str, success: bool | None = None
+    db: CellosDatabase,
+    task_id: str,
+    result_text: str,
+    success: bool | None = None,
 ) -> TaskResult:
     """Save the agent's execution result and transition the task.
 
-    Parses the result text for success/failure indicators, creates a
-    TaskResult record, updates the task status to DONE or FAILED, and
-    triggers side effects (wake blocked dependents on success).
+    Attempts to parse a structured JSON response first. If valid, uses
+    the structured fields (success, summary, actions_taken, etc.). Falls
+    back to keyword-based parsing for non-JSON output.
 
     Args:
         db: Database facade instance.
@@ -80,19 +83,41 @@ async def save_execution_result(
     # Truncate very long outputs for storage
     truncated_output = result_text[:5000] if len(result_text) > 5000 else result_text
 
-    # Explicit success from connector takes precedence over text parsing
-    if success is None:
-        success = _parse_execution_result(result_text)
-    summary = "Execution completed successfully" if success else "Execution failed or ambiguous result"
+    # Try structured response first
+    from cellos.structured_response import parse_execution_response
 
-    task_result = TaskResult(
-        success=success,
-        summary=summary,
-        output=truncated_output,
-    )
+    structured = parse_execution_response(result_text)
+    if structured is not None:
+        # Structured response takes precedence
+        final_success = success if success is not None else structured.success
+        summary = structured.summary
+        task_result = TaskResult(
+            success=final_success,
+            summary=summary,
+            output=truncated_output,
+            actions_taken=structured.actions_taken,
+            files_changed=structured.files_changed,
+            commands_run=structured.commands_run,
+            criteria_met=structured.criteria_met,
+            issues=structured.issues,
+        )
+    else:
+        # Fallback: keyword-based parsing
+        if success is None:
+            success = _parse_execution_result(result_text)
+        summary = (
+            "Execution completed successfully"
+            if success
+            else "Execution failed or ambiguous result"
+        )
+        task_result = TaskResult(
+            success=success,
+            summary=summary,
+            output=truncated_output,
+        )
 
     # Determine new status
-    new_status = TaskStatus.DONE if success else TaskStatus.FAILED
+    new_status = TaskStatus.DONE if task_result.success else TaskStatus.FAILED
     updated = current.model_copy(
         update={
             "status": new_status,
@@ -102,14 +127,17 @@ async def save_execution_result(
     )
 
     # Clear attention on completion (task is resolved one way or another)
-    if success:
+    if task_result.success:
         updated = updated.clear_attention()
 
     await db.update_task(updated)
 
     # Save result record + wake blocked dependents (side effects)
     affected = await db.save_task_result(
-        task_id, success=success, summary=summary, output=truncated_output
+        task_id,
+        success=task_result.success,
+        summary=task_result.summary,
+        output=truncated_output,
     )
 
     # Record status change event

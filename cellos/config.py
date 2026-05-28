@@ -47,6 +47,7 @@ class ModeProfile(BaseModel):
 class PromptProfilesConfig(BaseModel):
     """Externalized prompt profiles loaded from promptprofiles.json."""
     role_instructions: dict[str, str] = Field(default_factory=dict)
+    role_mode_instructions: dict[str, dict[str, str]] = Field(default_factory=dict)
     modes: dict[str, ModeProfile] = Field(default_factory=dict)
     final_instructions: str = ""
 

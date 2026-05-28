@@ -592,11 +592,6 @@ def plan(ctx: click.Context, task_id):
             await db.close()
             return
 
-        if task.role != AgentRole.ARCHITECT:
-            console.print(f"[red]Error: Cannot plan task with role '{task.role.value}'. Planning is restricted to architect role.[/]")
-            await db.close()
-            return
-
         console.print(f"▶ Planning {task_id}: {task.title}")
 
         try:

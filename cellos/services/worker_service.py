@@ -179,9 +179,24 @@ async def run_task_worker(
         # 7. Save result via appropriate service
         if mode == "planning":
             from cellos.services.planning_service import save_planning_result
+            from cellos.structured_response import (
+                parse_planning_response,
+                child_tasks_from_response,
+            )
 
             plan_text = result.output or result.summary
             await save_planning_result(db, task_id, plan_text=plan_text, success=result.success)
+
+            # Create child tasks from structured planning response
+            structured = parse_planning_response(plan_text)
+            if structured and structured.child_tasks:
+                from cellos.services.task_service import TaskService as TSvc
+
+                children_data = child_tasks_from_response(structured, task_id)
+                tservice = TSvc(db)
+                for child_data in children_data:
+                    await tservice.create_task(**child_data)  # type: ignore[arg-type]
+                    logger.info("Child task created from planning of %s", task_id)
         else:
             # Parse structured actions (child tasks) before saving execution result
             action_output = result.output or ""
