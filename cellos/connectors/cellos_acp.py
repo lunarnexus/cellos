@@ -7,7 +7,7 @@ import logging
 from pathlib import Path
 from typing import Any
 
-from cellos.connectors.base import TaskConnector
+from cellos.connectors.base import ConnectorResult
 from cellos.models import Task, TaskResult
 
 logger = logging.getLogger(__name__)
@@ -37,7 +37,7 @@ class CellosAcpConnector:
 
     async def run_task(
         self, task: Task, workdir: str | None = None, mode: str = "execution", prompt_text: str | None = None
-    ) -> TaskResult:
+    ) -> ConnectorResult:
         """Execute a task via cellos-acp AcpClient."""
         from cellos_acp import AcpClient, configure_logging
 
@@ -111,19 +111,113 @@ class CellosAcpConnector:
                 task.id, mode, output,
             )
 
-            return TaskResult(
+            task_result = TaskResult(
                 success=result.success,
                 summary=output[:500] if output else "No output from agent",
                 output=output,
             )
 
+            # Extract diagnostics from AcpRunResult (graceful degradation)
+            diagnostics = _extract_diagnostics(result, self.agent_name, self.model)
+
+            return ConnectorResult(task_result=task_result, diagnostics=diagnostics)
+
         except Exception as e:
             logger.error("cellos-acp failed for task %s: %s", task.id, e)
-            return TaskResult(
+            task_result = TaskResult(
                 success=False,
                 summary=f"Agent execution failed: {e}",
                 output="",
             )
+            diagnostics = {
+                "error_type": type(e).__name__,
+                "error_message": str(e),
+                "agent_provider": self.agent_name,
+                "agent_model": self.model,
+            }
+            return ConnectorResult(task_result=task_result, diagnostics=diagnostics)
 
 
-__all__ = ["CellosAcpConnector"]
+def _extract_diagnostics(result: Any, agent_name: str, model: str | None) -> dict[str, Any]:
+    """Extract diagnostic fields from an AcpRunResult.
+
+    Uses getattr with defaults for graceful degradation when cellos-acp
+    doesn't yet provide the new fields.
+    """
+    diagnostics: dict[str, Any] = {
+        "agent_provider": agent_name,
+        "agent_model": model,
+    }
+
+    # Session/message IDs
+    session_id = getattr(result, "session_id", None)
+    message_id = getattr(result, "message_id", None)
+    if session_id:
+        diagnostics["session_id"] = session_id
+    if message_id:
+        diagnostics["message_id"] = message_id
+
+    # Timestamps
+    started_at = getattr(result, "started_at", None)
+    completed_at = getattr(result, "completed_at", None)
+    last_event_at = getattr(result, "last_event_at", None)
+    if started_at:
+        diagnostics["started_at"] = started_at
+    if completed_at:
+        diagnostics["completed_at"] = completed_at
+    if last_event_at:
+        diagnostics["last_event_at"] = last_event_at
+
+    # Last event type
+    last_event_type = getattr(result, "last_event_type", None)
+    if last_event_type:
+        diagnostics["last_event_type"] = last_event_type
+
+    # Previews
+    last_message_preview = getattr(result, "last_message_preview", None)
+    last_thought_preview = getattr(result, "last_thought_preview", None)
+    if last_message_preview:
+        diagnostics["last_message_preview"] = last_message_preview
+    if last_thought_preview:
+        diagnostics["last_thought_preview"] = last_thought_preview
+
+    # Timeout/abort flags
+    timeout = getattr(result, "timeout", None)
+    aborted = getattr(result, "aborted", None)
+    if timeout:
+        diagnostics["timeout"] = timeout
+    if aborted:
+        diagnostics["aborted"] = aborted
+
+    # Error info
+    error_type = getattr(result, "error_type", None)
+    error_message = getattr(result, "error_message", None)
+    if error_type:
+        diagnostics["error_type"] = error_type
+    if error_message:
+        diagnostics["error_message"] = error_message
+
+    # Active tool calls
+    active_tool_calls = getattr(result, "active_tool_calls", None)
+    if active_tool_calls and len(active_tool_calls) > 0:
+        first_tool = active_tool_calls[0]
+        diagnostics["active_tool_name"] = getattr(first_tool, "title", "") or getattr(first_tool, "name", "")
+        diagnostics["active_tool_call_id"] = getattr(first_tool, "tool_call_id", None)
+        nested = getattr(first_tool, "nested_session_id", None)
+        if nested:
+            diagnostics["nested_session_id"] = nested
+
+    # Tool calls
+    tool_calls = getattr(result, "tool_calls", None)
+    if tool_calls and len(tool_calls) > 0:
+        diagnostics["tool_calls_count"] = len(tool_calls)
+
+    # Stop reason
+    stop_reason = getattr(result, "stop_reason", None)
+    if stop_reason:
+        diagnostics["stop_reason"] = stop_reason
+
+    return diagnostics
+
+
+__all__ = ["CellosAcpConnector", "ConnectorResult"]

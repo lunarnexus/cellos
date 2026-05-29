@@ -7,7 +7,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from cellos.connectors.base import TaskConnector
+from cellos.connectors.base import ConnectorResult, TaskConnector
 from cellos.connectors.fake_acp import FakeAcpConnector
 from cellos.connectors.cellos_acp import CellosAcpConnector
 from cellos.models import AgentRole, Task
@@ -26,6 +26,11 @@ def _make_task(**kwargs) -> Task:
     return Task(**defaults)
 
 
+def _result(conn_result: ConnectorResult):
+    """Extract TaskResult from ConnectorResult for test assertions."""
+    return conn_result.task_result
+
+
 # ── Fake ACP Connector tests ─────────────────────────────────────────────────
 
 class TestFakeAcpConnectorDefaults:
@@ -34,9 +39,9 @@ class TestFakeAcpConnectorDefaults:
     async def test_default_success(self):
         conn = FakeAcpConnector(options={"default_summary": "Default done."})
         result = await conn.run_task(_make_task())
-        assert result.success is True
-        assert "[fake_acp]" in result.summary
-        assert "Default done" in result.summary
+        assert _result(result).success is True
+        assert "[fake_acp]" in _result(result).summary
+        assert "Default done" in _result(result).summary
 
     async def test_default_failure(self):
         conn = FakeAcpConnector(options={
@@ -44,14 +49,14 @@ class TestFakeAcpConnectorDefaults:
             "default_summary": "Something broke.",
         })
         result = await conn.run_task(_make_task())
-        assert result.success is False
-        assert "[fake_acp]" in result.summary
+        assert _result(result).success is False
+        assert "[fake_acp]" in _result(result).summary
 
     async def test_no_options_uses_sensible_defaults(self):
         conn = FakeAcpConnector()
         result = await conn.run_task(_make_task())
-        assert result.success is True
-        assert "Task completed successfully" in result.summary
+        assert _result(result).success is True
+        assert "Task completed successfully" in _result(result).summary
 
 
 class TestFakeAcpConnectorFixtures:
@@ -63,8 +68,8 @@ class TestFakeAcpConnectorFixtures:
         )
         conn = FakeAcpConnector(options={"fixture_dir": str(tmp_path)})
         result = await conn.run_task(_make_task(), mode="planning")
-        assert result.success is True
-        assert result.summary == "Task+mode match"
+        assert _result(result).success is True
+        assert _result(result).summary == "Task+mode match"
 
     async def test_fixture_by_mode_only(self, tmp_path):
         (tmp_path / "execution.json").write_text(
@@ -72,8 +77,8 @@ class TestFakeAcpConnectorFixtures:
         )
         conn = FakeAcpConnector(options={"fixture_dir": str(tmp_path)})
         result = await conn.run_task(_make_task(id="xyz"), mode="execution")
-        assert result.success is False
-        assert result.summary == "Mode-only fallback"
+        assert _result(result).success is False
+        assert _result(result).summary == "Mode-only fallback"
 
     async def test_fixture_default_fallback(self, tmp_path):
         (tmp_path / "default.json").write_text(
@@ -81,7 +86,7 @@ class TestFakeAcpConnectorFixtures:
         )
         conn = FakeAcpConnector(options={"fixture_dir": str(tmp_path)})
         result = await conn.run_task(_make_task(id="unknown"), mode="weird")
-        assert result.summary == "Universal default"
+        assert _result(result).summary == "Universal default"
 
     async def test_fixture_priority_task_mode_beats_default(self, tmp_path):
         (tmp_path / "test123-planning.json").write_text(
@@ -92,7 +97,7 @@ class TestFakeAcpConnectorFixtures:
         )
         conn = FakeAcpConnector(options={"fixture_dir": str(tmp_path)})
         result = await conn.run_task(_make_task(), mode="planning")
-        assert result.summary == "Specific"
+        assert _result(result).summary == "Specific"
 
     async def test_malformed_fixture_is_skipped(self, tmp_path):
         (tmp_path / "test123-planning.json").write_text("not valid json{{{")
@@ -101,7 +106,7 @@ class TestFakeAcpConnectorFixtures:
         )
         conn = FakeAcpConnector(options={"fixture_dir": str(tmp_path)})
         result = await conn.run_task(_make_task(), mode="planning")
-        assert result.summary == "Recovery"
+        assert _result(result).summary == "Recovery"
 
     async def test_no_fixture_uses_configured_defaults(self, tmp_path):
         (tmp_path / "other.json").write_text(json.dumps({"success": True}))
@@ -110,8 +115,8 @@ class TestFakeAcpConnectorFixtures:
             "default_summary": "Config default",
         })
         result = await conn.run_task(_make_task(id="nope"), mode="planning")
-        assert "[fake_acp]" in result.summary
-        assert "Config default" in result.summary
+        assert "[fake_acp]" in _result(result).summary
+        assert "Config default" in _result(result).summary
 
 
 # ── Cellos ACP Connector tests ───────────────────────────────────────────────
@@ -161,9 +166,9 @@ class TestCellosAcpConnectorRunTask:
             MockClient.return_value = mock_instance
             result = await conn.run_task(_make_task(), workdir="/tmp", mode="execution", prompt_text="test prompt")
 
-        assert result.success is True
-        assert "Task completed" in result.summary
-        assert result.output == "Task completed successfully."
+        assert _result(result).success is True
+        assert "Task completed" in _result(result).summary
+        assert _result(result).output == "Task completed successfully."
 
     async def test_exception_handling(self):
         conn = CellosAcpConnector()
@@ -173,8 +178,8 @@ class TestCellosAcpConnectorRunTask:
             MockClient.return_value = mock_instance
             result = await conn.run_task(_make_task(), prompt_text="prompt")
 
-        assert result.success is False
-        assert "connection refused" in result.summary
+        assert _result(result).success is False
+        assert "connection refused" in _result(result).summary
 
     async def test_model_override_passes_env(self):
         conn = CellosAcpConnector(options={"agent": "opencode", "model": "claude-sonnet-4-20250514"})
@@ -240,8 +245,81 @@ class TestCellosAcpConnectorRunTask:
             MockClient.return_value = mock_instance
             result = await conn.run_task(_make_task(), prompt_text="test")
 
-        assert result.success is True
-        assert "No output from agent" in result.summary
+        assert _result(result).success is True
+        assert "No output from agent" in _result(result).summary
+
+
+# ── Diagnostics tests ────────────────────────────────────────────────────────
+
+class TestConnectorResultDiagnostics:
+    """Test that connectors return diagnostic data."""
+
+    async def test_cellos_acp_returns_diagnostics(self):
+        conn = CellosAcpConnector(options={"agent": "opencode", "model": "test-model"})
+        mock_result = MagicMock()
+        mock_result.success = True
+        mock_result.combined_text = "done"
+        mock_result.stop_reason = "end_turn"
+        mock_result.session_id = "ses_abc123"
+        mock_result.message_id = "msg_xyz789"
+        mock_result.last_event_type = "AgentMessageChunk"
+        mock_result.last_event_at = "2026-05-28T18:30:00Z"
+
+        with patch("cellos_acp.AcpClient") as MockClient:
+            mock_instance = MagicMock()
+            mock_instance.run = AsyncMock(return_value=mock_result)
+            MockClient.return_value = mock_instance
+            result = await conn.run_task(_make_task(), prompt_text="test")
+
+        assert result.diagnostics is not None
+        assert result.diagnostics["session_id"] == "ses_abc123"
+        assert result.diagnostics["message_id"] == "msg_xyz789"
+        assert result.diagnostics["agent_provider"] == "opencode"
+        assert result.diagnostics["agent_model"] == "test-model"
+        assert result.diagnostics["last_event_type"] == "AgentMessageChunk"
+
+    async def test_cellos_acp_diagnostics_on_timeout(self):
+        conn = CellosAcpConnector(options={"agent": "opencode"})
+        mock_result = MagicMock()
+        mock_result.success = True
+        mock_result.combined_text = "partial output"
+        mock_result.stop_reason = ""
+        mock_result.timeout = True
+        mock_result.error_type = "TimeoutError"
+        mock_result.error_message = "ACP timeout after 300s"
+        mock_result.last_event_type = "ToolCallProgress"
+        mock_result.active_tool_calls = [MagicMock(title="task", tool_call_id="tc_1")]
+
+        with patch("cellos_acp.AcpClient") as MockClient:
+            mock_instance = MagicMock()
+            mock_instance.run = AsyncMock(return_value=mock_result)
+            MockClient.return_value = mock_instance
+            result = await conn.run_task(_make_task(), prompt_text="test")
+
+        assert result.diagnostics is not None
+        assert result.diagnostics["timeout"] is True
+        assert result.diagnostics["error_type"] == "TimeoutError"
+        assert result.diagnostics["active_tool_name"] == "task"
+
+    async def test_fake_acp_fixture_diagnostics(self, tmp_path):
+        (tmp_path / "default.json").write_text(
+            json.dumps({
+                "success": True,
+                "summary": "Done",
+                "diagnostics": {"session_id": "ses_fake", "stop_reason": "end_turn"},
+            })
+        )
+        conn = FakeAcpConnector(options={"fixture_dir": str(tmp_path)})
+        result = await conn.run_task(_make_task(), mode="execution")
+
+        assert result.diagnostics is not None
+        assert result.diagnostics["session_id"] == "ses_fake"
+
+    async def test_fake_acp_no_diagnostics_by_default(self):
+        conn = FakeAcpConnector()
+        result = await conn.run_task(_make_task())
+
+        assert result.diagnostics is None
 
 
 # ── Protocol conformance test ────────────────────────────────────────────────

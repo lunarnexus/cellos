@@ -266,6 +266,23 @@ class TaskAttempt(BaseModel):
     started_at: datetime = Field(default_factory=datetime.now)
     completed_at: Optional[datetime] = None
 
+    # Diagnostics — populated from ACP connector result
+    acp_session_id: Optional[str] = None
+    acp_message_id: Optional[str] = None
+    agent_provider: Optional[str] = None
+    agent_model: Optional[str] = None
+    last_event_type: Optional[str] = None
+    last_event_at: Optional[datetime] = None
+    active_tool_name: Optional[str] = None
+    active_tool_call_id: Optional[str] = None
+    nested_session_id: Optional[str] = None
+    partial_text: Optional[str] = None
+    partial_thinking: Optional[str] = None
+    error_type: Optional[str] = None
+    timeout: bool = False
+    aborted: bool = False
+    raw_diagnostics_json: Optional[str] = None
+
 
 class TaskEvent(BaseModel):
     """Audit trail event for task lifecycle tracking."""

@@ -21,6 +21,7 @@ class SchedulerConfig(BaseModel):
     """Scheduler daemon settings."""
     concurrent_tasks: int = 4
     heartbeat_interval_seconds: float = 5.0
+    connector_concurrency: dict[str, int] = Field(default_factory=dict)
 
 
 class WorkerConfig(BaseModel):
@@ -90,6 +91,18 @@ class CellosConfig(BaseModel):
         """Resolve an agent from the catalog by ID or default."""
         aid = agent_id or self.agents.default_agent_id
         return self.agent_catalog.get(aid)
+
+    def get_connector_concurrency(self, connector_type: str) -> int:
+        """Get the concurrency limit for a connector type.
+
+        Args:
+            connector_type: Connector name (e.g., "cellos_acp", "fake_acp").
+
+        Returns:
+            Max concurrent workers for this connector. Defaults to 1 if not
+            configured.
+        """
+        return self.scheduler.connector_concurrency.get(connector_type, 1)
 
 
 # ─── Path resolution helpers ─────────────────────────────────────────────────

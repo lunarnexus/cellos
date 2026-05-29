@@ -64,6 +64,7 @@ class TaskService:
         details: Optional[str] = None,
         role: AgentRole = AgentRole.ENGINEER,
         task_type: Optional[TaskType] = None,
+        status: Optional[TaskStatus] = None,
         success_criteria: Optional[str] = None,
         failure_criteria: Optional[str] = None,
         parent_id: Optional[str] = None,
@@ -91,6 +92,7 @@ class TaskService:
             details=details,
             role=role,
             task_type=task_type or ROLE_TO_TASK_TYPE[role],
+            status=status or TaskStatus.DRAFT,
             success_criteria=success_criteria,
             failure_criteria=failure_criteria,
             parent_id=parent_id,
@@ -264,8 +266,12 @@ class TaskService:
         # Append to in-memory conversation list on the task model
         updated_comments = list(current.comments) + [comment]
 
-        # Commenting on needs_approval sends task back to draft for re-planning
-        status_update = TaskStatus.DRAFT if current.status == TaskStatus.NEEDS_APPROVAL else current.status
+        # Human feedback on a reviewed or failed task is a recovery signal for re-planning.
+        status_update = (
+            TaskStatus.DRAFT
+            if current.status in (TaskStatus.NEEDS_APPROVAL, TaskStatus.FAILED)
+            else current.status
+        )
 
         new_task = current.model_copy(update={
             "comments": updated_comments,
@@ -312,4 +318,3 @@ class TaskService:
         )
         await self.db.update_task(new_task)
         return msg
-

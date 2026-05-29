@@ -1,7 +1,11 @@
 {
   "scheduler": {
     "concurrent_tasks": 1,
-    "heartbeat_interval_seconds": 5.0
+    "heartbeat_interval_seconds": 5.0,
+    "connector_concurrency": {
+      "cellos_acp": 1,
+      "fake_acp": 8
+    }
   },
   "worker": {
     "backend": "acp",

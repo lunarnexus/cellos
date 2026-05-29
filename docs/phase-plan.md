@@ -279,7 +279,7 @@ Plus CLI command:
 - **No heartbeat polling** — uses `asyncio.Event()` to sleep until woken. Zero wasted CPU cycles, no SQLite contention from constant polling.
 - **Signal sources**: Worker subprocess exits → scheduler wakes and re-evaluates. Human CLI actions (approve, update, add-task) write notification file → daemon watches for changes.
 - Priority ordering: attention tasks → planning candidates → approved unblocked execution tasks
-- Bounded concurrency via `concurrent_tasks` config limit per wake cycle
+- Bounded concurrency: global `concurrent_tasks` cap + per-connector limits via `connector_concurrency` map (e.g., `cellos_acp: 1`, `fake_acp: 8`)
 - Graceful shutdown on SIGINT/SIGTERM: wait for running workers, cleanup connections
 
 ### Acceptance Criteria
@@ -336,4 +336,4 @@ Update this section as each phase completes:
 | 9. Daemon Scheduler | ✅ Done | `scheduler.py` (SchedulerService + DaemonService), CLI run cmd, notification file, 34 tests |
 | 10. Integration Polish | ✅ Done | plan/execute CLI commands, 41 integration tests, smoke-test.md, README |
 | — | | `structured_response.py` with 44 tests, `json_util.py` in persistence |
-| **Total** | | **282 tests** across 12 test files |
+| **Total** | | **316 tests** across 13 test files |

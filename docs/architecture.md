@@ -76,7 +76,7 @@
 ## Module Boundaries
 
 ### CLI (`cellos/cli.py`)
-- Click command group with `--db` and `--config` global options
+- Click command group with `--db` and `--config-dir` global options
 - Each command wraps async logic in `asyncio.run(_inner())`
 - Rich output: tables for status, panels for detail, markdown rendering
 - Attention markers (⚠️) shown inline in task lists
@@ -150,7 +150,9 @@ Three JSON files loaded into Pydantic models:
 
 Example files shipped at repo root: `cellos.config.json.example`, `agentcatalog.json.example`, `promptprofiles.json.example`. On first `init --overwrite`, these are copied to the config directory as `config.json` / `agentcatalog.json` / `promptprofiles.json`.
 
-**Config sub-models**: `SchedulerConfig` (concurrent_tasks, heartbeat_interval_seconds), `WorkerConfig` (backend, timeout_seconds), `AgentRuntimeConfig` (default_agent_id, catalog_path), `ApprovalConfig` (preapprove_research_tasks), `PromptRuntimeConfig` (profiles_path). The `AgentCatalogEntry` model includes a `model` field for per-agent model override, passed via agent-specific env var.
+**Config sub-models**: `SchedulerConfig` (concurrent_tasks, connector_concurrency, heartbeat_interval_seconds), `WorkerConfig` (backend, timeout_seconds), `AgentRuntimeConfig` (default_agent_id, catalog_path), `ApprovalConfig` (preapprove_research_tasks), `PromptRuntimeConfig` (profiles_path). The `AgentCatalogEntry` model includes a `model` field for per-agent model override, passed via agent-specific env var.
+
+**connector_concurrency**: Map of connector type → max concurrent workers (e.g., `{"cellos_acp": 1, "fake_acp": 8}`). Each connector type has its own pool. Unconfigured connectors default to 1. The global `concurrent_tasks` cap still applies as the total ceiling across all connectors. This allows LLM-bound connectors (cellos_acp) to be limited to 1 concurrent generation while compute-bound connectors (fake_acp) can run many concurrently.
 
 **preapprove_research_tasks**: Boolean flag (default: false). When true, child tasks of type `research` created via structured actions auto-transition to APPROVED status instead of NEEDS_APPROVAL. All other task types still require human approval.
 
@@ -222,7 +224,7 @@ The daemon uses `asyncio.Event` instead of polling/heartbeat. It sleeps until si
 4. Graceful shutdown on SIGINT/SIGTERM: wait for running workers, cleanup connections
 ```
 
-**Why not heartbeat polling?** Polling every N seconds wastes CPU and creates SQLite write contention (each poll opens a connection). Event-driven only wakes when something actually changed — worker finished or human took action.
+**Why not heartbeat polling?** Polling every N seconds wastes CPU and creates SQLite write contention (each poll opens a connection). The primary mechanism is event-driven (asyncio.Event) — the daemon sleeps until signaled by worker exits or human CLI actions. A lightweight 0.5s file watcher provides cross-process notification as a fallback.
 
 ## Runtime Flow: Worker Subprocess (`cellos.cli worker`)
 

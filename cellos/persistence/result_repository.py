@@ -67,7 +67,7 @@ async def save_task_result(
         (result.model_dump_json(), _now_iso(), task_id),
     )
 
-    await conn.commit()
+    # Commit handled by facade
 
 
 # ─── wake_blocked_dependents ────────────────────────────────────────────────

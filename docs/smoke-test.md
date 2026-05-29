@@ -3,6 +3,12 @@
 Sequential validation flow covering the complete CelloS system.
 Each step must pass before proceeding to the next.
 
+**Process:**
+The user wants you to step through each step one-by-one.  Before each step, list the step and commands, what the step proves, what we should expect to see, then pause for the user go-ahead.  After approval, run the test step, list all test outputs.  
+If there's a failure, stop the test and explain, don't attempt to fix anything.
+
+
+
 **Prerequisites:**
 - Python 3.12+ installed
 - `pip install -e ".[dev]"` completed
@@ -37,7 +43,7 @@ Verify the CLI is installed and responds to help.
 cellos --help
 ```
 
-**Expected:** Shows command group with all subcommands listed: init, add-task, status, detail, approve, comment, events, update, plan, execute, worker, run.
+**Expected:** Shows command group with all subcommands listed: init, add-task, status, detail, approve, comment, events, update, plan, execute, worker, run, attempts.
 
 ---
 
@@ -58,135 +64,140 @@ cellos status
 
 ---
 
-## Step 4: Create Task
+## Step 4: Create and Plan Task
 
-Create a task and verify it appears.
+Create a task and generate a plan via agent.
 
 ```bash
 TASK_ID=$(cellos add-task "Count lines and report your findings" -d "Count the number of lines in ~/workspace/cellos/README.md and report back" -r architect | grep -oP 'Created task \K[^:\s]+')
 cellos status
-```
-
-**Expected:** Task created with ID, role=architect, status=draft. Status table shows the task.
-
----
-
-## Step 5: Plan Task
-
-Generate a plan via agent (cellos_acp with opencode agent). Planning works for any role — architect decomposes into child tasks, engineer/researcher/tester produce role-specific plans.
-
-```bash
 cellos --debug plan $TASK_ID
 ```
 
-**Expected:** "Plan generated for <id>", Status: needs_approval. Architect plans should describe the child task(s) that will be created after approval; no child tasks are created during planning.
+**Expected:** Task created with ID, role=architect, status=draft. After planning: "Plan generated for <id>", status=needs_approval with ⚠️ attention marker. Architect plans describe child task(s) that will be created after approval; no child tasks are created during planning.
 
-**Debug verification:** With `--debug`, `~/.cellos/debug.log` should include the exact prompt sent from Cellos to cellos-acp and the raw response returned from cellos-acp before Cellos parses or saves it. Look for `cellos-acp request body`, `cellos-acp response metadata`, `cellos-acp response combined body`, and `Planning result raw input`. The default `text_wait` for late ACP text chunks is `2.0` seconds. The default agent catalog also enables cellos-acp library debug logging at `~/.cellos/cellos-acp.log` via the `log_file` option, equivalent to using `cellos-acp ... --log-file ~/.cellos/cellos-acp.log` in the standalone CLI.
+**Debug verification:** With `--debug`, `~/.cellos/debug.log` should include the exact prompt sent from Cellos to cellos-acp and the raw response returned from cellos-acp before Cellos parses or saves it. Look for `cellos-acp request body`, `cellos-acp response metadata`, `cellos-acp response combined body`, and `Planning result raw input`. The default `text_wait` for late ACP text chunks is `2.0` seconds. The default agent catalog also enables cellos-acp library debug logging at `~/.cellos/cellos-acp.log` via the `log_file` option.
 
 ---
 
-## Step 6: Task Detail
+## Step 5: Inspect Task State
 
-View full task information.
+Verify task detail, events, and approval.
 
 ```bash
 cellos detail $TASK_ID
-```
-
-**Expected:** Panel showing title, status=needs_approval, role, type, details, plan text including planned child task(s), and ⚠️ attention marker.
-
----
-
-## Step 7: Events
-
-View audit trail.
-
-```bash
 cellos events $TASK_ID
-```
-
-**Expected:** Chronological events including task_created, planning_saved, status_changed.
-
----
-
-## Step 8: Approve Task
-
-Human gate: approve the plan for execution.
-
-```bash
 cellos approve $TASK_ID
-```
-
-**Expected:** "✓ Approved task <id>", Status: approved (parent waits for children to complete).
-
----
-
-## Step 9: Verify Result
-
-Confirm final task state.
-
-```bash
 cellos detail $TASK_ID
 ```
 
-**Expected:** Status: approved. Child tasks are not created until the approved parent task executes.
+**Expected:**
+- Detail: Panel showing title, status=needs_approval, role, type, details, plan text with planned child task(s), and ⚠️ attention marker.
+- Events: Chronological events including task_created, planning_saved, status_changed.
+- Approve: "✓ Approved task <id>", status=approved.
+- Detail after approve: Status=approved. Child tasks are not created until the approved parent task executes.
 
 ---
 
-## Step 10: Child Tasks — Plan, Approve, Execute via Daemon
+## Step 6: Child Tasks via Daemon
 
 Verify the full child-task lifecycle: daemon executes approved parent to create children, daemon plans children, human approves children, daemon executes children, parent auto-completes.
 
 ```bash
-# Start daemon in background — it will execute the approved architect parent,
-# create child tasks, then plan those draft children
-# Redirect output to log to avoid interfering with other CLI commands
-cellos run --debug > /tmp/cellos_daemon.log 2>&1 &
+# Start daemon in background. It will execute the approved architect parent,
+# create child tasks, plan draft children, and execute approved children.
+cellos --debug run > /tmp/cellos_daemon.log 2>&1 &
 DAEMON_PID=$!
+cleanup_daemon() {
+    kill $DAEMON_PID 2>/dev/null
+    wait $DAEMON_PID 2>/dev/null
+}
+trap cleanup_daemon EXIT
 
-# Wait for daemon to create and plan children (parent execution → child draft → needs_approval)
-# Adjust sleep if your agent is slower/faster
-sleep 10
+# Wait for parent execution to create child tasks.
+CHILD_IDS=""
+for i in {1..150}; do
+    CHILD_IDS=$(cellos detail $TASK_ID | grep 'Children:' | grep -oP '[0-9a-f]{12}' | sort -u)
+    if [ -n "$CHILD_IDS" ]; then
+        break
+    fi
+    sleep 2
+done
+if [ -z "$CHILD_IDS" ]; then
+    echo "Timed out waiting for child tasks"
+    exit 1
+fi
+
+# Wait for daemon to plan children (draft → needs_approval).
+for CHILD in $CHILD_IDS; do
+    for i in {1..150}; do
+        if cellos detail $CHILD | grep -q 'Status:       needs_approval'; then
+            break
+        fi
+        sleep 2
+    done
+    cellos detail $CHILD | grep -q 'Status:       needs_approval' || {
+        echo "Timed out waiting for child $CHILD to need approval"
+        exit 1
+    }
+done
 cellos status -s needs_approval
 
-# Approve all planned children (extract hex task IDs from Rich table output)
-for CHILD in $(cellos status -s needs_approval | grep -oP '[0-9a-f]{12}'); do
+# Approve all planned children.
+for CHILD in $CHILD_IDS; do
     cellos approve $CHILD
 done
 
-# Wait for daemon to pick up approved children and execute them
-sleep 10
+# Wait for daemon to execute approved children.
+for CHILD in $CHILD_IDS; do
+    for i in {1..150}; do
+        if cellos detail $CHILD | grep -q 'Status:       done'; then
+            break
+        fi
+        sleep 2
+    done
+    cellos detail $CHILD | grep -q 'Status:       done' || {
+        echo "Timed out waiting for child $CHILD to finish"
+        exit 1
+    }
+done
+
+# Verify parent auto-completed when all children finished.
+for i in {1..60}; do
+    if cellos detail $TASK_ID | grep -q 'Status:       done'; then
+        break
+    fi
+    sleep 2
+done
+cellos detail $TASK_ID | grep -q 'Status:       done' || {
+    echo "Timed out waiting for parent $TASK_ID to finish"
+    exit 1
+}
 
 # Stop daemon
-kill $DAEMON_PID 2>/dev/null
-wait $DAEMON_PID 2>/dev/null
+cleanup_daemon
+trap - EXIT
 
-# Verify parent auto-completed when all children finished
+# Show final parent and child state.
 cellos detail $TASK_ID
+for CHILD in $CHILD_IDS; do
+    cellos detail $CHILD
+done
 ```
 
-**Expected:** Approved parent executes and creates child tasks. Children are planned (needs_approval), approved, executed by daemon (done). Parent task status: done (all child tasks completed). Parent detail lists Children; child detail lists Parent. If any child failed, parent shows ⚠️ attention with reason child_failed.
+**Expected:** Approved parent executes and creates child tasks. Children are planned (needs_approval), approved, executed by daemon (done). Parent task status: done (all child tasks completed). Parent detail lists Children; child detail lists Parent. The daemon is not stopped until these states are observed or a timeout occurs. If any child failed, parent shows ⚠️ attention with reason child_failed.
 
 ---
 
-## Step 11: Engineer Plan → Approve → Execute
+## Step 7: Engineer Lifecycle
 
 Test the full engineer task lifecycle: plan, approve, execute.
 
 ```bash
-# Create an engineer task
 ENG_ID=$(cellos add-task "Count lines in README.md" -d "Use wc -l to count lines in ~/workspace/cellos/README.md and report the count" -r engineer | grep -oP 'Created task \K[^:\s]+')
-
-# Plan the engineer task (any role can be planned)
 cellos --debug plan $ENG_ID
-
-# Approve the plan
 cellos approve $ENG_ID
-
-# Execute the approved plan
-cellos execute --debug $ENG_ID
-
-# Verify result
+cellos --debug execute $ENG_ID
 cellos detail $ENG_ID
 ```
 
@@ -194,21 +205,15 @@ cellos detail $ENG_ID
 
 ---
 
-## Step 12: Comment Revision Flow
+## Step 8: Comment Revision Flow
 
 Commenting on a `needs_approval` task sends it back to `draft` for re-planning.
 
 ```bash
-# Create and plan a task
-REV_ID=$(cellos add-task "Build a login form" -d "Create a login form with email and password fields" -r engineer | grep -oP 'Created task \K[^:\s]+')
+REV_ID=$(cellos add-task "Plan a login form" -d "Plan a hypothetical login form with email and password fields. Do not inspect project files; produce a generic implementation plan only." -r engineer | grep -oP 'Created task \K[^:\s]+')
 cellos --debug plan $REV_ID
-cellos detail $REV_ID  # Should show needs_approval
-
-# Comment to request revision
 cellos comment $REV_ID -m "Also add a 'Remember me' checkbox"
 cellos detail $REV_ID  # Should show draft status
-
-# Re-plan with the comment considered
 cellos --debug plan $REV_ID
 cellos detail $REV_ID  # Should show needs_approval again, plan includes checkbox
 ```
@@ -217,7 +222,26 @@ cellos detail $REV_ID  # Should show needs_approval again, plan includes checkbo
 
 ---
 
-## Step 13: Dependencies
+## Step 9: Guard Tests
+
+Verify error guards for invalid operations.
+
+```bash
+# Invalid approval (draft task)
+DRAFT_ID=$(cellos add-task "Draft task" -r engineer | grep -oP 'Created task \K[^:\s]+')
+cellos approve $DRAFT_ID
+
+# Empty update
+cellos update $DRAFT_ID
+```
+
+**Expected:**
+- "Error: Cannot approve task in status 'draft'. Must be 'needs_approval'."
+- "Error: No fields provided to update for task <id>"
+
+---
+
+## Step 10: Dependencies
 
 Create tasks with dependencies.
 
@@ -232,57 +256,16 @@ cellos detail $PARENT_ID
 
 ---
 
-## Step 14: Invalid Approval Guard
-
-Attempt to approve a draft task (should fail).
-
-```bash
-DRAFT_ID=$(cellos add-task "Draft task" -r engineer | grep -oP 'Created task \K[^:\s]+')
-cellos approve $DRAFT_ID
-```
-
-**Expected:** "Error: Cannot approve task in status 'draft'. Must be 'needs_approval'."
-
----
-
-## Step 15: Empty Update Guard
-
-Attempt to update with no fields (should fail).
-
-```bash
-cellos update $DRAFT_ID
-```
-
-**Expected:** "Error: No fields specified for update."
-
----
-
-## Step 16: Daemon Scheduler
-
-Start daemon, verify it picks up work. The daemon only plans (draft → needs_approval) — execution requires manual approval.
-
-```bash
-cellos add-task "Daemon test task" -r engineer
-cellos --debug run
-```
-
-**Expected:** Daemon starts, picks up draft task for planning, generates plan, status shows needs_approval. Execution requires human approval gate.
-Press Ctrl+C to stop.
-
----
-
 ## Troubleshooting
 
 | Step | Symptom | Fix |
 |------|---------|-----|
 | 1 | Import errors | `pip install -e ".[dev]"` |
 | 3 | Config not found | Delete `~/.cellos` and re-run `cellos init` |
-| 5 | Planning error | Check cellos_acp config in agentcatalog.json |
-| 5 | Plan appears truncated or incomplete | Compare `cellos-acp response combined body` with `Planning result raw input` in `~/.cellos/debug.log` to determine whether truncation happened before or after Cellos received the ACP response |
-| 5 | Need lower-level ACP diagnostics | Check `~/.cellos/cellos-acp.log`; it is enabled by `log_file` in `agentcatalog.json` |
-| 8 | Cannot approve | Task must be in needs_approval status |
-| 10 | Children not planned | Check daemon output, verify children are in draft status |
-| 10 | Children not executed | Verify children were approved, check daemon picked them up |
-| 11 | Execution error | Verify task is approved, check agent config |
-| 12 | Comment doesn't send to draft | Verify task was in needs_approval before commenting |
-| 16 | Daemon hangs | Check concurrent_tasks config, verify cellos_acp works |
+| 4 | Planning error | Check cellos_acp config in agentcatalog.json |
+| 4 | Plan appears truncated | Compare `cellos-acp response combined body` with `Planning result raw input` in `~/.cellos/debug.log` |
+| 4 | Need lower-level ACP diagnostics | Check `~/.cellos/cellos-acp.log` |
+| 6 | Children not planned | Check daemon output, verify children are in draft status |
+| 6 | Children not executed | Verify children were approved, check daemon picked them up |
+| 7 | Execution error | Verify task is approved, check agent config |
+| 8 | Comment doesn't send to draft | Verify task was in needs_approval before commenting |

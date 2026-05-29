@@ -48,7 +48,7 @@ cellos run
 |---------|-------------|
 | `init [--overwrite]` | Create config files and database |
 | `add-task <title> [-d details] [-r role] [-t type] [-s success] [-f failure] [--depends ids]` | Create task |
-| `status [-s status_filter]` | List tasks with ⚠️ attention markers |
+| `status [-s status_filter] [--all]` | List tasks with ⚠️ attention markers |
 | `detail <task_id>` | Full task info (plan, conversation, comments) |
 | `approve <task_id>` | Approve NEEDS_APPROVAL task (human gate) |
 | `comment <task_id> -m message` | Add human comment + trigger attention |
@@ -97,7 +97,7 @@ Attention signals trigger on: human changes, comments, planning complete, depend
 
 ## Architecture
 
-- **Deterministic scheduling** with event-driven daemon (no polling)
+- **Event-driven daemon** (asyncio.Event wake, lightweight file watcher fallback)
 - **Protocol-based ACP connectors** for agent communication
 - **Repository pattern** persistence with SQLite
 - **Rich CLI output** with attention tracking
@@ -120,5 +120,5 @@ See `docs/smoke-test.md` for the 15-step sequential validation flow.
 |-------|-----|
 | Config not found | Run `cellos init` |
 | Cannot approve draft task | Task must be in `needs_approval` status |
-| Worker error with cellos_acp | Check agent binary is available; falls back to `fake_acp` for testing |
+| Worker error with cellos_acp | Check agent binary is available; use `fake_acp` connector in config for testing |
 | Daemon exits quickly | Exits after 60 idle cycles (~5 min); ensure tasks exist |

@@ -22,7 +22,7 @@
       "output_sections": ["Objective", "Approach", "Steps", "Verification", "Dependencies", "Risks"]
     },
     "execution": {
-      "instructions": "Execute the approved plan. Follow each step precisely. Report your results clearly, including what you did, what changed, and whether the success criteria are met. Do not deviate from the plan without explaining why.\n\nEnd your response with a structured JSON object containing your results (see final instructions).\n\nArchitects: your execution phase is for creating child tasks only — do not implement code.",
+      "instructions": "Execute the approved plan. Follow each step precisely. Report your results clearly, including what you did, what changed, and whether the success criteria are met. Do not deviate from the plan without explaining why.\n\nEnd your response with a structured JSON object containing your results (see final instructions).\n\nArchitects: your execution phase is for creating child task records from the approved plan only. Do not implement code, run commands, execute child work, or report child-task results. Child tasks must go through their own draft -> needs_approval -> approved -> execution lifecycle after they are created.",
       "output_sections": ["Summary", "Actions Taken", "Files Changed", "Results", "Issues"]
     }
   },

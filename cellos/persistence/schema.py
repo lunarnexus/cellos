@@ -13,6 +13,25 @@ REQUIRED_TABLES = frozenset({
     "task_attempts",
 })
 
+# Diagnostic columns added to task_attempts for visibility
+ATTEMPT_DIAGNOSTIC_COLUMNS = frozenset([
+    "acp_session_id",
+    "acp_message_id",
+    "agent_provider",
+    "agent_model",
+    "last_event_type",
+    "last_event_at",
+    "active_tool_name",
+    "active_tool_call_id",
+    "nested_session_id",
+    "partial_text",
+    "partial_thinking",
+    "error_type",
+    "timeout_flag",
+    "aborted_flag",
+    "raw_diagnostics_json",
+])
+
 SCHEMA_SQL = """\
 CREATE TABLE IF NOT EXISTS tasks (
     id TEXT PRIMARY KEY,
@@ -102,7 +121,7 @@ async def init_db(db_path: str | Path) -> None:
         await db.commit()
 
 
-async def ensure_initialized(db_path: str | Path) -> None:
+async def ensure_initialized(db_path: str | Path, migrate: bool = True) -> None:
     """Verify all required tables exist; raise if not initialized.
 
     Checks table existence rather than relying on a sentinel file, so it's
@@ -123,3 +142,33 @@ async def ensure_initialized(db_path: str | Path) -> None:
             f"Database not initialized. Missing tables: {', '.join(sorted(missing))}. "
             "Run 'cellos init' to create them."
         )
+
+    if migrate:
+        await migrate_attempt_diagnostics(db_path)
+
+
+async def migrate_attempt_diagnostics(db_path: str | Path) -> None:
+    """Add diagnostic columns to task_attempts if they don't exist.
+
+    Idempotent — safe to call multiple times. Uses ALTER TABLE ADD COLUMN
+    which silently skips if the column already exists (checked via PRAGMA).
+    """
+    async with aiosqlite.connect(str(db_path)) as db:
+        # Check existing columns
+        cursor = await db.execute("PRAGMA table_info(task_attempts)")
+        existing_cols = {row[1] async for row in cursor}
+
+        additions = ATTEMPT_DIAGNOSTIC_COLUMNS - existing_cols
+        if not additions:
+            return
+
+        # Add missing columns
+        for col in sorted(additions):
+            if col in ("timeout_flag", "aborted_flag"):
+                await db.execute(f"ALTER TABLE task_attempts ADD COLUMN {col} INTEGER NOT NULL DEFAULT 0")
+            elif col == "raw_diagnostics_json":
+                await db.execute(f"ALTER TABLE task_attempts ADD COLUMN {col} TEXT DEFAULT ''")
+            else:
+                await db.execute(f"ALTER TABLE task_attempts ADD COLUMN {col} TEXT DEFAULT ''")
+
+        await db.commit()

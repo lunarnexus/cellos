@@ -84,6 +84,12 @@ async def save_planning_result(
     if current is None:
         raise ValueError(f"Task {task_id} not found")
 
+    if current.status not in (TaskStatus.DRAFT, TaskStatus.IN_PROGRESS):
+        raise ValueError(
+            f"Cannot save planning result for task {task_id}: "
+            f"status is '{current.status.value}', expected 'draft' or 'in_progress'"
+        )
+
     # Try structured response first
     from cellos.structured_response import parse_planning_response, plan_to_text
 

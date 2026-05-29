@@ -6,7 +6,7 @@ import json
 from pathlib import Path
 from typing import Any
 
-from cellos.connectors.base import TaskConnector
+from cellos.connectors.base import ConnectorResult
 from cellos.models import Task, TaskResult
 
 
@@ -22,7 +22,7 @@ class FakeAcpConnector:
     Each fixture file should contain a JSON object with at least:
         - ``success`` (bool)
         - ``summary`` (str)
-        Optional: ``output`` (str)
+        Optional: ``output`` (str), ``diagnostics`` (dict)
     """
 
     def __init__(self, options: dict[str, Any] | None = None):
@@ -35,7 +35,7 @@ class FakeAcpConnector:
 
     async def run_task(
         self, task: Task, workdir: str | None = None, mode: str = "execution", prompt_text: str | None = None
-    ) -> TaskResult:
+    ) -> ConnectorResult:
         """Execute a task with canned responses.
 
         Simulates a 0.1 s delay to mimic real agent latency without blocking tests.
@@ -45,7 +45,7 @@ class FakeAcpConnector:
 
     # ── Fixture resolution (synchronous — safe to call from tests) ────────────
 
-    def _resolve_result(self, task: Task, mode: str, prompt_text: str | None = None) -> TaskResult:
+    def _resolve_result(self, task: Task, mode: str, prompt_text: str | None = None) -> ConnectorResult:
         """Walk the fixture lookup chain and fall back to defaults."""
         if self.fixture_dir:
             fixture = self._load_fixture(task.id, mode)
@@ -54,7 +54,10 @@ class FakeAcpConnector:
 
         # No fixture found — use configured defaults
         summary = f"[fake_acp] {self.default_summary}"
-        return TaskResult(success=self.default_success, summary=summary)
+        return ConnectorResult(
+            task_result=TaskResult(success=self.default_success, summary=summary),
+            diagnostics=None,
+        )
 
     def _load_fixture(self, task_id: str, mode: str) -> dict | None:
         """Try each fixture path in priority order; return first match or None."""
@@ -78,13 +81,15 @@ class FakeAcpConnector:
         return None
 
     @staticmethod
-    def _fixture_to_result(data: dict) -> TaskResult:
-        """Convert a fixture JSON object into a TaskResult."""
-        return TaskResult(
+    def _fixture_to_result(data: dict) -> ConnectorResult:
+        """Convert a fixture JSON object into a ConnectorResult."""
+        task_result = TaskResult(
             success=data.get("success", True),
             summary=data.get("summary", "Fixture response."),
             output=data.get("output"),
         )
+        diagnostics = data.get("diagnostics")
+        return ConnectorResult(task_result=task_result, diagnostics=diagnostics)
 
 
 async def _async_sleep(seconds: float) -> None:

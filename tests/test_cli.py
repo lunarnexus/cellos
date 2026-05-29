@@ -5,6 +5,7 @@ initializes a fresh DB to avoid cross-test contamination.
 """
 
 import pytest
+import json
 from pathlib import Path
 from click.testing import CliRunner
 
@@ -341,6 +342,39 @@ def test_update_add_remove_dep(runner):
     )
     assert result.exit_code == 0
     assert "added deps" in result.output.lower()
+
+
+def test_plan_failure_reports_error(runner):
+    cli_runner, tmp_path, db, config_dir = runner
+
+    cli_runner.invoke(main, ["--config-dir", config_dir, "--db", db, "init"])
+    (tmp_path / "agentcatalog.json").write_text(
+        json.dumps({
+            "engineer": {
+                "connector": "fake_acp",
+                "options": {
+                    "default_success": False,
+                    "default_summary": "Planning failed.",
+                },
+            }
+        }),
+        encoding="utf-8",
+    )
+
+    created = cli_runner.invoke(
+        main, ["--config-dir", config_dir, "--db", db, "add-task", "Will fail"]
+    )
+    assert created.exit_code == 0
+    task_id = created.output.split("Created task ")[1].split(":")[0].strip()
+
+    result = cli_runner.invoke(
+        main, ["--config-dir", config_dir, "--db", db, "plan", task_id]
+    )
+
+    assert result.exit_code != 0
+    assert "Planning failed" in result.output
+    assert "Status: failed" in result.output
+    assert "✓ Plan generated" not in result.output
 
 
 # ── Worker command ────────────────────────────────────────────

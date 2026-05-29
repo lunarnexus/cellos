@@ -25,6 +25,7 @@ from cellos.models import (
 
 from cellos.persistence.attempt_repository import (
     create_attempt as _create_attempt,
+    get_attempt as _get_attempt,
     list_attempts as _list_attempts,
     update_attempt as _update_attempt,
 )
@@ -75,7 +76,7 @@ class CellosDatabase:
             raise RuntimeError("Database not connected. Call connect() first.")
         return self._conn
 
-    async def connect(self, foreign_keys: bool = False) -> aiosqlite.Connection:
+    async def connect(self, foreign_keys: bool = True) -> aiosqlite.Connection:
         """Open the SQLite connection."""
         await ensure_initialized(self.db_path)
         self._conn = await aiosqlite.connect(self.db_path)
@@ -276,8 +277,11 @@ class CellosDatabase:
         task_id: str,
         mode: Optional[str] = None,
         agent_id: Optional[str] = None,
+        diagnostics: Optional[dict] = None,
     ) -> TaskAttempt:
-        attempt = await _create_attempt(self.conn, task_id, mode=mode, agent_id=agent_id)
+        attempt = await _create_attempt(
+            self.conn, task_id, mode=mode, agent_id=agent_id, diagnostics=diagnostics
+        )
         await self.conn.commit()
         return attempt
 
@@ -287,6 +291,7 @@ class CellosDatabase:
         status: TaskStatus,  # Note: uses TaskAttemptStatus in repo but exposed as TaskStatus here for type safety
         result_summary: Optional[str] = None,
         error_message: Optional[str] = None,
+        diagnostics: Optional[dict] = None,
     ) -> None:
         from cellos.models import TaskAttemptStatus
 
@@ -298,9 +303,13 @@ class CellosDatabase:
         repo_status = attempt_status_map.get(status, TaskAttemptStatus.STARTED)
 
         await _update_attempt(
-            self.conn, attempt_id, repo_status, result_summary=result_summary, error_message=error_message
+            self.conn, attempt_id, repo_status,
+            result_summary=result_summary, error_message=error_message, diagnostics=diagnostics
         )
         await self.conn.commit()
+
+    async def get_attempt(self, attempt_id: str) -> Optional[TaskAttempt]:
+        return await _get_attempt(self.conn, attempt_id)
 
     async def list_attempts(self, task_id: str) -> list[TaskAttempt]:
         return await _list_attempts(self.conn, task_id)
@@ -308,6 +317,7 @@ class CellosDatabase:
 
 async def init_database(db_path: str | Path) -> None:
     """Top-level convenience: initialize DB and verify."""
+    await init_db(db_path)
     db = CellosDatabase(db_path)
     await db.connect()
     await db.close()

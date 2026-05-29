@@ -24,6 +24,8 @@ from cellos.models import (
     AttentionReason,
     CommentAuthorType,
     Task,
+    TaskAttempt,
+    TaskAttemptStatus,
     TaskDependency,
     TaskStatus,
     TaskType,
@@ -330,6 +332,18 @@ def detail(ctx: click.Context, task_id):
             children = await db.list_child_tasks(task.id)
             panel = _format_detail_panel(task, children=children)
             console.print(panel)
+
+            # Show attempt summary
+            attempt_list = await db.list_attempts(task.id)
+            if attempt_list:
+                console.print(f"\n[dim]Attempts ({len(attempt_list)}):[/]")
+                for a in attempt_list[:3]:  # Show last 3
+                    console.print(
+                        f"  {a.id} | {a.status.value} | {a.mode or '?'} | "
+                        f"{a.result_summary or a.error_message or ''}"[:80]
+                    )
+                if len(attempt_list) > 3:
+                    console.print(f"  ... and {len(attempt_list) - 3} more. Run 'cellos attempts {task_id}' for details.")
         finally:
             await db.close()
 
@@ -583,8 +597,7 @@ def plan(ctx: click.Context, task_id):
     """Generate a plan for a task via agent (manual trigger).
 
     Triggers a planning agent to generate an implementation plan.
-    Task must be in DRAFT status. Falls back to fake_acp if the configured
-    agent connector is unavailable.
+    Task must be in DRAFT status.
     """
 
     async def _run():
@@ -614,11 +627,23 @@ def plan(ctx: click.Context, task_id):
         try:
             from cellos.services.worker_service import run_task_worker, WorkerError as WkErr
             result = await run_task_worker(db=db, task_id=task_id, mode="planning", config=config)
+            if result.status != TaskStatus.NEEDS_APPROVAL:
+                console.print(f"[red]Planning failed for {task_id}[/]")
+                console.print(f"  Status: {result.status.value}")
+                attempts = await db.list_attempts(task_id)
+                if attempts:
+                    latest = attempts[0]
+                    summary = latest.result_summary or latest.error_message
+                    if summary:
+                        console.print(f"  Attempt: {summary}")
+                ctx.exit(1)
             console.print(f"✓ Plan generated for {task_id}")
             console.print(f"  Status: {result.status.value}")
             _notify_daemon()
         except WkErr as e:
             console.print(f"[red]Planning error: {e}[/]")
+        except click.exceptions.Exit:
+            raise
         except Exception as e:
             console.print(f"[red]Unexpected error: {type(e).__name__}: {e}[/]")
         finally:
@@ -634,8 +659,7 @@ def execute(ctx: click.Context, task_id):
     """Execute an approved task via agent (manual trigger).
 
     Triggers an execution agent to run the approved task's plan.
-    Task must be in APPROVED status. Falls back to fake_acp if the configured
-    agent connector is unavailable.
+    Task must be in APPROVED status.
     """
 
     async def _run():
@@ -673,6 +697,111 @@ def execute(ctx: click.Context, task_id):
             console.print(f"[red]Execution error: {e}[/]")
         except Exception as e:
             console.print(f"[red]Unexpected error: {type(e).__name__}: {e}[/]")
+        finally:
+            await db.close()
+
+    asyncio.run(_run())
+
+
+# ── Diagnostic Commands ─────────────────────────────────────────────────────
+
+def _format_attempts_table(attempts: list[TaskAttempt], show_detail: bool = False) -> Table:
+    """Format attempts as a Rich table."""
+    table = Table(show_header=True, header_style="bold")
+    table.add_column("ID", style="cyan", no_wrap=True)
+    table.add_column("Mode", width=10)
+    table.add_column("Status", style="bold", width=10)
+    table.add_column("Agent", width=12)
+    table.add_column("Started", style="dim", width=16)
+    table.add_column("Completed", style="dim", width=16)
+    table.add_column("Session", width=12)
+    table.add_column("Last Event", width=16)
+    table.add_column("Tool", width=10)
+    table.add_column("Summary", overflow="fold")
+
+    for a in attempts:
+        started_str = a.started_at.strftime("%H:%M:%S") if a.started_at else ""
+        completed_str = a.completed_at.strftime("%H:%M:%S") if a.completed_at else ""
+        session_str = (a.acp_session_id or "")[:12]
+        event_str = (a.last_event_type or "")[:16]
+        tool_str = (a.active_tool_name or "")[:10]
+        summary = (a.result_summary or a.error_message or "")[:60]
+
+        status_style = ""
+        if a.status == TaskAttemptStatus.SUCCEEDED:
+            status_style = "green"
+        elif a.status == TaskAttemptStatus.FAILED:
+            status_style = "red"
+
+        table.add_row(
+            a.id,
+            a.mode or "",
+            f"[{status_style}]{a.status.value}[/{status_style}]" if status_style else a.status.value,
+            (a.agent_id or "")[:12],
+            started_str,
+            completed_str,
+            session_str,
+            event_str,
+            tool_str,
+            summary,
+        )
+
+    return table
+
+
+def _format_attempt_lines(attempt: TaskAttempt) -> list[str]:
+    """Return lines describing one attempt's diagnostics."""
+    lines = [f"  Attempt {attempt.id}: {attempt.status.value} ({attempt.mode or '?'})"]
+    if attempt.acp_session_id:
+        lines.append(f"    Session: {attempt.acp_session_id}")
+    if attempt.active_tool_name:
+        lines.append(f"    Tool: {attempt.active_tool_name}")
+    if attempt.timeout:
+        lines.append(f"    Timed out")
+    if attempt.error_type:
+        lines.append(f"    Error: {attempt.error_type}")
+    if attempt.result_summary:
+        lines.append(f"    Result: {attempt.result_summary[:100]}")
+    if attempt.error_message:
+        lines.append(f"    Error: {attempt.error_message[:100]}")
+    return lines
+
+
+@main.command("attempts")
+@click.argument("task_id", required=True)
+@click.option("-d", "--detail", is_flag=True, default=False, help="Show full diagnostic details per attempt.")
+@click.pass_context
+def attempts(ctx: click.Context, task_id, detail):
+    """List all attempts for a task with diagnostic summary."""
+
+    async def _run():
+        db = await _get_db(ctx.obj["db"])
+        service = TaskService(db)
+
+        try:
+            try:
+                await service.get_task(task_id)
+            except TaskNotFoundError as e:
+                console.print(f"[red]Error: {e}[/]")
+                return
+
+            attempt_list = await db.list_attempts(task_id)
+
+            if not attempt_list:
+                console.print("No attempts found for this task.")
+                return
+
+            table = _format_attempts_table(attempt_list)
+            console.print(table)
+            console.print(f"\nTotal: {len(attempt_list)} attempt{'s' if len(attempt_list) != 1 else ''}")
+
+            if detail:
+                console.print("")
+                for a in attempt_list:
+                    lines = _format_attempt_lines(a)
+                    for line in lines:
+                        console.print(line)
+                    console.print("")
         finally:
             await db.close()
 

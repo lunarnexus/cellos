@@ -3,7 +3,22 @@
 from __future__ import annotations
 
 import typing
+from dataclasses import dataclass, field
+from typing import Any
+
 from cellos.models import Task, TaskResult
+
+
+@dataclass
+class ConnectorResult:
+    """Wraps a TaskResult with optional diagnostic metadata.
+
+    Connectors return this to carry both the task outcome and any
+    structured diagnostics from the agent (session IDs, tool calls,
+    partial state, etc.).
+    """
+    task_result: TaskResult
+    diagnostics: dict[str, Any] | None = None
 
 
 class TaskConnector(typing.Protocol):
@@ -16,4 +31,4 @@ class TaskConnector(typing.Protocol):
 
     async def run_task(
         self, task: Task, workdir: str | None = None, mode: str = "execution", prompt_text: str | None = None
-    ) -> TaskResult: ...
+    ) -> ConnectorResult: ...

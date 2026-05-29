@@ -83,6 +83,12 @@ async def save_execution_result(
     if current is None:
         raise ValueError(f"Task {task_id} not found")
 
+    if current.status not in (TaskStatus.APPROVED, TaskStatus.IN_PROGRESS):
+        raise ValueError(
+            f"Cannot save execution result for task {task_id}: "
+            f"status is '{current.status.value}', expected 'approved' or 'in_progress'"
+        )
+
     # Truncate very long outputs for storage
     truncated_output = result_text[:5000] if len(result_text) > 5000 else result_text
 

@@ -246,6 +246,11 @@ class TestResultRepository:
         assert fetched.result.success is False  # type: ignore[union-attr]
 
     async def test_wake_blocked_dependents(self, db):
+        # Create the dependency task first (FK constraint requires it to exist)
+        dep = _make_task("Dependency task")
+        dep.id = "dep123"
+        await db.create_task(dep)
+
         parent = _make_task(
             "Parent task",
             status=TaskStatus.APPROVED,
@@ -255,7 +260,7 @@ class TestResultRepository:
         )
         await db.create_task(parent)
 
-        # Simulate dep completing — save result for a fake completed dep
+        # Simulate dep completing — save result for the completed dep
         affected = await db.save_task_result(
             "dep123", success=True, summary="Dep done"
         )

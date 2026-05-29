@@ -15,7 +15,7 @@ import os
 from typing import Any
 
 from cellos.config import AgentCatalogEntry, CellosConfig
-from cellos.connectors.base import TaskConnector
+from cellos.connectors.base import ConnectorResult, TaskConnector
 from cellos.db import CellosDatabase
 from cellos.models import AttentionReason, Task, TaskStatus
 from cellos.prompt_builder import build_task_prompt
@@ -25,6 +25,40 @@ logger = logging.getLogger(__name__)
 
 class WorkerError(Exception):
     """Raised when a worker fails to execute."""
+
+
+def resolve_agent(config: CellosConfig, task: Task) -> AgentCatalogEntry:
+    """Resolve the agent for a task.
+
+    Resolution order:
+      1. task.agent_id (explicit override)
+      2. task.role (default mapping)
+      3. config.agents.default_agent_id (global default)
+
+    Args:
+        config: Loaded CellosConfig with agent catalog.
+        task: The task needing an agent.
+
+    Returns:
+        Resolved AgentCatalogEntry.
+
+    Raises:
+        WorkerError: If no agent can be resolved.
+    """
+    agent = None
+    if task.agent_id:
+        agent = config.get_agent(task.agent_id)
+    if not agent:
+        agent = config.get_agent(task.role.value)
+    if not agent:
+        agent = config.get_agent()
+    if agent is None:
+        raise WorkerError(
+            f"No agent configured for task {task.id} "
+            f"(agent_id={task.agent_id}, role={task.role.value}, "
+            f"default={config.agents.default_agent_id})"
+        )
+    return agent
 
 
 def _build_connector(agent: AgentCatalogEntry, timeout_seconds: int) -> TaskConnector:
@@ -62,6 +96,48 @@ def _build_connector(agent: AgentCatalogEntry, timeout_seconds: int) -> TaskConn
     raise WorkerError(f"Unknown connector type: {agent.connector}")
 
 
+def _build_failure_summary(diagnostics: dict[str, Any] | None) -> str:
+    """Build a diagnostic-aware failure summary string.
+
+    Uses factual descriptions based on available diagnostic data.
+    """
+    if not diagnostics:
+        return "No output from agent"
+
+    parts: list[str] = []
+
+    if diagnostics.get("timeout"):
+        parts.append("Agent timed out")
+    elif diagnostics.get("aborted"):
+        parts.append("Agent aborted")
+    elif diagnostics.get("error_type"):
+        parts.append(f"Agent error: {diagnostics['error_type']}")
+    else:
+        parts.append("Agent failed")
+
+    tool_name = diagnostics.get("active_tool_name")
+    if tool_name:
+        parts[-1] += f" while tool `{tool_name}` was running"
+
+    nested = diagnostics.get("nested_session_id")
+    if nested:
+        parts.append(f"Nested session: {nested}")
+
+    last_event = diagnostics.get("last_event_type")
+    last_at = diagnostics.get("last_event_at")
+    if last_event:
+        event_desc = f"Last event: {last_event}"
+        if last_at:
+            event_desc += f" at {last_at}"
+        parts.append(event_desc)
+
+    partial_text = diagnostics.get("partial_text") or diagnostics.get("last_message_preview", "")
+    if partial_text and len(partial_text) > 10:
+        parts.append(f"Partial output: {partial_text[:120]}")
+
+    return ". ".join(parts)
+
+
 async def run_task_worker(
     db: CellosDatabase,
     task_id: str,
@@ -79,7 +155,7 @@ async def run_task_worker(
       5. Build prompt from profiles + task context
       6. Run connector
       7. Save result via planning/execution service
-      8. Complete attempt
+      8. Complete attempt with diagnostics
 
     Args:
         db: Connected database facade.
@@ -101,6 +177,9 @@ async def run_task_worker(
 
     logger.info("Worker starting for task %s mode=%s", task.id, mode)
 
+    attempt = None
+    diagnostics: dict[str, Any] | None = None
+
     try:
         # 2. Transition to IN_PROGRESS (prevents double-scheduling by scheduler)
         if mode == "planning":
@@ -121,18 +200,7 @@ async def run_task_worker(
         logger.info("Task %s transitioned to IN_PROGRESS", task_id)
 
         # 3. Resolve agent: task.agent_id → task.role → config default
-        # Note: task.agent_id can be empty string (not None), so check explicitly
-        agent = None
-        if task.agent_id:
-            agent = config.get_agent(task.agent_id)
-        if not agent:
-            agent = config.get_agent(task.role.value)
-        if not agent:
-            agent = config.get_agent()
-        if agent is None:
-            raise WorkerError(
-                f"No agent configured for task {task_id} (agent_id={task.agent_id}, role={task.role.value}, default={config.agents.default_agent_id})"
-            )
+        agent = resolve_agent(config, task)
 
         # Find the agent's key in the catalog (for attempt tracking)
         agent_key = next(
@@ -171,14 +239,16 @@ async def run_task_worker(
             plan=task.plan if mode == "execution" else None,
         )
 
-        # 6. Run connector
+        # 6. Run connector — now returns ConnectorResult
         logger.info("Running connector for task %s (timeout=%ds)", task_id, timeout)
         logger.debug("Prompt for task %s mode=%s:\n%s", task_id, mode, prompt_text)
-        result = await asyncio.wait_for(
+        conn_result: ConnectorResult = await asyncio.wait_for(
             connector.run_task(task=updated_task or task, workdir=workdir, mode=mode, prompt_text=prompt_text),
             timeout=timeout + 10,  # Small buffer for async overhead
         )
 
+        result = conn_result.task_result
+        diagnostics = conn_result.diagnostics
         logger.info("Connector returned: success=%s summary=%s", result.success, result.summary[:200])
 
         # 7. Save result via appropriate service
@@ -244,34 +314,48 @@ async def run_task_worker(
                 wait_for_children=bool(created_child_ids),
             )
 
-        # 8. Complete attempt — mark as succeeded or failed based on connector result
+        # 8. Complete attempt with diagnostics
         final_task = await db.get_task(task_id)
         if final_task:
             status_to_use = TaskStatus.DONE if result.success else TaskStatus.FAILED
             if mode == "planning":
-                await db.update_attempt(attempt.id, status_to_use)
-            else:
+                summary = _build_failure_summary(diagnostics) if not result.success else result.summary[:500]
                 await db.update_attempt(
-                    attempt.id, status_to_use, result_summary=exec_result.summary[:500]
+                    attempt.id, status_to_use, result_summary=summary, diagnostics=diagnostics
+                )
+            else:
+                summary = _build_failure_summary(diagnostics) if not result.success else exec_result.summary[:500]
+                await db.update_attempt(
+                    attempt.id, status_to_use,
+                    result_summary=summary,
+                    diagnostics=diagnostics
                 )
 
         logger.info("Worker completed for task %s", task_id)
         return final_task or updated_task
 
     except Exception as e:
-        # On failure: mark attempt failed, transition task back to a recoverable state
+        # On failure: mark attempt failed with diagnostics, transition task back
         error_msg = f"{type(e).__name__}: {e}"
         logger.error("Worker failed for task %s mode=%s: %s", task_id, mode, error_msg)
 
-        if 'attempt' in locals():  # Attempt was created before failure
+        if attempt is not None:
             try:
-                await db.update_attempt(attempt.id, TaskStatus.FAILED, error_message=error_msg[:500])
+                # Enhance diagnostics with error info
+                fail_diagnostics = dict(diagnostics or {})
+                fail_diagnostics.setdefault("error_type", type(e).__name__)
+                fail_diagnostics.setdefault("error_message", str(e)[:500])
+                await db.update_attempt(
+                    attempt.id, TaskStatus.FAILED,
+                    error_message=error_msg[:500],
+                    diagnostics=fail_diagnostics,
+                )
             except Exception:
-                logger.error("Failed to update attempt %s on error", getattr(locals().get("attempt"), "id", "?"))
+                logger.error("Failed to update attempt %s on error", getattr(attempt, "id", "?"))
 
         # Restore task status based on mode
         current = await db.get_task(task_id)
-        if current and current.status == TaskStatus.IN_PROGRESS:
+        if current:
             restore_status = (
                 TaskStatus.DRAFT if mode == "planning" else TaskStatus.APPROVED
             )
@@ -279,6 +363,11 @@ async def run_task_worker(
                 "status": restore_status,
                 "updated_at": datetime.datetime.now(),
             })
+            # Set attention so the scheduler surfaces the failure for review
+            restored = restored.requires_attention(
+                AttentionReason.EXECUTION_FAILED,
+                detail=f"Worker {mode} failed: {error_msg[:120]}",
+            )
             await db.update_task(restored)
 
         raise WorkerError(f"Worker failed for task {task_id} mode={mode}: {error_msg}") from e
@@ -313,4 +402,4 @@ def _task_to_prompt_dict(task: Task, extra: dict | None = None) -> dict[str, obj
     return result
 
 
-__all__ = ["run_task_worker", "_build_connector", "WorkerError"]
+__all__ = ["run_task_worker", "_build_connector", "resolve_agent", "WorkerError", "_build_failure_summary"]

@@ -213,6 +213,21 @@ class TestCommentsConversation:
         updated = await task_service.get_task(t.id)
         assert updated.status == TaskStatus.DRAFT
 
+    async def test_comment_on_failed_task_sends_to_draft(self, task_service):
+        """Commenting on a failed task is a human recovery signal for re-planning."""
+        from cellos.models import TaskStatus
+
+        t = await task_service.create_task(title="Recover me")
+        failed = t.model_copy(update={"status": TaskStatus.FAILED})
+        await task_service.db.update_task(failed)
+
+        await task_service.add_human_comment(t.id, "Try again with less ambiguity")
+        updated = await task_service.get_task(t.id)
+
+        assert updated.status == TaskStatus.DRAFT
+        assert updated.attention.required is True
+        assert updated.attention.reason == AttentionReason.HUMAN_COMMENTED
+
     async def test_add_conversation_message(self, task_service):
         from cellos.models import Task
         t = await task_service.create_task(title="Chat")
@@ -360,6 +375,35 @@ class TestExecutionService:
     async def test_save_execution_not_found_raises(self, db):
         with pytest.raises(ValueError, match="not found"):
             await save_execution_result(db, "ghost", "result text")
+
+    async def test_save_planning_on_done_task_raises(self, db):
+        from cellos.models import Task
+        t = Task(title="To plan")
+        await db.create_task(t)
+        await save_planning_result(db, t.id, "Plan text", "")
+        assert (await db.get_task(t.id)).status == TaskStatus.NEEDS_APPROVAL
+
+        # Planning again should fail
+        with pytest.raises(ValueError, match="status is 'needs_approval'"):
+            await save_planning_result(db, t.id, "Re-plan text", "")
+
+    async def test_save_execution_on_draft_task_raises(self, db):
+        from cellos.models import Task
+        t = Task(title="To execute")
+        await db.create_task(t)
+
+        with pytest.raises(ValueError, match="status is 'draft'"):
+            await save_execution_result(db, t.id, "Result text")
+
+    async def test_create_task_with_status(self, task_service):
+        task = await task_service.create_task(
+            title="Pre-approved task",
+            status=TaskStatus.APPROVED,
+        )
+        assert task.status == TaskStatus.APPROVED
+
+        persisted = await task_service.get_task(task.id)
+        assert persisted.status == TaskStatus.APPROVED
 
 
 # ── Combined update edge cases ─────────────────────────────────────

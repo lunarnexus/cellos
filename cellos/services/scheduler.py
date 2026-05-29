@@ -20,9 +20,10 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
 
-from cellos.config import CellosConfig
+from cellos.config import AgentCatalogEntry, CellosConfig
 from cellos.db import CellosDatabase
 from cellos.models import Task
+from cellos.services.worker_service import resolve_agent
 from cellos.services.worker_spawner import WorkerSpawner
 
 logger = logging.getLogger(__name__)
@@ -117,6 +118,7 @@ class DaemonService:
         # Event-driven wake mechanism
         self._wake_event = asyncio.Event()
         self._running_workers: dict[str, asyncio.Task] = {}
+        self._connector_workers: dict[str, int] = {}
         self._shutdown = False
 
         # Notification file for CLI actions to signal the daemon
@@ -228,7 +230,7 @@ class DaemonService:
 
         if available_slots <= 0:
             logger.info(
-                "At concurrency limit (%d/%d), skipping cycle",
+                "At global concurrency limit (%d/%d), skipping cycle",
                 running_count, max_concurrent,
             )
             return
@@ -269,20 +271,90 @@ class DaemonService:
         for task in work.planning_tasks:
             if spawned >= available_slots:
                 break
-            await self._spawn_worker(task, "planning")
-            spawned += 1
+            ok = await self._try_spawn_worker(task, "planning")
+            if ok:
+                spawned += 1
 
         # Execution candidates
         for task in work.execution_tasks:
             if spawned >= available_slots:
                 break
-            await self._spawn_worker(task, "execution")
-            spawned += 1
+            ok = await self._try_spawn_worker(task, "execution")
+            if ok:
+                spawned += 1
 
         logger.info("Spawned %d workers this cycle", spawned)
 
-    async def _spawn_worker(self, task: Task, mode: str) -> None:
+    def _get_connector_for_task(self, task: Task) -> tuple[AgentCatalogEntry, str]:
+        """Resolve the agent and connector type for a task.
+
+        Args:
+            task: The task to resolve.
+
+        Returns:
+            Tuple of (agent, connector_type).
+        """
+        agent = resolve_agent(self.config, task)
+        return agent, agent.connector
+
+    def _can_spawn(self, connector_type: str) -> bool:
+        """Check if a worker can be spawned for the given connector type.
+
+        Checks both global limit and per-connector limit.
+
+        Args:
+            connector_type: Connector name (e.g., "cellos_acp", "fake_acp").
+
+        Returns:
+            True if a worker can be spawned.
+        """
+        max_concurrent = self.config.scheduler.concurrent_tasks
+        running_count = len(self._running_workers)
+        if running_count >= max_concurrent:
+            return False
+
+        connector_limit = self.config.get_connector_concurrency(connector_type)
+        connector_count = self._connector_workers.get(connector_type, 0)
+        if connector_count >= connector_limit:
+            return False
+
+        return True
+
+    async def _try_spawn_worker(self, task: Task, mode: str) -> bool:
+        """Try to spawn a worker, respecting connector concurrency limits.
+
+        Args:
+            task: The task to spawn.
+            mode: "planning" or "execution".
+
+        Returns:
+            True if worker was spawned, False if skipped due to connector limit.
+        """
+        try:
+            agent, connector_type = self._get_connector_for_task(task)
+        except Exception as e:
+            logger.error("Cannot resolve agent for task %s: %s", task.id, e)
+            return False
+
+        if not self._can_spawn(connector_type):
+            connector_count = self._connector_workers.get(connector_type, 0)
+            connector_limit = self.config.get_connector_concurrency(connector_type)
+            logger.info(
+                "Skipping task %s: connector %s at limit (%d/%d)",
+                task.id, connector_type, connector_count, connector_limit,
+            )
+            return False
+
+        await self._spawn_worker(task, mode, connector_type)
+        return True
+
+    async def _spawn_worker(self, task: Task, mode: str, connector_type: str) -> None:
         """Spawn a worker subprocess for the task and track it."""
+        # Increment connector worker count
+        self._connector_workers[connector_type] = (
+            self._connector_workers.get(connector_type, 0) + 1
+        )
+
         proc = self.spawner.spawn(
             task_id=task.id,
             mode=mode,
@@ -306,6 +378,9 @@ class DaemonService:
             finally:
                 # Remove from tracking and wake daemon for next cycle
                 self._running_workers.pop(task.id, None)
+                self._connector_workers[connector_type] -= 1
+                if self._connector_workers[connector_type] <= 0:
+                    del self._connector_workers[connector_type]
                 self._wake_event.set()
 
         self._running_workers[task.id] = asyncio.create_task(_track_worker())

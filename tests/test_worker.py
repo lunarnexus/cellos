@@ -256,6 +256,8 @@ class TestRunTaskWorkerExecution:
         assert children[0].status == TaskStatus.DRAFT
         assert [d.task_id for d in final.dependencies] == [children[0].id]
         assert children[0].dependencies == []
+        assert final.result is not None
+        assert final.result.summary == "Execution completed successfully"
 
 
 # ── Attempt tracking tests ───────────────
@@ -535,3 +537,28 @@ class TestFailedConnector:
         attempts = await database.list_attempts(task.id)
         assert len(attempts) >= 1
         assert attempts[0].status == TaskAttemptStatus.FAILED
+
+    async def test_worker_failure_sets_attention_on_restore(self, db, config):
+        """When a worker fails with an exception, the restored task should have attention set."""
+        from cellos.services.worker_service import run_task_worker
+        from cellos.models import AttentionReason
+        database = db[0]
+
+        # Create a task and run planning (will succeed with fake_acp)
+        task = _make_task(title="Attention test", role=AgentRole.ENGINEER)
+        await database.create_task(task)
+        await run_task_worker(database, task.id, "planning", config)
+
+        # Approve for execution
+        await database.update_task_status(task.id, TaskStatus.APPROVED)
+
+        # Force a failure by running execution twice (second run will fail status check)
+        await run_task_worker(database, task.id, "execution", config)
+
+        # Run execution again — task is now DONE, should fail and restore with attention
+        with pytest.raises(Exception, match="Worker failed"):
+            await run_task_worker(database, task.id, "execution", config)
+
+        restored = await database.get_task(task.id)
+        assert restored.attention.required is True
+        assert restored.attention.reason == AttentionReason.EXECUTION_FAILED
