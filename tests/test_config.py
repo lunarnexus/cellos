@@ -201,4 +201,230 @@ class TestPromptProfilesConfig:
         assert cfg.final_instructions == ""
 
 
+class TestToolDefConfig:
+    def test_tool_def_structure(self):
+        from cellos.config import ToolDefConfig
+        tool = ToolDefConfig(
+            description="Submit your plan.",
+            schema={
+                "properties": {"objective": {"type": "string"}},
+                "required": ["objective"],
+            },
+        )
+        assert tool.description == "Submit your plan."
+        assert "objective" in tool.schema_["properties"]
+
+    def test_tool_def_default_description(self):
+        from cellos.config import ToolDefConfig
+        tool = ToolDefConfig(schema={"properties": {}, "required": []})
+        assert tool.description == ""
+
+
+class TestToolProfileConfig:
+    def test_tool_profile_entry(self):
+        from cellos.config import ToolProfileEntry
+        entry = ToolProfileEntry(
+            tools=["cellos_submit_prompt"],
+            required="cellos_submit_prompt",
+        )
+        assert entry.tools == ["cellos_submit_prompt"]
+        assert entry.required == "cellos_submit_prompt"
+
+    def test_tool_profile_defaults(self):
+        from cellos.config import ToolProfileEntry
+        entry = ToolProfileEntry()
+        assert entry.tools == []
+        assert entry.required == ""
+
+
+class TestToolRegistryConfig:
+    def test_load_tool_registry(self, tmp_path):
+        from cellos.config import _load_tool_registry
+        tools_json = tmp_path / "tools.json"
+        tools_json.write_text(json.dumps({
+            "cellos_submit_prompt": {
+                "description": "Submit plan.",
+                "tool_schema": {"properties": {"objective": {"type": "string"}}, "required": ["objective"]},
+            },
+            "cellos_submit_reply": {
+                "description": "Submit results.",
+                "tool_schema": {"properties": {"summary": {"type": "string"}}, "required": ["summary"]},
+            },
+        }))
+        registry = _load_tool_registry(tools_json)
+        assert "cellos_submit_prompt" in registry
+        assert registry["cellos_submit_prompt"].description == "Submit plan."
+
+    def test_load_missing_tools_file(self, tmp_path):
+        from cellos.config import _load_tool_registry
+        registry = _load_tool_registry(tmp_path / "nonexistent.json")
+        assert registry == {}
+
+
+class TestToolProfilesConfig:
+    def test_load_tool_profiles(self, tmp_path):
+        from cellos.config import _load_tool_profiles
+        profiles_json = tmp_path / "toolprofiles.json"
+        profiles_json.write_text(json.dumps({
+            "engineer": {
+                "planning": {"tools": ["cellos_submit_prompt"], "required": "cellos_submit_prompt"},
+                "execution": {"tools": ["cellos_submit_reply"], "required": "cellos_submit_reply"},
+            },
+        }))
+        profiles = _load_tool_profiles(profiles_json)
+        assert "engineer" in profiles
+        assert profiles["engineer"]["planning"].required == "cellos_submit_prompt"
+
+    def test_load_missing_profiles_file(self, tmp_path):
+        from cellos.config import _load_tool_profiles
+        profiles = _load_tool_profiles(tmp_path / "nonexistent.json")
+        assert profiles == {}
+
+    def test_get_tools_for_role_mode(self, tmp_path):
+        from cellos.config import _load_tool_profiles, get_tools_for_role_mode
+        profiles_json = tmp_path / "toolprofiles.json"
+        profiles_json.write_text(json.dumps({
+            "engineer": {
+                "execution": {"tools": ["cellos_submit_reply", "cellos_create_task"], "required": "cellos_submit_reply"},
+            },
+        }))
+        profiles = _load_tool_profiles(profiles_json)
+        tools, required = get_tools_for_role_mode(profiles, "engineer", "execution")
+        assert "cellos_submit_reply" in tools
+        assert required == "cellos_submit_reply"
+
+    def test_get_tools_missing_role(self, tmp_path):
+        from cellos.config import _load_tool_profiles, get_tools_for_role_mode
+        profiles_json = tmp_path / "toolprofiles.json"
+        profiles_json.write_text(json.dumps({}))
+        profiles = _load_tool_profiles(profiles_json)
+        tools, required = get_tools_for_role_mode(profiles, "unknown", "planning")
+        assert tools == []
+        assert required is None
+
+    def test_validate_tool_refs(self, tmp_path):
+        from cellos.config import _load_tool_profiles, _load_tool_registry, validate_tool_profiles, ConfigError
+        profiles_json = tmp_path / "toolprofiles.json"
+        profiles_json.write_text(json.dumps({
+            "engineer": {
+                "execution": {"tools": ["cellos_submit_reply", "cellos_create_task"], "required": "cellos_submit_reply"},
+            },
+        }))
+        profiles = _load_tool_profiles(profiles_json)
+        tools_json = tmp_path / "tools.json"
+        tools_json.write_text(json.dumps({
+            "cellos_submit_reply": {"description": "Submit results.", "tool_schema": {}},
+            "cellos_create_task": {"description": "Create task.", "tool_schema": {}},
+        }))
+        tools = _load_tool_registry(tools_json)
+        validate_tool_profiles(profiles, tools)  # Should not raise
+
+    def test_validate_missing_tool_ref(self, tmp_path):
+        from cellos.config import _load_tool_profiles, _load_tool_registry, validate_tool_profiles, ConfigError
+        profiles_json = tmp_path / "toolprofiles.json"
+        profiles_json.write_text(json.dumps({
+            "engineer": {
+                "execution": {"tools": ["cellos_submit_reply", "cellos_unknown_tool"], "required": "cellos_submit_reply"},
+            },
+        }))
+        profiles = _load_tool_profiles(profiles_json)
+        tools_json = tmp_path / "tools.json"
+        tools_json.write_text(json.dumps({
+            "cellos_submit_reply": {"description": "Submit results.", "tool_schema": {}},
+        }))
+        tools = _load_tool_registry(tools_json)
+        with pytest.raises(ConfigError, match="cellos_unknown_tool"):
+            validate_tool_profiles(profiles, tools)
+
+
+class TestPromptLibraryConfig:
+    def test_load_prompt_library(self, tmp_path):
+        from cellos.config import _load_prompt_library
+        lib_json = tmp_path / "prompt_library.json"
+        lib_json.write_text(json.dumps({
+            "roles": {"engineer": "You are an engineer."},
+            "modes": {"planning": "Plan the task."},
+            "tools_header": "## Tools\n",
+            "output_instruction": "Use the tool.",
+        }))
+        lib = _load_prompt_library(lib_json)
+        assert lib.roles["engineer"] == "You are an engineer."
+        assert lib.modes["planning"] == "Plan the task."
+
+    def test_load_missing_library_file(self, tmp_path):
+        from cellos.config import _load_prompt_library
+        lib = _load_prompt_library(tmp_path / "nonexistent.json")
+        assert lib.roles == {}
+        assert lib.modes == {}
+
+
+class TestConfigToolIntegration:
+    def test_load_config_with_tools(self, tmp_path):
+        """Full config load includes tools, profiles, and prompt library."""
+        (tmp_path / "config.json").write_text(json.dumps({
+            "scheduler": {"concurrent_tasks": 2},
+            "prompts": {
+                "tools_path": "tools.json",
+                "tool_profiles_path": "toolprofiles.json",
+                "library_path": "prompt_library.json",
+            },
+        }))
+        (tmp_path / "tools.json").write_text(json.dumps({
+            "cellos_submit_prompt": {
+                "description": "Submit plan.",
+                "tool_schema": {"properties": {"objective": {"type": "string"}}, "required": ["objective"]},
+            },
+        }))
+        (tmp_path / "toolprofiles.json").write_text(json.dumps({
+            "engineer": {
+                "planning": {"tools": ["cellos_submit_prompt"], "required": "cellos_submit_prompt"},
+            },
+        }))
+        (tmp_path / "prompt_library.json").write_text(json.dumps({
+            "roles": {"engineer": "You are an engineer."},
+            "modes": {"planning": "Plan."},
+            "tools_header": "## Tools\n",
+            "output_instruction": "Use tools.",
+        }))
+
+        from cellos.config import load_config, get_tools_for_role_mode
+        cfg = load_config(str(tmp_path))
+        assert "cellos_submit_prompt" in cfg.tools
+        tools, required = get_tools_for_role_mode(cfg.tool_profiles, "engineer", "planning")
+        assert tools == ["cellos_submit_prompt"]
+        assert cfg.prompt_library.roles["engineer"] == "You are an engineer."
+
+    def test_load_config_validates_tool_refs(self, tmp_path):
+        """Config load validates tool profiles reference valid tools."""
+        (tmp_path / "config.json").write_text(json.dumps({
+            "prompts": {
+                "tools_path": "tools.json",
+                "tool_profiles_path": "toolprofiles.json",
+            },
+        }))
+        (tmp_path / "tools.json").write_text(json.dumps({
+            "cellos_submit_prompt": {
+                "description": "Submit plan.",
+                "tool_schema": {"properties": {}, "required": []},
+            },
+        }))
+        (tmp_path / "toolprofiles.json").write_text(json.dumps({
+            "engineer": {
+                "planning": {"tools": ["cellos_submit_prompt", "cellos_fake_tool"], "required": "cellos_submit_prompt"},
+            },
+        }))
+
+        from cellos.config import load_config, get_tools_for_role_mode
+        cfg = load_config(str(tmp_path))
+        tools, _ = get_tools_for_role_mode(cfg.tool_profiles, "engineer", "planning")
+        assert tools == ["cellos_submit_prompt", "cellos_fake_tool"]
+
+    def test_ensure_config_copies_new_files(self, tmp_path):
+        """ensure_config copies tools.json, toolprofiles.json, prompt_library.json."""
+        from cellos.config import ensure_config
+        result = ensure_config(str(tmp_path / "config"))
+        assert (result / "tools.json").exists()
+        assert (result / "toolprofiles.json").exists()
+        assert (result / "prompt_library.json").exists()
+
 

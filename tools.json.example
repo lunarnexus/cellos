@@ -1,0 +1,51 @@
+{
+  "cellos_submit_prompt": {
+    "description": "Submit your plan. Call once when planning is complete.",
+    "schema": {
+      "properties": {
+        "objective": {"type": "string"},
+        "steps": {"type": "array", "items": {"type": "string"}},
+        "approach": {"type": "string"},
+        "verification": {"type": "array", "items": {"type": "string"}},
+        "risks": {"type": "array", "items": {"type": "string"}}
+      },
+      "required": ["objective", "steps"]
+    }
+  },
+  "cellos_submit_reply": {
+    "description": "Submit execution results. Call when work is done or blocked.",
+    "schema": {
+      "properties": {
+        "summary": {"type": "string"},
+        "success": {"type": "boolean"},
+        "actions_taken": {"type": "array", "items": {"type": "string"}},
+        "files_changed": {"type": "array", "items": {"type": "string"}},
+        "issues": {"type": "array", "items": {"type": "string"}}
+      },
+      "required": ["summary", "success"]
+    }
+  },
+  "cellos_create_task": {
+    "description": "Create a child task for another agent to execute.",
+    "schema": {
+      "properties": {
+        "title": {"type": "string"},
+        "role": {"type": "string"},
+        "details": {"type": "string"},
+        "success_criteria": {"type": "string"},
+        "failure_criteria": {"type": "string"}
+      },
+      "required": ["title"]
+    }
+  },
+  "cellos_report_blocker": {
+    "description": "Report that you can't proceed without human input.",
+    "schema": {
+      "properties": {
+        "reason": {"type": "string"},
+        "needed_from_human": {"type": "string"}
+      },
+      "required": ["reason", "needed_from_human"]
+    }
+  }
+}

@@ -4,7 +4,7 @@ Sequential validation flow covering the complete CelloS system.
 Each step must pass before proceeding to the next.
 
 **Process:**
-The user wants you to step through each step one-by-one.  Before each step, list the step and commands, what the step proves, what we should expect to see, then pause for the user go-ahead.  After approval, run the test step, list all test outputs.  
+The user wants you to step through each step one-by-one.  Before each step, list the step and commands, what the step proves, what we should expect to see.  
 If there's a failure, stop the test and explain, don't attempt to fix anything.
 
 

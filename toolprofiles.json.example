@@ -1,0 +1,42 @@
+{
+  "architect": {
+    "planning": {
+      "tools": ["cellos_submit_prompt"],
+      "required": "cellos_submit_prompt"
+    },
+    "execution": {
+      "tools": ["cellos_create_task"],
+      "required": "cellos_create_task"
+    }
+  },
+  "engineer": {
+    "planning": {
+      "tools": ["cellos_submit_prompt"],
+      "required": "cellos_submit_prompt"
+    },
+    "execution": {
+      "tools": ["cellos_submit_reply", "cellos_create_task", "cellos_report_blocker"],
+      "required": "cellos_submit_reply"
+    }
+  },
+  "researcher": {
+    "planning": {
+      "tools": ["cellos_submit_prompt"],
+      "required": "cellos_submit_prompt"
+    },
+    "execution": {
+      "tools": ["cellos_submit_reply", "cellos_report_blocker"],
+      "required": "cellos_submit_reply"
+    }
+  },
+  "tester": {
+    "planning": {
+      "tools": ["cellos_submit_prompt"],
+      "required": "cellos_submit_prompt"
+    },
+    "execution": {
+      "tools": ["cellos_submit_reply", "cellos_report_blocker"],
+      "required": "cellos_submit_reply"
+    }
+  }
+}

@@ -335,5 +335,6 @@ Update this section as each phase completes:
 | 8. Worker Isolation | ✅ Done (2026-05-21) | `worker_service.py` + `worker_spawner.py`, CLI worker cmd, 19 tests (agent resolution by role, attempt tracking, failed connector handling, e2e CLI) |
 | 9. Daemon Scheduler | ✅ Done | `scheduler.py` (SchedulerService + DaemonService), CLI run cmd, notification file, 34 tests |
 | 10. Integration Polish | ✅ Done | plan/execute CLI commands, 41 integration tests, smoke-test.md, README |
-| — | | `structured_response.py` with 44 tests, `json_util.py` in persistence |
-| **Total** | | **316 tests** across 13 test files |
+| 11. Tools Enhancement | ✅ Done | tool-calling migration, tools.json, toolprofiles.json, prompt_library.json, structured_result flow |
+| — | | `json_util.py` in persistence |
+| **Total** | | **316+ tests** across 13 test files |

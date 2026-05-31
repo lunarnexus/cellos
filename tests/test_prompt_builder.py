@@ -1,39 +1,61 @@
-"""Tests for prompt builder — assembling prompts from configurable profiles."""
+"""Tests for prompt builder — assembling prompts from configurable library."""
 
 from __future__ import annotations
 
 import pytest
 
-from cellos.config import ModeProfile, PromptProfilesConfig
+from cellos.config import PromptLibraryConfig
 
 
 @pytest.fixture()
-def sample_profiles() -> PromptProfilesConfig:
-    """Minimal but complete prompt profiles for testing."""
-    return PromptProfilesConfig(
-        role_instructions={
+def sample_library() -> PromptLibraryConfig:
+    """Minimal but complete prompt library for testing."""
+    return PromptLibraryConfig(
+        roles={
             "engineer": (
                 "You are an engineer agent. Implement features following the plan precisely."
             ),
             "architect": "You are an architect agent. Design systems with clear structure.",
         },
         modes={
-            "planning": ModeProfile(
-                instructions=(
-                    "Generate an implementation plan for this task.\n"
-                    "Analyze requirements and break them into concrete steps."
-                ),
-                output_sections=["Objective", "Approach", "Steps"],
+            "planning": (
+                "Generate an implementation plan for this task.\n"
+                "Analyze requirements and break them into concrete steps."
             ),
-            "execution": ModeProfile(
-                instructions="Execute the approved plan.",
-                output_sections=["Summary", "Results"],
-            ),
+            "execution": "Execute the approved plan.",
         },
-        final_instructions=(
-            "\nIf you need to create child tasks, include them as structured JSON actions."
-        ),
+        tools_header="## Available Tools\nCall the appropriate tool when your work is complete:\n",
+        output_instruction="Call the tool that matches your current task.",
     )
+
+
+@pytest.fixture()
+def sample_tool_defs() -> dict:
+    """Minimal tool definitions for testing."""
+    return {
+        "cellos_submit_prompt": {
+            "description": "Submit your plan. Call once when planning is complete.",
+            "schema": {
+                "properties": {
+                    "objective": {"type": "string"},
+                    "steps": {"type": "array", "items": {"type": "string"}},
+                    "approach": {"type": "string"},
+                },
+                "required": ["objective", "steps"],
+            },
+        },
+        "cellos_submit_reply": {
+            "description": "Submit execution results. Call when work is done or blocked.",
+            "schema": {
+                "properties": {
+                    "summary": {"type": "string"},
+                    "success": {"type": "boolean"},
+                    "actions_taken": {"type": "array", "items": {"type": "string"}},
+                },
+                "required": ["summary", "success"],
+            },
+        },
+    }
 
 
 def _base_task(**overrides) -> dict:
@@ -56,32 +78,62 @@ def _base_task(**overrides) -> dict:
 
 class TestPlanningMode:
 
-    def test_includes_role_instruction(self, sample_profiles):
+    def test_includes_role_instruction(self, sample_library):
         from cellos.prompt_builder import build_task_prompt
 
-        prompt = build_task_prompt(_base_task(), sample_profiles, mode="planning")
+        prompt = build_task_prompt(_base_task(), sample_library, mode="planning")
         assert "You are an engineer agent" in prompt
 
-    def test_includes_planning_instructions(self, sample_profiles):
+    def test_includes_planning_instructions(self, sample_library):
         from cellos.prompt_builder import build_task_prompt
 
-        prompt = build_task_prompt(_base_task(), sample_profiles, mode="planning")
+        prompt = build_task_prompt(_base_task(), sample_library, mode="planning")
         assert "Generate an implementation plan" in prompt
 
-    def test_includes_output_sections(self, sample_profiles):
+    def test_includes_output_instruction(self, sample_library):
         from cellos.prompt_builder import build_task_prompt
 
-        prompt = build_task_prompt(_base_task(), sample_profiles, mode="planning")
-        # Planning has Objective/Approach/Steps sections listed
-        assert "Objective" in prompt
-        assert "Approach" in prompt
-        assert "Steps" in prompt
+        prompt = build_task_prompt(_base_task(), sample_library, mode="planning")
+        assert "Call the tool that matches your current task" in prompt
 
-    def test_includes_final_instructions(self, sample_profiles):
+
+# ─── Tool injection tests ────────────────────────────────────────────────
+
+
+class TestToolInjection:
+
+    def test_includes_tools_header(self, sample_library, sample_tool_defs):
         from cellos.prompt_builder import build_task_prompt
 
-        prompt = build_task_prompt(_base_task(), sample_profiles, mode="planning")
-        assert "structured JSON actions" in prompt
+        prompt = build_task_prompt(
+            _base_task(), sample_library, mode="planning", tool_defs=sample_tool_defs
+        )
+        assert "## Available Tools" in prompt
+        assert "cellos_submit_prompt" in prompt
+
+    def test_includes_tool_descriptions(self, sample_library, sample_tool_defs):
+        from cellos.prompt_builder import build_task_prompt
+
+        prompt = build_task_prompt(
+            _base_task(), sample_library, mode="planning", tool_defs=sample_tool_defs
+        )
+        assert "Submit your plan" in prompt
+
+    def test_includes_field_names(self, sample_library, sample_tool_defs):
+        from cellos.prompt_builder import build_task_prompt
+
+        prompt = build_task_prompt(
+            _base_task(), sample_library, mode="planning", tool_defs=sample_tool_defs
+        )
+        assert "objective" in prompt
+        assert "steps" in prompt
+        assert "approach" in prompt
+
+    def test_no_tools_when_empty(self, sample_library):
+        from cellos.prompt_builder import build_task_prompt
+
+        prompt = build_task_prompt(_base_task(), sample_library, mode="planning")
+        assert "## Available Tools" not in prompt
 
 
 # ─── Task details and criteria tests ──────────────────────────────────────
@@ -89,28 +141,28 @@ class TestPlanningMode:
 
 class TestTaskDetails:
 
-    def test_includes_details(self, sample_profiles):
+    def test_includes_details(self, sample_library):
         from cellos.prompt_builder import build_task_prompt
 
         task = _base_task(details="Build a JWT-based auth system with bcrypt hashing.")
-        prompt = build_task_prompt(task, sample_profiles, mode="planning")
+        prompt = build_task_prompt(task, sample_library, mode="planning")
         assert "JWT" in prompt
         assert "bcrypt" in prompt
 
-    def test_includes_success_criteria(self, sample_profiles):
+    def test_includes_success_criteria(self, sample_library):
         from cellos.prompt_builder import build_task_prompt
 
         task = _base_task(success_criteria="Login works with valid credentials.")
-        prompt = build_task_prompt(task, sample_profiles, mode="planning")
+        prompt = build_task_prompt(task, sample_library, mode="planning")
         assert "Success Criteria" in prompt
         assert "valid credentials" in prompt
 
-    def test_includes_failure_criteria(self, sample_profiles):
+    def test_includes_failure_criteria(self, sample_library):
         from cellos.prompt_builder import build_task_prompt
 
         task = _base_task(failure_criteria="No MD5 password hashing.")
-        prompt = build_task_prompt(task, sample_profiles, mode="planning")
-        assert "Constraints" in prompt or "Failure Criteria" in prompt
+        prompt = build_task_prompt(task, sample_library, mode="planning")
+        assert "Constraints" in prompt
         assert "MD5" in prompt
 
 
@@ -119,29 +171,29 @@ class TestTaskDetails:
 
 class TestExecutionMode:
 
-    def test_includes_plan(self, sample_profiles):
+    def test_includes_plan(self, sample_library):
         from cellos.prompt_builder import build_task_prompt
 
         task = _base_task(status="approved")
         plan_text = "1. Create models\n2. Build API endpoints"
         prompt = build_task_prompt(
-            task, sample_profiles, mode="execution", plan=plan_text
+            task, sample_library, mode="execution", plan=plan_text
         )
         assert "Create models" in prompt
         assert "Build API endpoints" in prompt
 
-    def test_uses_execution_mode_instructions(self, sample_profiles):
+    def test_uses_execution_mode_instructions(self, sample_library):
         from cellos.prompt_builder import build_task_prompt
 
         task = _base_task(status="approved")
-        prompt = build_task_prompt(task, sample_profiles, mode="execution")
+        prompt = build_task_prompt(task, sample_library, mode="execution")
         assert "Execute the approved plan" in prompt
 
-    def test_plan_not_included_when_empty(self, sample_profiles):
+    def test_plan_not_included_when_empty(self, sample_library):
         from cellos.prompt_builder import build_task_prompt
 
         task = _base_task(status="approved")
-        prompt = build_task_prompt(task, sample_profiles, mode="execution", plan=None)
+        prompt = build_task_prompt(task, sample_library, mode="execution", plan=None)
         assert "Approved Plan" not in prompt
 
 
@@ -153,20 +205,21 @@ class TestMissingFields:
     def test_missing_role_instruction_uses_default(self):
         from cellos.prompt_builder import build_task_prompt
 
-        profiles = PromptProfilesConfig(
-            role_instructions={},  # no instruction for any role
-            modes={"planning": ModeProfile(instructions="Plan the task.", output_sections=[])},
-            final_instructions="",
+        library = PromptLibraryConfig(
+            roles={},  # no instruction for any role
+            modes={"planning": "Plan the task."},
+            tools_header="",
+            output_instruction="",
         )
 
-        prompt = build_task_prompt(_base_task(role="tester"), profiles, mode="planning")
+        prompt = build_task_prompt(_base_task(role="tester"), library, mode="planning")
         assert "You are a tester agent" in prompt  # fallback default generated
 
-    def test_empty_details_omitted(self, sample_profiles):
+    def test_empty_details_omitted(self, sample_library):
         from cellos.prompt_builder import build_task_prompt
 
         task = _base_task(details=None)
-        prompt = build_task_prompt(task, sample_profiles, mode="planning")
+        prompt = build_task_prompt(task, sample_library, mode="planning")
         assert "## Description" not in prompt or "\n\nNone" not in prompt
 
 
@@ -175,73 +228,47 @@ class TestMissingFields:
 
 class TestEdgeCases:
 
-    def test_empty_final_instructions_omitted(self):
+    def test_empty_output_instruction_omitted(self):
         from cellos.prompt_builder import build_task_prompt
 
-        profiles = PromptProfilesConfig(
-            role_instructions={"engineer": "You are an engineer."},
-            modes={
-                "planning": ModeProfile(instructions="Plan.", output_sections=[])
-            },
-            final_instructions="",  # empty — should be omitted
+        library = PromptLibraryConfig(
+            roles={"engineer": "You are an engineer."},
+            modes={"planning": "Plan."},
+            tools_header="",
+            output_instruction="",  # empty — should be omitted
         )
 
-        prompt = build_task_prompt(_base_task(), profiles, mode="planning")
-        assert "structured JSON" not in prompt.lower() or True  # just verify it doesn't crash
+        prompt = build_task_prompt(_base_task(), library, mode="planning")
+        assert "Call the tool" not in prompt
 
-
-class TestRoleModeInstructions:
-    """Test role+mode-specific instruction overrides."""
-
-    def test_role_mode_instruction_overrides_generic(self):
+    def test_includes_comments_in_planning_mode(self, sample_library):
         from cellos.prompt_builder import build_task_prompt
 
-        profiles = PromptProfilesConfig(
-            role_instructions={"engineer": "You are an engineer."},
-            role_mode_instructions={
-                "engineer": {
-                    "planning": "Restate objective, identify files, define steps."
-                }
-            },
-            modes={
-                "planning": ModeProfile(instructions="Generic planning instruction.", output_sections=[])
-            },
-            final_instructions="",
-        )
+        task = _base_task(comments="[human] Please add a remember-me checkbox")
+        prompt = build_task_prompt(task, sample_library, mode="planning")
+        assert "remember-me" in prompt
+        assert "## Comments" in prompt
 
-        prompt = build_task_prompt(_base_task(), profiles, mode="planning")
-        assert "Restate objective, identify files, define steps." in prompt
-        assert "Generic planning instruction" not in prompt
-
-    def test_falls_back_to_generic_when_no_role_mode(self):
+    def test_omits_comments_in_execution_mode(self, sample_library):
         from cellos.prompt_builder import build_task_prompt
 
-        profiles = PromptProfilesConfig(
-            role_instructions={"engineer": "You are an engineer."},
-            role_mode_instructions={},  # empty — should fall back to generic
-            modes={
-                "planning": ModeProfile(instructions="Generic planning instruction.", output_sections=[])
-            },
-            final_instructions="",
-        )
-
-        prompt = build_task_prompt(_base_task(), profiles, mode="planning")
-        assert "Generic planning instruction" in prompt
+        task = _base_task(comments="[human] Please add a remember-me checkbox")
+        prompt = build_task_prompt(task, sample_library, mode="execution")
+        assert "remember-me" not in prompt
 
 
 class TestPromptStructure:
     """Verify the overall structure of generated prompts."""
 
-    def test_always_has_task_header(self, sample_profiles):
+    def test_always_has_task_header(self, sample_library):
         from cellos.prompt_builder import build_task_prompt
 
-        prompt = build_task_prompt(_base_task(), sample_profiles, mode="planning")
+        prompt = build_task_prompt(_base_task(), sample_library, mode="planning")
         assert "## Task" in prompt
         assert "Title: Add login page" in prompt
 
-    def test_always_ends_with_newline(self, sample_profiles):
+    def test_always_ends_with_newline(self, sample_library):
         from cellos.prompt_builder import build_task_prompt
 
-        prompt = build_task_prompt(_base_task(), sample_profiles, mode="planning")
+        prompt = build_task_prompt(_base_task(), sample_library, mode="planning")
         assert prompt.endswith("\n")
-

@@ -22,7 +22,7 @@ import pytest_asyncio
 from cellos.config import (
     AgentCatalogEntry,
     CellosConfig,
-    PromptProfilesConfig,
+    PromptLibraryConfig,
     SchedulerConfig,
 )
 from cellos.db import CellosDatabase
@@ -45,7 +45,7 @@ def config():
         agent_catalog={
             "engineer": AgentCatalogEntry(connector="fake_acp"),
         },
-        prompt_profiles=PromptProfilesConfig(),
+        prompt_library=PromptLibraryConfig(),
     )
 
 
@@ -328,7 +328,7 @@ class TestConnectorConcurrency:
                 "engineer": AgentCatalogEntry(connector="cellos_acp"),
                 "researcher": AgentCatalogEntry(connector="fake_acp"),
             },
-            prompt_profiles=PromptProfilesConfig(),
+        prompt_library=PromptLibraryConfig(),
         )
 
     @pytest.mark.asyncio

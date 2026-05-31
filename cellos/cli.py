@@ -338,10 +338,7 @@ def detail(ctx: click.Context, task_id):
             if attempt_list:
                 console.print(f"\n[dim]Attempts ({len(attempt_list)}):[/]")
                 for a in attempt_list[:3]:  # Show last 3
-                    console.print(
-                        f"  {a.id} | {a.status.value} | {a.mode or '?'} | "
-                        f"{a.result_summary or a.error_message or ''}"[:80]
-                    )
+                    console.print(f"  {a.id} | {a.status.value} | {a.mode or '?'}")
                 if len(attempt_list) > 3:
                     console.print(f"  ... and {len(attempt_list) - 3} more. Run 'cellos attempts {task_id}' for details.")
         finally:

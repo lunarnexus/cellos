@@ -3,73 +3,27 @@
 from __future__ import annotations
 
 import datetime
+from typing import Any
 
 from cellos.db import CellosDatabase
 from cellos.models import TaskResult, TaskStatus
 
 
-# Keywords that indicate successful completion (case-insensitive)
-_SUCCESS_INDICATORS = [
-    "completed successfully",
-    "task completed",
-    "execution completed",
-    "all steps completed",
-    "successfully implemented",
-]
-
-_FAILURE_INDICATORS = [
-    "failed with reason",
-    "execution failed",
-    "encountered error",
-    "unable to complete",
-    "task failed",
-]
-
-
-def _parse_execution_result(text: str) -> bool:
-    """Determine if execution output indicates success or failure.
-
-    Uses keyword matching on the result text. Defaults to False (failure)
-    if no clear indicator is found — better to flag for review than assume
-    success from ambiguous output.
-
-    Args:
-        text: Raw output text from the agent execution.
-
-    Returns:
-        True if success indicators are present, False otherwise.
-    """
-    lower = text.lower()
-    # Check failure first (more specific)
-    for indicator in _FAILURE_INDICATORS:
-        if indicator in lower:
-            return False
-    for indicator in _SUCCESS_INDICATORS:
-        if indicator in lower:
-            return True
-    # No clear signal — default to failed so human reviews it
-    return False
-
-
 async def save_execution_result(
     db: CellosDatabase,
     task_id: str,
-    result_text: str,
-    success: bool | None = None,
+    structured_result: dict[str, Any] | None,
     wait_for_children: bool = False,
 ) -> TaskResult:
     """Save the agent's execution result and transition the task.
 
-    Attempts to parse a structured JSON response first. If valid, uses
-    the structured fields (success, summary, actions_taken, etc.). Falls
-    back to keyword-based parsing for non-JSON output.
+    The agent calls the cellos_submit_reply tool with structured data.
+    This function validates the result and persists it.
 
     Args:
         db: Database facade instance.
         task_id: ID of the executed task.
-        result_text: Raw output text from the agent execution.
-        success: Optional explicit success/failure from the connector.
-            If provided, overrides text-based parsing.
+        structured_result: Structured data from cellos_submit_reply tool call.
         wait_for_children: If True and execution succeeded, keep the task
             approved while child tasks complete instead of marking it done.
 
@@ -89,40 +43,21 @@ async def save_execution_result(
             f"status is '{current.status.value}', expected 'approved' or 'in_progress'"
         )
 
-    # Truncate very long outputs for storage
-    truncated_output = result_text[:5000] if len(result_text) > 5000 else result_text
-
-    # Try structured response first
-    from cellos.structured_response import parse_execution_response
-
-    structured = parse_execution_response(result_text)
-    if structured is not None:
-        # Structured response takes precedence
-        final_success = success if success is not None else structured.success
-        summary = structured.summary
-        task_result = TaskResult(
-            success=final_success,
-            summary=summary,
-            output=truncated_output,
-            actions_taken=structured.actions_taken,
-            files_changed=structured.files_changed,
-            commands_run=structured.commands_run,
-            criteria_met=structured.criteria_met,
-            issues=structured.issues,
-        )
-    else:
-        # Fallback: keyword-based parsing
-        if success is None:
-            success = _parse_execution_result(result_text)
-        summary = (
-            "Execution completed successfully"
-            if success
-            else "Execution failed or ambiguous result"
-        )
+    # Build TaskResult from structured tool call data
+    if structured_result:
+        success = bool(structured_result.get("success", True))
+        summary = structured_result.get("summary", "Execution completed")
         task_result = TaskResult(
             success=success,
             summary=summary,
-            output=truncated_output,
+            actions_taken=structured_result.get("actions_taken") or [],
+            files_changed=structured_result.get("files_changed") or [],
+            issues=structured_result.get("issues") or [],
+        )
+    else:
+        task_result = TaskResult(
+            success=True,
+            summary="Execution completed",
         )
 
     # Determine new status
@@ -138,18 +73,17 @@ async def save_execution_result(
         }
     )
 
-    # Clear attention on completion (task is resolved one way or another)
     if task_result.success:
         updated = updated.clear_attention()
 
     await db.update_task(updated)
 
     # Save result record + wake blocked dependents (side effects)
-    affected = await db.save_task_result(
+    await db.save_task_result(
         task_id,
         success=task_result.success,
         summary=task_result.summary,
-        output=truncated_output,
+        output="",
     )
 
     # Record status change event

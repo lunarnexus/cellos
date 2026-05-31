@@ -14,7 +14,7 @@ import pytest
 from cellos.config import (
     CellosConfig,
     AgentCatalogEntry,
-    PromptProfilesConfig,
+    PromptLibraryConfig,
 )
 from cellos.db import CellosDatabase
 from cellos.models import (
@@ -57,15 +57,17 @@ def config():
                 options={"default_success": True, "default_summary": "Architecture plan generated with steps and dependencies."},
             ),
         },
-        prompt_profiles=PromptProfilesConfig(
-            role_instructions={
+        prompt_library=PromptLibraryConfig(
+            roles={
                 "engineer": "You are an engineer agent.",
                 "architect": "You are an architect agent.",
             },
             modes={  # type: ignore[arg-type]
-                "planning": {"instructions": "Generate a plan.", "output_sections": ["Steps"]},
-                "execution": {"instructions": "Execute the plan.", "output_sections": ["Results"]},
+                "planning": "Generate a plan.",
+                "execution": "Execute the plan.",
             },
+            tools_header="## Available Tools\n",
+            output_instruction="Call the appropriate tool.",
         ),
     )
 
@@ -152,23 +154,16 @@ class TestRunTaskWorkerPlanning:
 
         fixture_dir = pathlib.Path(tmpdir) / "fixtures"
         fixture_dir.mkdir()
-        output = json.dumps({
-            "plan": {
-                "objective": "Count README lines",
-                "approach": "Delegate to an engineer",
-                "steps": ["Create an engineer child task to count README lines"],
-            },
-            "child_tasks": [
-                {
-                    "title": "Count lines in README.md",
-                    "role": "engineer",
-                    "details": "Run wc -l README.md",
-                    "blocks_parent": True,
-                }
-            ],
-        })
         (fixture_dir / "planning.json").write_text(
-            json.dumps({"success": True, "summary": "planned", "output": output}),
+            json.dumps({
+                "success": True,
+                "summary": "planned",
+                "structured_result": {
+                    "objective": "Count README lines",
+                    "approach": "Delegate to an engineer",
+                    "steps": ["Create an engineer child task to count README lines"],
+                },
+            }),
             encoding="utf-8",
         )
         config.agent_catalog["architect"].options["fixture_dir"] = str(fixture_dir)
@@ -183,8 +178,8 @@ class TestRunTaskWorkerPlanning:
 
         assert final is not None
         assert final.status == TaskStatus.NEEDS_APPROVAL
-        assert "## Child Tasks" in final.plan
-        assert final.prompt_text
+        assert "Count README lines" in final.plan
+        assert "Delegate to an engineer" in final.plan
         assert children == []
 
 
@@ -215,32 +210,42 @@ class TestRunTaskWorkerExecution:
         assert final.status == TaskStatus.DONE
 
     async def test_architect_execution_creates_planned_children(self, db, config):
-        """Architect execution creates approved-plan children and waits on them."""
+        """Architect execution creates children via cellos_create_task tool calls and waits on them."""
         from cellos.services.worker_service import run_task_worker
-        database = db[0]
+        database, _, tmpdir = db
 
-        planned = {
-            "plan": {
-                "objective": "Count README lines",
-                "steps": ["Create an engineer child task to count README lines"],
-            },
-            "child_tasks": [
-                {
-                    "title": "Count lines in README.md",
-                    "role": "engineer",
-                    "details": "Run wc -l README.md",
-                    "blocks_parent": True,
-                }
-            ],
-        }
+        fixture_dir = pathlib.Path(tmpdir) / "fixtures"
+        fixture_dir.mkdir()
+        (fixture_dir / "execution.json").write_text(
+            json.dumps({
+                "success": True,
+                "summary": "Children created",
+                "structured_result": {
+                    "summary": "Created child tasks from approved plan",
+                    "success": True,
+                },
+                "tool_calls": [
+                    {
+                        "title": "cellos_create_task",
+                        "arguments": {
+                            "title": "Count lines in README.md",
+                            "role": "general",
+                            "details": "Run wc -l README.md",
+                        }
+                    }
+                ],
+            }),
+            encoding="utf-8",
+        )
+        config.agent_catalog["architect"].options["fixture_dir"] = str(fixture_dir)
+
         task = _make_task(title="Plan line count", role=AgentRole.ARCHITECT)
         await database.create_task(task)
 
         created = await database.get_task(task.id)
         approved = created.model_copy(update={
             "status": TaskStatus.APPROVED,
-            "plan": "## Child Tasks\n- Will create a engineer child task: Count lines in README.md",
-            "prompt_text": json.dumps(planned),
+            "plan": "## Child Tasks\n- Will create an engineer child task: Count lines in README.md",
         })
         await database.update_task(approved)
 
@@ -253,11 +258,12 @@ class TestRunTaskWorkerExecution:
         assert final.status == TaskStatus.APPROVED
         assert len(children) == 1
         assert children[0].parent_id == task.id
+        assert children[0].role == AgentRole.ENGINEER
         assert children[0].status == TaskStatus.DRAFT
         assert [d.task_id for d in final.dependencies] == [children[0].id]
         assert children[0].dependencies == []
         assert final.result is not None
-        assert final.result.summary == "Execution completed successfully"
+        assert "Created child tasks" in final.result.summary
 
 
 # ── Attempt tracking tests ───────────────
@@ -446,12 +452,14 @@ class TestFailedConnector:
                     options={"default_success": False, "default_summary": "Planning failed."},
                 ),
             },
-            prompt_profiles=PromptProfilesConfig(
-                role_instructions={"engineer": "You are an engineer."},
+            prompt_library=PromptLibraryConfig(
+                roles={"engineer": "You are an engineer."},
                 modes={
-                    "planning": {"instructions": "Generate a plan.", "output_sections": ["Steps"]},
-                    "execution": {"instructions": "Execute the plan.", "output_sections": ["Results"]},
+                    "planning": "Generate a plan.",
+                    "execution": "Execute the plan.",
                 },
+                tools_header="",
+                output_instruction="",
             ),
         )
 
@@ -479,12 +487,14 @@ class TestFailedConnector:
                     options={"default_success": False, "default_summary": "Execution failed."},
                 ),
             },
-            prompt_profiles=PromptProfilesConfig(
-                role_instructions={"engineer": "You are an engineer."},
+            prompt_library=PromptLibraryConfig(
+                roles={"engineer": "You are an engineer."},
                 modes={
-                    "planning": {"instructions": "Generate a plan.", "output_sections": ["Steps"]},
-                    "execution": {"instructions": "Execute the plan.", "output_sections": ["Results"]},
+                    "planning": "Generate a plan.",
+                    "execution": "Execute the plan.",
                 },
+                tools_header="",
+                output_instruction="",
             ),
         )
 
@@ -520,12 +530,14 @@ class TestFailedConnector:
                     options={"default_success": False, "default_summary": "Failed."},
                 ),
             },
-            prompt_profiles=PromptProfilesConfig(
-                role_instructions={"engineer": "You are an engineer."},
+            prompt_library=PromptLibraryConfig(
+                roles={"engineer": "You are an engineer."},
                 modes={
-                    "planning": {"instructions": "Generate a plan.", "output_sections": ["Steps"]},
-                    "execution": {"instructions": "Execute the plan.", "output_sections": ["Results"]},
+                    "planning": "Generate a plan.",
+                    "execution": "Execute the plan.",
                 },
+                tools_header="",
+                output_instruction="",
             ),
         )
 

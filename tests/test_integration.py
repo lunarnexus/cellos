@@ -85,12 +85,12 @@ class TestFullLifecycle:
         # Save planning result (simulates agent planning)
         await save_planning_result(
             initialized_db, task.id,
-            plan_text="Plan: Step 1, Step 2, Step 3",
+            structured_result={"objective": "Plan: Step 1, Step 2, Step 3", "steps": ["s1"]},
             success=True,
         )
         planned = await initialized_db.get_task(task.id)
         assert planned.status == TaskStatus.NEEDS_APPROVAL
-        assert planned.plan == "Plan: Step 1, Step 2, Step 3"
+        assert "Plan: Step 1, Step 2, Step 3" in planned.plan
 
         # Approve
         approved = await service.approve_task(task.id)
@@ -99,8 +99,7 @@ class TestFullLifecycle:
         # Execute
         result = await save_execution_result(
             initialized_db, task.id,
-            result_text="Execution completed successfully",
-            success=True,
+            structured_result={"summary": "Execution completed successfully", "success": True},
         )
         assert result.success is True
 
@@ -120,7 +119,7 @@ class TestFullLifecycle:
 
         await save_planning_result(
             initialized_db, task.id,
-            plan_text="Planning failed",
+            structured_result={"objective": "Planning", "steps": ["s"]},
             success=False,
         )
         failed = await initialized_db.get_task(task.id)
@@ -282,14 +281,17 @@ class TestCommentsAndAttention:
         task = await service.create_task(title="Test task", role="engineer")
 
         # Plan and approve
-        await save_planning_result(initialized_db, task.id, plan_text="Plan", success=True)
-        await service.approve_task(task.id)
+        await save_planning_result(
+            initialized_db, task.id,
+            structured_result={"objective": "Plan", "steps": ["s"]},
+            success=True,
+        )
+        approved = await service.approve_task(task.id)
+        assert approved.status == TaskStatus.APPROVED
 
-        # Comment on approved task
-        await service.add_human_comment(task.id, "Review note")
-
-        updated = await initialized_db.get_task(task.id)
-        # Attention should NOT be triggered for approved tasks
+        # Comment on approved task — should clear attention
+        await service.add_human_comment(task.id, "Please also add logging")
+        updated = await service.get_task(task.id)
         assert updated.attention.required is False
 
 
@@ -306,9 +308,18 @@ class TestEventLogging:
         service = TaskService(initialized_db)
         task = await service.create_task(title="Test task", role="engineer")
 
-        await save_planning_result(initialized_db, task.id, plan_text="Plan", success=True)
+        await save_planning_result(
+            initialized_db, task.id,
+            structured_result={"objective": "Plan", "steps": ["s"]},
+            success=True,
+        )
+
         await service.approve_task(task.id)
-        await save_execution_result(initialized_db, task.id, result_text="Done", success=True)
+
+        await save_execution_result(
+            initialized_db, task.id,
+            structured_result={"summary": "Done", "success": True},
+        )
 
         events = await initialized_db.list_events(task.id)
         assert len(events) >= 3  # planning_saved, status_changed, execution_succeeded
@@ -381,7 +392,7 @@ class TestPromptBuilder:
             "success_criteria": "Works correctly",
         }
 
-        prompt = build_task_prompt(task, config.prompt_profiles, mode="planning")
+        prompt = build_task_prompt(task, config.prompt_library, mode="planning")
         assert "Test task" in prompt
         assert "Test details" in prompt
         assert "engineer" in prompt.lower()

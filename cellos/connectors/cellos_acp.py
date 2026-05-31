@@ -7,10 +7,45 @@ import logging
 from pathlib import Path
 from typing import Any
 
-from cellos.connectors.base import ConnectorResult
+from cellos.config import get_tools_for_role_mode
+from cellos.connectors.base import ConnectorResult, ToolCallInfo
 from cellos.models import Task, TaskResult
 
 logger = logging.getLogger(__name__)
+
+_CELLOS_RESULT_TOOL_PREFIX = "cellos-result-tools_"
+
+
+def _normalize_tool_title(title: str) -> str:
+    if title.startswith(_CELLOS_RESULT_TOOL_PREFIX):
+        return title[len(_CELLOS_RESULT_TOOL_PREFIX):]
+    return title
+
+
+def _payload_to_dict(payload: Any) -> dict[str, Any]:
+    if isinstance(payload, dict):
+        if "output" in payload:
+            output_val = payload["output"]
+            if isinstance(output_val, str):
+                try:
+                    output_val = json.loads(output_val)
+                except (json.JSONDecodeError, ValueError):
+                    pass
+            if isinstance(output_val, dict):
+                if set(output_val.keys()) == {"result"} and isinstance(output_val["result"], dict):
+                    return output_val["result"]
+                return output_val
+        if set(payload.keys()) == {"result"} and isinstance(payload["result"], dict):
+            return payload["result"]
+        return payload
+    return {}
+
+
+def _tool_call_arguments(tool_call: Any) -> dict[str, Any]:
+    raw_input = getattr(tool_call, "raw_input", None) or {}
+    if raw_input:
+        return _payload_to_dict(raw_input)
+    return _payload_to_dict(getattr(tool_call, "raw_output", None))
 
 
 class CellosAcpConnector:
@@ -36,7 +71,12 @@ class CellosAcpConnector:
         self.model = self.options.get("model")
 
     async def run_task(
-        self, task: Task, workdir: str | None = None, mode: str = "execution", prompt_text: str | None = None
+        self,
+        task: Task,
+        workdir: str | None = None,
+        mode: str = "execution",
+        prompt_text: str | None = None,
+        config: Any | None = None,
     ) -> ConnectorResult:
         """Execute a task via cellos-acp AcpClient."""
         from cellos_acp import AcpClient, configure_logging
@@ -53,6 +93,27 @@ class CellosAcpConnector:
         if self.model:
             env = {"OPENCODE_CONFIG_CONTENT": json.dumps({"model": self.model})}
 
+        # Resolve tools from config
+        output_tools: list[dict[str, Any]] | None = None
+        required_tool: str | None = None
+        if config is not None:
+            role = str(task.role) if task.role else "engineer"
+            tool_names, required_tool = get_tools_for_role_mode(
+                getattr(config, "tool_profiles", {}), role, mode
+            )
+            if tool_names:
+                tools_dict = getattr(config, "tools", {})
+                output_tools = []
+                for name in tool_names:
+                    tool_def = tools_dict.get(name)
+                    if tool_def:
+                        output_tools.append({
+                            "name": name,
+                            "description": tool_def.description,
+                            "parameters": tool_def.schema_,
+                        })
+                        logger.debug("Tool %s registered for task %s", name, task.id)
+
         client = AcpClient(
             agent=self.agent_name,
             cwd=cwd,
@@ -63,8 +124,9 @@ class CellosAcpConnector:
         )
 
         logger.info(
-            "Running cellos-acp for task %s mode=%s agent=%s",
+            "Running cellos-acp for task %s mode=%s agent=%s tools=%s",
             task.id, mode, self.agent_name,
+            len(output_tools) if output_tools else 0,
         )
         logger.debug(
             "cellos-acp request for task %s mode=%s prompt_chars=%d prompt_repr=%r",
@@ -76,7 +138,11 @@ class CellosAcpConnector:
         )
 
         try:
-            result = await client.run(prompt_text or "")
+            result = await client.run(
+                prompt_text or "",
+                output_tools=output_tools,
+                required_output_tool=required_tool,
+            )
 
             output = result.combined_text
             raw_text = getattr(result, "text", "")
@@ -117,10 +183,44 @@ class CellosAcpConnector:
                 output=output,
             )
 
+            # Extract structured result from tool call
+            structured_result: dict[str, Any] | None = None
+            if result.structured_result is not None:
+                structured_result = result.structured_result.data
+                logger.info(
+                    "Structured result captured for task %s: %s",
+                    task.id, list(structured_result.keys()),
+                )
+
+            # Extract Cellos tool calls (e.g. cellos_create_task). ACP/MCP
+            # reports output-tool payloads in raw_output, not raw_input.
+            tool_calls: list[ToolCallInfo] | None = None
+            result_tool_calls = getattr(result, "tool_calls", None) or []
+            captured_tool_calls: list[ToolCallInfo] = []
+            for tc in result_tool_calls:
+                title = _normalize_tool_title(getattr(tc, "title", "") or "")
+                if not title.startswith("cellos_"):
+                    continue
+                if title == required_tool and title != "cellos_create_task":
+                    continue
+                captured_tool_calls.append(ToolCallInfo(title, _tool_call_arguments(tc)))
+
+            if captured_tool_calls:
+                tool_calls = captured_tool_calls
+                logger.info(
+                    "Tool calls captured for task %s: %d calls",
+                    task.id, len(tool_calls),
+                )
+
             # Extract diagnostics from AcpRunResult (graceful degradation)
             diagnostics = _extract_diagnostics(result, self.agent_name, self.model)
 
-            return ConnectorResult(task_result=task_result, diagnostics=diagnostics)
+            return ConnectorResult(
+                task_result=task_result,
+                structured_result=structured_result,
+                tool_calls=tool_calls,
+                diagnostics=diagnostics,
+            )
 
         except Exception as e:
             logger.error("cellos-acp failed for task %s: %s", task.id, e)

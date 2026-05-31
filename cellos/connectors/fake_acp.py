@@ -6,7 +6,7 @@ import json
 from pathlib import Path
 from typing import Any
 
-from cellos.connectors.base import ConnectorResult
+from cellos.connectors.base import ConnectorResult, ToolCallInfo
 from cellos.models import Task, TaskResult
 
 
@@ -22,7 +22,8 @@ class FakeAcpConnector:
     Each fixture file should contain a JSON object with at least:
         - ``success`` (bool)
         - ``summary`` (str)
-        Optional: ``output`` (str), ``diagnostics`` (dict)
+        Optional: ``output`` (str), ``diagnostics`` (dict),
+        ``structured_result`` (dict), ``tool_calls`` (list)
     """
 
     def __init__(self, options: dict[str, Any] | None = None):
@@ -34,7 +35,12 @@ class FakeAcpConnector:
         )
 
     async def run_task(
-        self, task: Task, workdir: str | None = None, mode: str = "execution", prompt_text: str | None = None
+        self,
+        task: Task,
+        workdir: str | None = None,
+        mode: str = "execution",
+        prompt_text: str | None = None,
+        config: Any | None = None,
     ) -> ConnectorResult:
         """Execute a task with canned responses.
 
@@ -54,8 +60,22 @@ class FakeAcpConnector:
 
         # No fixture found — use configured defaults
         summary = f"[fake_acp] {self.default_summary}"
+        task_result = TaskResult(success=self.default_success, summary=summary)
+
+        # Mode-appropriate structured result
+        if mode == "planning":
+            structured_result = {
+                "objective": self.default_summary,
+                "steps": ["Execute planned steps"],
+            }
+        else:
+            structured_result = {
+                "summary": self.default_summary,
+                "success": self.default_success,
+            }
         return ConnectorResult(
-            task_result=TaskResult(success=self.default_success, summary=summary),
+            task_result=task_result,
+            structured_result=structured_result,
             diagnostics=None,
         )
 
@@ -89,7 +109,25 @@ class FakeAcpConnector:
             output=data.get("output"),
         )
         diagnostics = data.get("diagnostics")
-        return ConnectorResult(task_result=task_result, diagnostics=diagnostics)
+
+        # Extract structured_result
+        structured_result = data.get("structured_result")
+
+        # Extract tool_calls
+        raw_tool_calls = data.get("tool_calls", [])
+        tool_calls: list[ToolCallInfo] | None = None
+        if raw_tool_calls:
+            tool_calls = [
+                ToolCallInfo(tc.get("title", ""), tc.get("arguments", {}))
+                for tc in raw_tool_calls
+            ]
+
+        return ConnectorResult(
+            task_result=task_result,
+            structured_result=structured_result,
+            tool_calls=tool_calls,
+            diagnostics=diagnostics,
+        )
 
 
 async def _async_sleep(seconds: float) -> None:

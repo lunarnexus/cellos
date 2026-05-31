@@ -12,7 +12,7 @@ import pytest
 from cellos.config import (
     AgentCatalogEntry,
     CellosConfig,
-    PromptProfilesConfig,
+    PromptLibraryConfig,
 )
 from cellos.db import CellosDatabase
 from cellos.models import (
@@ -50,12 +50,14 @@ def config():
                 options={"default_success": True, "default_summary": "Done."},
             ),
         },
-        prompt_profiles=PromptProfilesConfig(
-            role_instructions={"engineer": "You are an engineer."},
+        prompt_library=PromptLibraryConfig(
+            roles={"engineer": "You are an engineer."},
             modes={
-                "planning": {"instructions": "Plan.", "output_sections": ["Steps"]},
-                "execution": {"instructions": "Execute.", "output_sections": ["Results"]},
+                "planning": "Plan.",
+                "execution": "Execute.",
             },
+            tools_header="",
+            output_instruction="",
         ),
     )
 

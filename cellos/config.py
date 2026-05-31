@@ -53,6 +53,101 @@ class PromptProfilesConfig(BaseModel):
     final_instructions: str = ""
 
 
+# ─── Tool Config ─────────────────────────────────────────────────────────────
+
+class ToolDefConfig(BaseModel):
+    """Single tool definition with description and JSON schema."""
+
+    description: str = ""
+    schema_: dict[str, Any] = Field(default_factory=dict, alias="schema")
+
+
+class ToolProfileEntry(BaseModel):
+    """Tool profile for a single role+mode combination."""
+    tools: list[str] = Field(default_factory=list)
+    required: str = ""
+
+
+class PromptLibraryConfig(BaseModel):
+    """Composable prompt fragments loaded from prompt_library.json."""
+    roles: dict[str, str] = Field(default_factory=dict)
+    modes: dict[str, str] = Field(default_factory=dict)
+    role_modes: dict[str, str] = Field(default_factory=dict)
+    tools_header: str = ""
+    output_instruction: str = ""
+
+
+# ─── Config loaders ──────────────────────────────────────────────────────────
+
+def _load_tool_registry(path: Path) -> dict[str, ToolDefConfig]:
+    """Load tool registry from tools.json."""
+    if not path.exists():
+        return {}
+    raw = _load_json(path)
+    return {name: ToolDefConfig(**defn) for name, defn in raw.items()}
+
+
+def _load_tool_profiles(path: Path) -> dict[str, dict[str, ToolProfileEntry]]:
+    """Load tool profiles from toolprofiles.json."""
+    if not path.exists():
+        return {}
+    raw = _load_json(path)
+    profiles: dict[str, dict[str, ToolProfileEntry]] = {}
+    for role, modes in raw.items():
+        profiles[role] = {}
+        for mode, entry in modes.items():
+            profiles[role][mode] = ToolProfileEntry(**entry)
+    return profiles
+
+
+def _load_prompt_library(path: Path) -> PromptLibraryConfig:
+    """Load prompt library from prompt_library.json."""
+    if not path.exists():
+        return PromptLibraryConfig()
+    raw = _load_json(path)
+    return PromptLibraryConfig(**raw)
+
+
+def get_tools_for_role_mode(
+    profiles: dict[str, dict[str, ToolProfileEntry]],
+    role: str,
+    mode: str,
+) -> tuple[list[str], str | None]:
+    """Get tool names and required tool for a role+mode combination.
+
+    Returns:
+        Tuple of (tool_names, required_tool_name). Returns ([], None) if
+        role or mode not found.
+    """
+    entry = profiles.get(role, {}).get(mode)
+    if entry is None:
+        return [], None
+    return entry.tools, entry.required or None
+
+
+def validate_tool_profiles(
+    profiles: dict[str, dict[str, ToolProfileEntry]],
+    tools: dict[str, ToolDefConfig],
+) -> None:
+    """Validate all tool references exist in the tool registry.
+
+    Args:
+        profiles: Tool profiles dict.
+        tools: Tool registry dict.
+
+    Raises:
+        ConfigError: If a tool reference is not found.
+    """
+    for role, modes in profiles.items():
+        for mode, entry in modes.items():
+            for tool_name in entry.tools:
+                if tool_name not in tools:
+                    raise ConfigError(
+                        f"Tool '{tool_name}' not found in tools.json "
+                        f"(referenced by {role}.{mode})"
+                    )
+
+
 # ─── Approval Config ─────────────────────────────────────────────────────────
 
 class ApprovalConfig(BaseModel):
@@ -69,8 +164,11 @@ class AgentRuntimeConfig(BaseModel):
 
 
 class PromptRuntimeConfig(BaseModel):
-    """Path to prompt profiles file."""
+    """Paths to prompt and tool configuration files."""
     profiles_path: Optional[str] = None
+    tools_path: Optional[str] = None
+    tool_profiles_path: Optional[str] = None
+    library_path: Optional[str] = None
 
 
 # ─── Top-level Config ────────────────────────────────────────────────────────
@@ -86,6 +184,9 @@ class CellosConfig(BaseModel):
     # Resolved at load time from separate files
     agent_catalog: dict[str, AgentCatalogEntry] = Field(default_factory=dict)
     prompt_profiles: PromptProfilesConfig = Field(default_factory=PromptProfilesConfig)
+    tools: dict[str, ToolDefConfig] = Field(default_factory=dict)
+    tool_profiles: dict[str, dict[str, ToolProfileEntry]] = Field(default_factory=dict)
+    prompt_library: PromptLibraryConfig = Field(default_factory=PromptLibraryConfig)
 
     def get_agent(self, agent_id: str | None = None) -> Optional[AgentCatalogEntry]:
         """Resolve an agent from the catalog by ID or default."""
@@ -131,14 +232,15 @@ def _load_json(path: Path) -> dict[str, Any]:
 
 
 def load_config(config_dir: str) -> CellosConfig:
-    """Load full configuration from three JSON files in the given directory.
+    """Load full configuration from JSON files in the given directory.
 
     Args:
-        config_dir: Path to directory containing config.json, agentcatalog.json,
-                    and promptprofiles.json.
+        config_dir: Path to directory containing config.json and associated
+                    configuration files.
 
     Returns:
-        Fully resolved CellosConfig with catalog and profiles loaded.
+        Fully resolved CellosConfig with catalog, profiles, tools, and
+        prompt library loaded.
 
     Raises:
         ConfigError: If required files are missing or invalid.
@@ -162,6 +264,21 @@ def load_config(config_dir: str) -> CellosConfig:
     if profiles_file.exists():
         raw_profiles = _load_json(profiles_file)
         config.prompt_profiles = PromptProfilesConfig(**raw_profiles)
+
+    # Load tools registry
+    tools_rel = raw_main.get("prompts", {}).get("tools_path")
+    tools_file = _resolve_path(config_dir, tools_rel) or Path(config_dir) / "tools.json"
+    config.tools = _load_tool_registry(tools_file)
+
+    # Load tool profiles
+    tool_profiles_rel = raw_main.get("prompts", {}).get("tool_profiles_path")
+    tool_profiles_file = _resolve_path(config_dir, tool_profiles_rel) or Path(config_dir) / "toolprofiles.json"
+    config.tool_profiles = _load_tool_profiles(tool_profiles_file)
+
+    # Load prompt library
+    library_rel = raw_main.get("prompts", {}).get("library_path")
+    library_file = _resolve_path(config_dir, library_rel) or Path(config_dir) / "prompt_library.json"
+    config.prompt_library = _load_prompt_library(library_file)
 
     return config
 
@@ -189,6 +306,9 @@ def ensure_config(config_dir: str, overwrite: bool = False) -> Path:
         "cellos.config.json.example": "config.json",
         "agentcatalog.json.example": "agentcatalog.json",
         "promptprofiles.json.example": "promptprofiles.json",
+        "tools.json.example": "tools.json",
+        "toolprofiles.json.example": "toolprofiles.json",
+        "prompt_library.json.example": "prompt_library.json",
     }
 
     for src_name, dst_name in copies.items():

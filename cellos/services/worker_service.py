@@ -14,10 +14,10 @@ import logging
 import os
 from typing import Any
 
-from cellos.config import AgentCatalogEntry, CellosConfig
+from cellos.config import AgentCatalogEntry, CellosConfig, get_tools_for_role_mode
 from cellos.connectors.base import ConnectorResult, TaskConnector
 from cellos.db import CellosDatabase
-from cellos.models import AttentionReason, Task, TaskStatus
+from cellos.models import AgentRole, AttentionReason, Task, TaskStatus
 from cellos.prompt_builder import build_task_prompt
 
 logger = logging.getLogger(__name__)
@@ -25,6 +25,38 @@ logger = logging.getLogger(__name__)
 
 class WorkerError(Exception):
     """Raised when a worker fails to execute."""
+
+
+def _build_tool_defs_for_prompt(
+    config: CellosConfig,
+    role: str,
+    mode: str,
+) -> dict[str, dict[str, object]] | None:
+    """Build tool definitions dict for prompt injection.
+
+    Resolves tools for the given role+mode from config.tool_profiles,
+    then looks up each tool's definition from config.tools.
+
+    Returns:
+        Dict mapping tool name to {"description": ..., "schema": ...} or
+        None if no tools configured.
+    """
+    tool_names, _ = get_tools_for_role_mode(
+        getattr(config, "tool_profiles", {}), role, mode
+    )
+    if not tool_names:
+        return None
+
+    tools_dict = getattr(config, "tools", {})
+    tool_defs: dict[str, dict[str, object]] = {}
+    for name in tool_names:
+        tool_def = tools_dict.get(name)
+        if tool_def:
+            tool_defs[name] = {
+                "description": tool_def.description,
+                "schema": tool_def.schema_,
+            }
+    return tool_defs if tool_defs else None
 
 
 def resolve_agent(config: CellosConfig, task: Task) -> AgentCatalogEntry:
@@ -234,16 +266,23 @@ async def run_task_worker(
 
         prompt_text = build_task_prompt(
             task=task_dict,
-            profiles=config.prompt_profiles,
+            library=config.prompt_library,
             mode=mode,
             plan=task.plan if mode == "execution" else None,
+            tool_defs=_build_tool_defs_for_prompt(config, str(task.role), mode),
         )
 
         # 6. Run connector — now returns ConnectorResult
         logger.info("Running connector for task %s (timeout=%ds)", task_id, timeout)
         logger.debug("Prompt for task %s mode=%s:\n%s", task_id, mode, prompt_text)
         conn_result: ConnectorResult = await asyncio.wait_for(
-            connector.run_task(task=updated_task or task, workdir=workdir, mode=mode, prompt_text=prompt_text),
+            connector.run_task(
+                task=updated_task or task,
+                workdir=workdir,
+                mode=mode,
+                prompt_text=prompt_text,
+                config=config,
+            ),
             timeout=timeout + 10,  # Small buffer for async overhead
         )
 
@@ -255,47 +294,42 @@ async def run_task_worker(
         if mode == "planning":
             from cellos.services.planning_service import save_planning_result
 
-            plan_text = result.output or result.summary
-            await save_planning_result(db, task_id, plan_text=plan_text, success=result.success)
+            await save_planning_result(
+                db, task_id,
+                structured_result=conn_result.structured_result,
+                success=result.success,
+            )
         else:
             created_child_ids: list[str] = []
 
-            # Create planned child tasks only after the parent plan is approved
-            # and the parent task enters execution.
-            current_task = await db.get_task(task_id)
-            if current_task and current_task.prompt_text:
-                from cellos.structured_response import (
-                    child_tasks_from_response,
-                    parse_planning_response,
-                )
-
-                planned = parse_planning_response(current_task.prompt_text)
-                if result.success and planned and planned.child_tasks:
-                    from cellos.services.task_service import TaskService as TSvc
-
-                    children_data = child_tasks_from_response(planned, task_id)
-                    tservice = TSvc(db)
-                    for child_data in children_data:
-                        child = await tservice.create_task(**child_data)  # type: ignore[arg-type]
-                        created_child_ids.append(child.id)
-                        logger.info("Child task %s created from execution of %s", child.id, task_id)
-
-            action_output = result.output or ""
-            if action_output.strip():
-                from cellos.task_actions import parse_create_task_actions, tasks_from_create_actions
-
-                parsed_actions = parse_create_task_actions(action_output)
-                children_data = tasks_from_create_actions(
-                    parent_id=task_id, actions=parsed_actions,
-                    preapprove_research_tasks=config.approvals.preapprove_research_tasks,
-                )
-
+            # Handle cellos_create_task tool calls — create child tasks
+            if conn_result.tool_calls:
+                from cellos.models import TaskDependency, TaskType
                 from cellos.services.task_service import TaskService as TSvc
+
                 tservice = TSvc(db)
-                for child_data in children_data:
-                    child = await tservice.create_task(**child_data)  # type: ignore[arg-type]
-                    created_child_ids.append(child.id)
-                    logger.info("Child task %s created from execution of %s", child.id, task_id)
+                for tc in conn_result.tool_calls:
+                    if tc.title == "cellos_create_task":
+                        args = tc.arguments
+                        child_role = args.get("role") or "engineer"
+                        valid_roles = {role.value for role in AgentRole}
+                        if child_role not in valid_roles:
+                            logger.warning(
+                                "Invalid child role %r from tool call on %s; defaulting to engineer",
+                                child_role,
+                                task_id,
+                            )
+                            child_role = "engineer"
+                        child = await tservice.create_task(
+                            title=args["title"],
+                            details=args.get("details", ""),
+                            role=child_role,
+                            success_criteria=args.get("success_criteria"),
+                            failure_criteria=args.get("failure_criteria"),
+                            parent_id=task_id,
+                        )
+                        created_child_ids.append(child.id)
+                        logger.info("Child task %s created from tool call on %s", child.id, task_id)
 
             if created_child_ids:
                 from cellos.models import TaskDependency
@@ -309,8 +343,7 @@ async def run_task_worker(
             exec_result = await save_execution_result(
                 db,
                 task_id,
-                action_output or result.summary,
-                success=result.success,
+                structured_result=conn_result.structured_result,
                 wait_for_children=bool(created_child_ids),
             )
 

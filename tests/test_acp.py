@@ -248,6 +248,41 @@ class TestCellosAcpConnectorRunTask:
         assert _result(result).success is True
         assert "No output from agent" in _result(result).summary
 
+    async def test_prefixed_output_tool_call_is_normalized_with_arguments(self):
+        conn = CellosAcpConnector()
+        mock_result = MagicMock()
+        mock_result.success = True
+        mock_result.combined_text = "created"
+        mock_result.text = "created"
+        mock_result.thinking = ""
+        mock_result.stop_reason = "end_turn"
+        mock_result.structured_result = None
+        mock_result.tool_calls = [
+            MagicMock(
+                title="cellos-result-tools_cellos_create_task",
+                raw_input={},
+                raw_output={
+                    "output": json.dumps({
+                        "result": {
+                            "title": "Count lines",
+                            "role": "engineer",
+                            "details": "Run wc -l README.md",
+                        }
+                    })
+                },
+            )
+        ]
+
+        with patch("cellos_acp.AcpClient") as MockClient:
+            mock_instance = MagicMock()
+            mock_instance.run = AsyncMock(return_value=mock_result)
+            MockClient.return_value = mock_instance
+            result = await conn.run_task(_make_task(), prompt_text="test")
+
+        assert result.tool_calls is not None
+        assert result.tool_calls[0].title == "cellos_create_task"
+        assert result.tool_calls[0].arguments["title"] == "Count lines"
+
 
 # ── Diagnostics tests ────────────────────────────────────────────────────────
 

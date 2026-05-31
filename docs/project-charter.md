@@ -50,14 +50,15 @@ User creates top-level task (title, details, pass/fail criteria)
 - Local SQLite state management
 - Event-driven daemon scheduler (`cellos run`) with asyncio.Event wake (no polling)
 - Full task lifecycle: draft → planning → approval → execution → done/failed
-- Structured action parsing for child task creation from agent output
+- Tool-calling for agent responses (cellos_submit_prompt, cellos_submit_reply, cellos_create_task, cellos_report_blocker)
+- Child task creation via cellos_create_task tool calls
 - Subprocess worker isolation (hung workers don't kill scheduler)
 - Protocol-based ACP connectors (cellos_acp + fake_acp for testing)
 - Rich CLI output (tables, panels, attention markers ⚠️)
 - Attention system with reason codes and auto-triggering
 - Dependency tracking between tasks
 - Conversation logging (human/agent/system messages per task)
-- Prompt profiles externalized to JSON config
+- Prompt library externalized to JSON config (prompt_library.json, tools.json, toolprofiles.json)
 
 ### Out (Future)
 - PM tool sync adapters (Trello/Jira connectors)

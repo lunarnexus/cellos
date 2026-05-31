@@ -1,10 +1,10 @@
-# CelloS
+# Cellos
 
 This is pre-alpha software.  Use appropriate guardrails when working with AI workflows.  
 
 Human-governed AI orchestration system that decomposes project work into small, reviewable tasks routed to specialized worker agents. The human stays in control at every meaningful decision point.
 
-Compliance and auditing of AI workflows aligned with SOC 2, NIST AI RMF, ISO 27001 and MITRE ATLAS among others.  
+Enables compliance and auditing of AI workflows aligned with SOC 2, NIST AI RMF, ISO 27001 and MITRE ATLAS among others.  
 
 ## Installation
 
@@ -61,7 +61,7 @@ cellos run
 
 ## Configuration
 
-Three JSON files in `~/.cellos/`:
+Six JSON files in `~/.cellos/`:
 
 **config.json** — Scheduler, worker, and agent settings:
 ```json
@@ -79,7 +79,13 @@ Three JSON files in `~/.cellos/`:
 }
 ```
 
-**promptprofiles.json** — Role instructions and mode-specific prompt sections.
+**tools.json** — Tool schemas (cellos_submit_prompt, cellos_submit_reply, cellos_create_task, cellos_report_blocker)
+
+**toolprofiles.json** — Role+mode → tool mapping with explicit `required` field
+
+**prompt_library.json** — Composable prompt fragments (roles, modes, tools_header, output_instruction)
+
+**promptprofiles.json** — Legacy role instructions (optional, for backward compatibility)
 
 ## Task Lifecycle
 
@@ -119,6 +125,3 @@ See `docs/smoke-test.md` for the 15-step sequential validation flow.
 | Issue | Fix |
 |-------|-----|
 | Config not found | Run `cellos init` |
-| Cannot approve draft task | Task must be in `needs_approval` status |
-| Worker error with cellos_acp | Check agent binary is available; use `fake_acp` connector in config for testing |
-| Daemon exits quickly | Exits after 60 idle cycles (~5 min); ensure tasks exist |

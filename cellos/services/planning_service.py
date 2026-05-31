@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 import datetime
+import json
 import logging
-import re
+from typing import Any
 
 from cellos.db import CellosDatabase
 from cellos.models import AttentionReason, TaskStatus
@@ -13,68 +14,63 @@ from cellos.models import AttentionReason, TaskStatus
 logger = logging.getLogger(__name__)
 
 
-def _strip_thinking_text(plan_text: str) -> str:
-    """Strip thinking/thought text from plan output.
-
-    Opencode routes all content through agent_thought_chunk events, so the
-    plan often starts with thinking text like 'Let me check the file...'
-    before the actual structured plan. This function strips that preamble
-    by finding the first horizontal rule (---), section heading (##), or
-    fenced code block.
+def structured_result_to_plan_text(data: dict[str, Any]) -> str:
+    """Convert a structured planning result dict to readable markdown.
 
     Args:
-        plan_text: Raw plan text from the agent, possibly with thinking preamble.
+        data: Structured result from cellos_submit_prompt tool call.
 
     Returns:
-        Cleaned plan text with thinking preamble removed.
+        Markdown-formatted plan text for display and storage.
     """
-    text = plan_text.strip()
+    lines: list[str] = []
 
-    # Strategy 0: Strip leading fenced code block (JSON actions before plan prose)
-    code_match = re.match(r'\s*```(?:\w+)?\s*\n(.*?)\n```\s*\n?', text, re.DOTALL)
-    if code_match and code_match.end() < len(text):
-        remaining = text[code_match.end():].strip()
-        if remaining:
-            text = remaining
+    objective = data.get("objective", "")
+    if objective:
+        lines.append(f"## Objective\n{objective}")
 
-    # Strategy 1: Find first horizontal rule or section heading
-    match = re.search(r'\n*(---\s*|\s*##\s)', text)
-    if match:
-        return text[match.end():].lstrip('\n')
+    approach = data.get("approach", "")
+    if approach:
+        lines.append(f"\n## Approach\n{approach}")
 
-    # Strategy 2: Find first fenced code block and extract its content
-    match = re.search(r'\n*```(?:\w+)?\s*\n(.*?)\n```', text, re.DOTALL)
-    if match:
-        inner = match.group(1).strip()
-        # If there's content after the closing fence, prefer the prose after
-        after = text[match.end():].strip()
-        if after:
-            return after
-        return inner
+    steps = data.get("steps") or []
+    if steps:
+        lines.append("\n## Steps")
+        for i, step in enumerate(steps, 1):
+            lines.append(f"{i}. {step}")
 
-    return text.strip()
+    verification = data.get("verification") or []
+    if verification:
+        lines.append("\n## Verification")
+        for item in verification:
+            lines.append(f"- {item}")
+
+    risks = data.get("risks") or []
+    if risks:
+        lines.append("\n## Risks")
+        for item in risks:
+            lines.append(f"- {item}")
+
+    return "\n".join(lines)
 
 
 async def save_planning_result(
     db: CellosDatabase,
     task_id: str,
-    plan_text: str,
-    prompt_text: str = "",
+    structured_result: dict[str, Any] | None,
     success: bool = True,
 ) -> None:
     """Save the agent's planning result and transition tasks to NEEDS_APPROVAL.
 
-    The planner (architect agent) generates a structured plan with analysis,
-    steps, and verification approach. This function attempts to parse a
-    structured JSON response first, falling back to regex-based text stripping.
-    Persists the plan and moves the task to the approval gate where humans
+    The planner calls the cellos_submit_prompt tool with structured data.
+    This function validates the result, converts it to readable markdown,
+    and persists it. The task moves to the approval gate where humans
     review before execution.
 
     Args:
         db: Database facade instance.
         task_id: ID of the task being planned.
-        plan_text: The generated plan text from the agent.
-        prompt_text: Optional structured prompt/output from planning.
+        structured_result: Structured data from cellos_submit_prompt tool call.
         success: Whether the connector reported success. If False, transitions to FAILED.
 
     Raises:
@@ -90,32 +86,22 @@ async def save_planning_result(
             f"status is '{current.status.value}', expected 'draft' or 'in_progress'"
         )
 
-    # Try structured response first
-    from cellos.structured_response import parse_planning_response, plan_to_text
-
-    logger.debug(
-        "Planning result raw input for task %s chars=%d repr=%r",
-        task_id, len(plan_text), plan_text,
-    )
-    structured = parse_planning_response(plan_text)
-    stored_prompt_text = prompt_text or current.prompt_text
-    if structured is not None:
-        stored_prompt_text = structured.model_dump_json()
-        plan_text = plan_to_text(structured)
+    # Use structured result from tool call
+    if structured_result:
+        plan_text = structured_result_to_plan_text(structured_result)
+        stored_prompt_text = json.dumps(structured_result)
         logger.debug(
-            "Planning result parsed as structured JSON for task %s stored_chars=%d repr=%r",
-            task_id, len(plan_text), plan_text,
+            "Planning result from structured tool call for task %s fields=%s",
+            task_id, list(structured_result.keys()),
         )
     else:
-        # Fallback: strip thinking text from plan output
-        plan_text = _strip_thinking_text(plan_text)
+        plan_text = "No plan generated"
+        stored_prompt_text = current.prompt_text or ""
         logger.debug(
-            "Planning result used fallback text for task %s stored_chars=%d repr=%r",
-            task_id, len(plan_text), plan_text,
+            "No structured result for task %s", task_id,
         )
 
     if not success:
-        # Planning failed — transition directly to FAILED
         updated = current.model_copy(
             update={
                 "plan": plan_text,
@@ -133,7 +119,6 @@ async def save_planning_result(
                 "updated_at": datetime.datetime.now(),
             }
         )
-        # Planning complete triggers attention for human review
         updated = updated.requires_attention(
             AttentionReason.PLANNING_COMPLETE,
             detail="Plan generated and ready for approval",
@@ -141,7 +126,6 @@ async def save_planning_result(
 
     await db.update_task(updated)
 
-    # Record events
     await db.create_event(task_id, "planning_saved", f"Planning result saved")
     await db.create_event(
         task_id, "status_changed",
