@@ -5,8 +5,8 @@ Each step must pass before proceeding to the next.
 
 **Prerequisites:**
 - Python 3.12+ installed
-- `pip install -e ".[dev]"` completed
-- Working directory: `cellos/`
+- pipx installed (`python3 -m pip install --user pipx && python3 -m pipx ensurepath`)
+- `pipx install --editable ".[dev]"` completed from the `cellos/` directory
 
 ---
 
@@ -24,7 +24,7 @@ python3 -m pytest tests/ -q
 **Troubleshooting:**
 | Symptom | Fix |
 |---------|-----|
-| Import errors | Run `pip install -e ".[dev]"` |
+| Import errors | Re-run `pipx install --force --editable ".[dev]"` in `cellos/` |
 | Test failures in specific module | Check that module's implementation matches test expectations |
 
 ---
@@ -46,8 +46,7 @@ cellos --help
 Create config files and database.
 
 ```bash
-rm -rf ~/.cellos
-cellos init
+cellos init --overwrite
 cellos status
 ```
 
@@ -232,7 +231,7 @@ Press Ctrl+C to stop.
 
 | Step | Symptom | Fix |
 |------|---------|-----|
-| 1 | Import errors | `pip install -e ".[dev]"` |
+| 1 | Import errors | `pipx install --force --editable ".[dev]"` |
 | 3 | Config not found | Delete `~/.cellos` and re-run `cellos init` |
 | 5 | Worker error | Check fake_acp config in agentcatalog.json |
 | 8 | Cannot approve | Task must be in needs_approval status |

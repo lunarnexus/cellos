@@ -157,6 +157,9 @@ class DaemonService:
         # Start file watcher
         self._file_watcher_task = asyncio.create_task(self._watch_notification_file())
 
+        # Trigger initial cycle on startup so existing draft tasks are discovered.
+        self._wake_event.set()
+
         try:
             while not self._shutdown:
                 # Wait for wake signal (blocks until notified)

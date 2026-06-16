@@ -17,6 +17,7 @@ from rich.panel import Panel
 from rich.table import Table
 
 from cellos.config import ensure_config, load_config
+from cellos.env import load_env
 from cellos.db import CellosDatabase
 from cellos.models import (
     AgentRole,
@@ -68,6 +69,9 @@ def _debug_callback(ctx: click.Context, param: click.Parameter, value: str | boo
 @click.pass_context
 def main(ctx: click.Context, db: str, config_dir: str, debug: str | None):
     """CelloS — Human-governed AI orchestration."""
+    # Load .env from config directory (injects secrets into os.environ)
+    load_env(str(Path(config_dir) / ".env"))
+
     ctx.ensure_object(dict)
     ctx.obj["db"] = db
     ctx.obj["config_dir"] = config_dir
@@ -207,7 +211,9 @@ def init(ctx: click.Context, overwrite: bool):
     console.print(f"✓ Config written to {config_dir}")
     console.print("  config.json, agentcatalog.json, promptprofiles.json")
 
-    # Init database (creates tables — takes path, not connection)
+    # Init database (reset if overwriting)
+    if overwrite and Path(db_path).exists():
+        Path(db_path).unlink()
     asyncio.run(init_db(db_path))
     console.print(f"✓ Database initialized at {db_path}")
 

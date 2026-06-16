@@ -4,9 +4,15 @@ Human-governed AI orchestration system that decomposes project work into small, 
 
 ## Installation
 
+**Prerequisites:** Python 3.12+ and pipx installed. To install pipx:
+```bash
+python3 -m ensurepip --default-pip && python3 -m pip install --user pipx
+python3 -m pipx ensurepath
+```
+
 ```bash
 cd cellos
-pip install -e ".[dev]"
+pipx install --editable ".[dev]"
 cellos init
 ```
 

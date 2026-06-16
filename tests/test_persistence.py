@@ -186,7 +186,7 @@ class TestSchedulerQueries:
         assert draft.id in ids
         assert needs_approval.id in ids
         assert done.id not in ids
-        assert engineer_draft.id not in ids  # Engineer tasks don't plan
+        assert engineer_draft.id in ids  # All roles can be planned by daemon
 
     async def test_list_approved_unblocked(self, db):
         approved_no_deps = _make_task(
