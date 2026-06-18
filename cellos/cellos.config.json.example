@@ -12,5 +12,13 @@
   },
   "approvals": {
     "preapprove_research_tasks": false
+  },
+  "integrations": {
+    "enabled_providers": [],
+    "trello": {
+      "auto_sync_enabled": false,
+      "pull_interval_seconds": 300,
+      "board_id": null
+    }
   }
 }
