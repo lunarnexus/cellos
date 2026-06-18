@@ -90,9 +90,16 @@ class TrelloProvider(IntegrationProvider):
     async def _get_config(self):
         if self._config is not None:
             return self._config
-        from cellos.config import load_config
+        from cellos.config import CellosConfig, ConfigError, load_config
         cfg_dir = self._config_dir or str(Path.home() / ".cellos")
-        return load_config(cfg_dir)
+        try:
+            return load_config(cfg_dir)
+        except ConfigError:
+            logger.debug(
+                "No config found at %s; using default config for Trello provider",
+                cfg_dir,
+            )
+            return CellosConfig()
 
     @property
     def provider_name(self) -> str:
