@@ -673,5 +673,200 @@ def execute(ctx: click.Context, task_id):
     asyncio.run(_run())
 
 
+# ── PM Console command group ───────────────────────────────────────
+
+@main.group(name="pmcon")
+def pmcon():
+    """Manage external project management integrations."""
+    pass
+
+
+@pmcon.command("list")
+@click.pass_context
+def pmcon_list(ctx: click.Context):
+    """List available PM tool providers."""
+    from cellos.integrations.registry import get_providers
+
+    providers = get_providers()
+    if not providers:
+        console.print("No PM tool providers registered.")
+        return
+
+    table = Table(show_header=True, header_style="bold")
+    table.add_column("Provider", style="cyan")
+    table.add_column("Description")
+
+    descriptions = {
+        "trello": "Trello board sync",
+    }
+
+    for name in providers:
+        desc = descriptions.get(name, name)
+        table.add_row(name, desc)
+
+    console.print(table)
+
+
+@pmcon.command("setup")
+@click.argument("provider", required=True)
+@click.pass_context
+def pmcon_setup(ctx: click.Context, provider: str):
+    """Bootstrap or validate an external PM tool integration.
+
+    Creates or links the target resource (board, project, etc.) and persists state.
+    """
+    db_path = ctx.obj["db"]
+
+    async def _run():
+        from cellos.integrations.registry import load_provider
+
+        config_dir = ctx.obj["config_dir"]
+        config = load_config(config_dir)
+
+        try:
+            prov = load_provider(provider, config=config, _config_dir=config_dir)
+        except ValueError as e:
+            console.print(f"[red]{e}[/]")
+            return
+
+        db = await _get_db(db_path)
+        prov._db = db
+        try:
+            target_id, mapping = await prov.setup()
+        except Exception as e:
+            console.print(f"[red]Setup failed:[/] {e}")
+            return
+        finally:
+            await db.close()
+
+        console.print(f"✓ Provider '{provider}' configured")
+        console.print(f"  Target ID: {target_id}")
+        for k, v in mapping.items():
+            console.print(f"  {k}: {v}")
+
+    asyncio.run(_run())
+
+
+@pmcon.command("sync")
+@click.argument("provider", required=True)
+@click.option("--push", is_flag=True, default=False, help="Only push (Cellos → provider).")
+@click.option("--pull", is_flag=True, default=False, help="Only pull (provider → Cellos).")
+@click.pass_context
+def pmcon_sync(ctx: click.Context, provider: str, push: bool, pull: bool):
+    """Run bidirectional sync between CelloS and an external PM tool.
+
+    By default runs both push and pull. Use --push or --pull to run only one direction.
+    Cellos DB remains the authoritative source of truth.
+    """
+    db_path = ctx.obj["db"]
+
+    async def _run():
+        from cellos.integrations.registry import load_provider
+
+        config_dir = ctx.obj["config_dir"]
+        config = load_config(config_dir)
+
+        do_push = push or not pull
+        do_pull = pull or not push
+
+        try:
+            prov = load_provider(provider, config=config, _config_dir=config_dir)
+        except ValueError as e:
+            console.print(f"[red]{e}[/]")
+            return
+
+        db = await _get_db(db_path)
+        prov._db = db
+        try:
+            delta = await prov.sync(push=do_push, pull=do_pull)
+        except OSError as e:
+            console.print(f"[red]Missing credentials:[/] {e}")
+            return
+        finally:
+            await db.close()
+
+        if do_push and not do_pull:
+            console.print(f"✓ Push complete")
+            console.print(f"  Items created: {delta.items_created}")
+            console.print(f"  Items updated: {delta.items_updated}")
+        elif do_pull and not do_push:
+            console.print(f"✓ Pull complete")
+            console.print(f"  Comments imported: {delta.comments_imported}")
+            console.print(f"  Statuses changed: {delta.statuses_changed}")
+        else:
+            console.print(f"✓ Sync complete")
+            console.print(f"  Created: {delta.items_created} | Updated: {delta.items_updated}")
+            console.print(f"  Comments imported: {delta.comments_imported} | Statuses changed: {delta.statuses_changed}")
+
+        if delta.errors:
+            for err in delta.errors[:5]:
+                console.print(f"  [red]Error:[/] {err}")
+
+    asyncio.run(_run())
+
+
+@pmcon.command("status")
+@click.argument("provider", required=True)
+@click.pass_context
+def pmcon_status(ctx: click.Context, provider: str):
+    """Show current configuration and sync status for a PM tool integration.
+
+    Displays target ID, mappings, timestamps, and credential state.
+    """
+    db_path = ctx.obj["db"]
+
+    async def _run():
+        from cellos.integrations.registry import load_provider
+
+        config_dir = ctx.obj["config_dir"]
+        config = load_config(config_dir)
+
+        try:
+            prov = load_provider(provider, config=config, _config_dir=config_dir)
+        except ValueError as e:
+            console.print(f"[red]{e}[/]")
+            return
+
+        db = await _get_db(db_path)
+        prov._db = db
+        try:
+            status = await prov.status()
+        finally:
+            await db.close()
+
+        lines = []
+
+        cred_label = "[green]configured[/]" if status.credentials_configured else "[yellow]missing[/]"
+        lines.append(f"[bold]{status.provider_name}[/] PM integration")
+        lines.append(f"  Credentials: {cred_label}")
+
+        if status.board_or_target:
+            lines.append(f"  Target ID: [cyan]{status.board_or_target}[/]")
+        else:
+            action = f"'cellos pmcon setup {provider}'"
+            lines.append(f"  Target: not configured — run {action}")
+
+        details = status.details
+        if details:
+            list_mapping = details.get("list_mapping")
+            if list_mapping:
+                lines.append("")
+                lines.append("List Mapping:")
+                for name, lid in list_mapping.items():
+                    icon = "✓" if lid != "(not mapped)" else "✗"
+                    lines.append(f"  {icon} {name}: [dim]{lid}[/]")
+
+            last_push = details.get("last_push_ts")
+            last_pull = details.get("last_pull_ts")
+            if last_push:
+                lines.append(f"\nLast push: [dim]{last_push}[/]")
+            if last_pull:
+                lines.append(f"Last pull: [dim]{last_pull}[/]")
+
+        console.print("\n".join(lines))
+
+    asyncio.run(_run())
+
+
 if __name__ == "__main__":
     main()

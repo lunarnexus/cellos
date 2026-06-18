@@ -284,6 +284,12 @@ class DaemonService:
 
         logger.info("Spawned %d workers this cycle", spawned)
 
+        # Auto-sync to Trello if enabled
+        await self._trello_sync_push()
+
+        # Periodic pull from Trello if enabled
+        await self._trello_sync_pull_maybe()
+
     async def _spawn_worker(self, task: Task, mode: str) -> None:
         """Spawn a worker subprocess for the task and track it."""
         proc = self.spawner.spawn(
@@ -312,3 +318,53 @@ class DaemonService:
                 self._wake_event.set()
 
         self._running_workers[task.id] = asyncio.create_task(_track_worker())
+
+    async def _trello_sync_push(self) -> None:
+        """Push Cellos task changes to provider if auto-sync is enabled."""
+        enabled = self._is_auto_sync_enabled()
+        if not enabled:
+            return
+
+        try:
+            from cellos.integrations.registry import load_provider
+
+            prov = load_provider("trello", config=self.config)
+            prov._db = self.db
+            delta = await prov.auto_push()
+
+            total = delta.items_created + delta.items_updated
+            if total > 0:
+                logger.info(
+                    "Integration push: %d created, %d updated",
+                    delta.items_created, delta.items_updated,
+                )
+        except (ImportError, ValueError) as e:
+            logger.debug("Auto-sync push skipped: %s", e)
+
+    async def _trello_sync_pull_maybe(self) -> None:
+        """Pull changes from provider on configurable interval."""
+        enabled = self._is_auto_sync_enabled()
+        if not enabled:
+            return
+
+        pull_interval = self.config.integrations.trello.pull_interval_seconds
+
+        try:
+            from cellos.integrations.registry import load_provider
+
+            prov = load_provider("trello", config=self.config)
+            prov._db = self.db
+            delta = await prov.auto_pull_maybe(pull_interval)
+
+            total = delta.comments_imported + delta.statuses_changed
+            if total > 0:
+                logger.info(
+                    "Integration pull: %d comments, %d status changes",
+                    delta.comments_imported, delta.statuses_changed,
+                )
+        except (ImportError, ValueError) as e:
+            logger.debug("Auto-sync pull skipped: %s", e)
+
+    def _is_auto_sync_enabled(self) -> bool:
+        """Check if any integration auto-sync is enabled."""
+        return self.config.integrations.trello.auto_sync_enabled

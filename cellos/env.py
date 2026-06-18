@@ -113,7 +113,8 @@ def get_trello_credentials() -> tuple[str, str]:
     """
     hint = (
         "Create a Trello Power-Up at https://trello.com/power-ups/admin, "
-        "then add your credentials to ~/.cellos/.env:"
+        "generate an API key, then generate a user token with at least read,write scope, "
+        "and add both to ~/.cellos/.env:"
     )
     api_key = get_required_env("TRELLO_API_KEY", hint)
     token = get_required_env("TRELLO_TOKEN", hint)

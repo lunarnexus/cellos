@@ -23,6 +23,23 @@ class SchedulerConfig(BaseModel):
     heartbeat_interval_seconds: float = 5.0
 
 
+
+class TrelloConfig(BaseModel):
+    """Trello auto-sync configuration."""
+    auto_sync_enabled: bool = False
+    pull_interval_seconds: int = 300
+    board_id: str | None = Field(default=None, description="Trello board ID — user-editable source of truth for which board CelloS uses.")
+
+
+class IntegrationsConfig(BaseModel):
+    """Integrations-oriented top-level config shape.
+
+    Maps provider name → settings dict. Starting with Trello but extensible.
+    """
+    enabled_providers: list[str] = Field(default_factory=list)
+    trello: TrelloConfig = Field(default_factory=TrelloConfig)
+
+
 class WorkerConfig(BaseModel):
     """Worker execution settings."""
     backend: str = "acp"
@@ -80,6 +97,7 @@ class CellosConfig(BaseModel):
     agents: AgentRuntimeConfig = Field(default_factory=AgentRuntimeConfig)
     approvals: ApprovalConfig = Field(default_factory=ApprovalConfig)
     prompts: PromptRuntimeConfig = Field(default_factory=PromptRuntimeConfig)
+    integrations: IntegrationsConfig = Field(default_factory=IntegrationsConfig)
 
     # Resolved at load time from separate files
     agent_catalog: dict[str, AgentCatalogEntry] = Field(default_factory=dict)
@@ -169,21 +187,45 @@ def ensure_config(config_dir: str, overwrite: bool = False) -> Path:
     dest = Path(config_dir)
     dest.mkdir(parents=True, exist_ok=True)
 
-    # Source: example files in the package root (same level as cellos/ directory)
-    package_root = Path(__file__).resolve().parent.parent
+    # Source: example files bundled inside the cellos package
+    package_dir = Path(__file__).resolve().parent
     copies = {
         "cellos.config.json.example": "config.json",
         "agentcatalog.json.example": "agentcatalog.json",
         "promptprofiles.json.example": "promptprofiles.json",
+        "env.example": ".env",
     }
 
     for src_name, dst_name in copies.items():
-        src = package_root / src_name
+        src = package_dir / src_name
         dst = dest / dst_name
         if not overwrite and dst.exists():
+            continue
+        # .env is never overwritten (preserves user secrets), even with --overwrite
+        if dst_name == ".env" and dst.exists():
             continue
         if not src.exists():
             raise ConfigError(f"Example config not found: {src}")
         shutil.copy2(str(src), str(dst))
 
     return dest
+
+
+def update_trello_board_id(config_dir: str, board_id: str | None) -> None:
+    """Update the Trello board ID in the config file.
+
+    Args:
+        config_dir: Path to directory containing config.json.
+        board_id: The new Trello board ID, or None to clear it.
+
+    Raises:
+        ConfigError: If config.json is not found.
+    """
+    cfg_path = Path(config_dir) / "config.json"
+    raw = _load_json(cfg_path)
+
+    raw.setdefault("integrations", {}).setdefault("trello", {})["board_id"] = board_id
+
+    with open(cfg_path, "w", encoding="utf-8") as f:
+        json.dump(raw, f, indent=2)
+        f.write("\n")
