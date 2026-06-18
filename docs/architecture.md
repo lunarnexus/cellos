@@ -8,6 +8,7 @@
 │  Click commands → Rich output (tables, panels, markdown)    │
 │  Commands: init, add-task, status, detail, approve,         │
 │            comment, events, update, run, plan, execute      │
+│            pmcon list/setup/sync/status               │
 └──────────────┬──────────────────────────────┬───────────────┘
                │                              │
                ▼                              ▼
@@ -88,7 +89,7 @@
 | `task_service.py` | Task CRUD, attention tracking, approval gates | `create_task`, `update_task`, `approve_task`, `add_comment`, `add_conversation_message` |
 | `planning_service.py` | Plan generation via ACP + result persistence | `run_planning(db, task_id)`, `_build_planning_prompt(task)` |
 | `execution_service.py` | Task execution via ACP + structured action parsing | `run_execution(db, task_id)`, `_parse_structured_actions(text)` |
-| `scheduler.py` | Event-driven daemon (asyncio.Event wake) + work selection | `run_daemon()`, `pick_work()`, `spawn_workers(tasks)`, `_signal_work_available()` |
+| `scheduler.py` | Event-driven daemon (asyncio.Event wake) + work selection + provider auto-sync | `run_daemon()`, `pick_work()`, `spawn_workers(tasks)`, `_signal_work_available()` |
 | `worker_service.py` | Worker lifecycle: build connector → run prompt → save result | `run_task_worker(task_id, mode)`, `_build_connector(agent_config)` |
 | `worker_spawner.py` | Subprocess spawning with process isolation | `spawn(task_id, mode)` via `subprocess.Popen(start_new_session=True)` |
 
@@ -132,6 +133,31 @@ class TaskConnector(Protocol):
 
 - **FakeAcpConnector**: Deterministic test connector. Fixture-based lookup: `{task_id}-{mode}.json` → `{mode}.json` → `default.json`. Falls back to configurable defaults (`default_success`, `default_summary`). Supports simulated delay for timing tests.
 
+### Integrations (`cellos/integrations/`)
+
+Generic plugin surface for external providers. Cellos remains authoritative; providers sync outward and accept safe inbound transitions.
+
+**Provider contract** (`IntegrationProvider` ABC):
+- `provider_name` — short identifier (e.g., "trello")
+- `is_configured()` — check if provider has been set up
+- `setup()` — bootstrap or validate external resource, persist state
+- `status()` — return structured status for CLI rendering
+- `sync(push, pull)` — bidirectional sync with directional control
+- `auto_push()` / `auto_pull_maybe(interval)` — scheduler hooks
+
+**Registry**: Lazy-loaded in-process registry. New providers register by adding their class to `_build_default_registry()`. No dynamic plugin loading — intentional small surface area.
+
+**Sync semantics**: Cellos DB is source of truth. Push pushes task changes (cards, descriptions, list movement). Pull imports comments and applies forward-safe status transitions only (Doing → IN_PROGRESS, Done → DONE for approved/in-progress tasks).
+
+| Module | Responsibility |
+|--------|---------------|
+| `base.py` | `IntegrationProvider` ABC, `SyncDelta`, `IntegrationStatus` DTOs |
+| `registry.py` | Provider registration, `get_providers()`, `load_provider()` |
+| `trello/client.py` | Async Trello REST API client (aiohttp) |
+| `trello/models.py` | Pydantic models: Board, Card, CardAction, etc. |
+| `trello/mapper.py` | Status↔list mapping + KV store helpers for trello_sync table |
+| `trello/provider.py` | TrelloProvider implementing IntegrationProvider |
+
 ### Configuration (`cellos/config.py`)
 
 Config files live in the **project directory** (not `~/.cellos/`). Example files shipped with the repo are copied on first init. The CLI accepts `--config <path>` to point to a different config directory; defaults to the project directory if omitted.
@@ -140,7 +166,7 @@ Three JSON files loaded into Pydantic models:
 
 | File | Purpose |
 |------|---------|
-| `config.json` | Scheduler (concurrent_tasks), worker (backend, timeout), agents runtime (default_agent_id), approvals (preapprove_research_tasks) |
+| `config.json` | Scheduler (concurrent_tasks), worker (backend, timeout), agents runtime (default_agent_id), approvals (preapprove_research_tasks), integrations (auto_sync for providers) |
 | `agentcatalog.json` | Map of agent_id → AgentConfig (connector type, model name, options dict) |
 | `promptprofiles.json` | Role instructions, mode-specific sections (planning/execution), output format requirements, final instructions |
 
@@ -201,8 +227,10 @@ The daemon uses `asyncio.Event` instead of polling/heartbeat. It sleeps until si
       - Tasks requiring attention (attention.required = true)
       - Planning candidates (draft tasks ready for planning)
       - Approved unblocked tasks (dependencies satisfied)
-   c. For each task to schedule: spawn worker subprocess via WorkerSpawner
-   d. Register callback: when spawned workers exit → set event again
+    c. For each task to schedule: spawn worker subprocess via WorkerSpawner
+    d. Auto-sync push to configured providers if enabled
+    e. Conditional auto-pull from providers on interval gate
+    f. Register callback: when spawned workers exit → set event again
 4. Graceful shutdown on SIGINT/SIGTERM: wait for running workers, cleanup connections
 ```
 

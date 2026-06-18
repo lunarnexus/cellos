@@ -17,13 +17,19 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+trello = ["aiohttp>=3.9"]
 dev = [
     "pytest",
     "pytest-asyncio",
+    "aioresponses>=0.7",
+    "aiohttp>=3.9",
 ]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
+
+[tool.setuptools.package-data]
+cellos = ["*.example"]
 
 [project.scripts]
 cellos = "cellos.cli:main"

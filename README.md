@@ -60,19 +60,53 @@ cellos run
 | `execute <task_id>` | Execute approved task via agent (manual trigger) |
 | `worker <task_id> --mode planning\|execution` | Run single worker (called by spawner) |
 | `run` | Start event-driven daemon scheduler |
+| `pmcon list` | List available PM tool providers |
+| `pmcon setup <provider>` | Bootstrap a provider (e.g., Trello board) |
+| `pmcon sync <provider> [--push] [--pull]` | Bidirectional sync with external provider |
+| `pmcon status <provider>` | Show provider configuration and sync state |
+
+## Integrations
+
+External providers keep Cellos as the authoritative source of truth while syncing to tools like Trello.
+
+**Trello Setup:**
+1. Add your API credentials to `~/.cellos/.env`:
+   ```
+   TRELLO_API_KEY=your_api_key_here
+   TRELLO_TOKEN=your_token_here
+   ```
+2. Link an existing board by setting `integrations.trello.board_id` in `~/.cellos/config.json`, or run:
+   ```bash
+   cellos pmcon setup trello
+   ```
+   This auto-creates a new board and persists its ID to config.json.
+
+```bash
+# Sync tasks to/from Trello
+cellos pmcon sync trello --push   # Cellos → Trello only
+cellos pmcon sync trello --pull   # Trello → Cellos only
+cellos pmcon sync trello          # Both directions
+```
+
+Enable auto-sync in `config.json` under the `integrations` section:
 
 ## Configuration
 
 Three JSON files in `~/.cellos/`:
 
-**config.json** — Scheduler, worker, and agent settings:
+**config.json** — Scheduler, worker, agent, and integration settings:
 ```json
 {
   "scheduler": { "concurrent_tasks": 4, "heartbeat_interval_seconds": 5.0 },
   "worker": { "backend": "acp", "timeout_seconds": 300 },
-  "agents": { "default_agent_id": "engineer" }
+  "agents": { "default_agent_id": "engineer" },
+  "integrations": {
+    "trello": { "auto_sync_enabled": false, "pull_interval_seconds": 300 }
+  }
 }
 ```
+
+The `integrations` section controls auto-sync behavior for external PM tools.
 
 **agentcatalog.json** — Agent definitions:
 ```json

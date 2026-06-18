@@ -37,7 +37,7 @@ Verify the CLI is installed and responds to help.
 cellos --help
 ```
 
-**Expected:** Shows command group with all subcommands listed: init, add-task, status, detail, approve, comment, events, update, plan, execute, worker, run.
+**Expected:** Shows command group with all subcommands listed: init, add-task, status, detail, approve, comment, events, update, plan, execute, worker, run, pmcon.
 
 ---
 
