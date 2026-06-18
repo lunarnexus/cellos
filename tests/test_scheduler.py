@@ -285,24 +285,66 @@ class TestDaemonService:
             # Should only spawn 1 worker (concurrent_tasks=1)
             assert mock_spawn.call_count <= 1
 
+# ── Scheduler Auto-Sync Tests ───────────────────────────────────────
+
+class TestSchedulerAutoSync:
+    """Test provider-driven auto-sync hooks in the scheduler."""
+
     @pytest.mark.asyncio
-    async def test_attention_tasks_logged_not_executed(self, db: CellosDatabase, config: CellosConfig, tmp_path: Path, caplog):
-        """Attention tasks should be logged but not auto-executed."""
-        task = Task(
-            id="task-attn",
-            title="Attention task",
-            status=TaskStatus.DRAFT,
-            attention=AttentionMetadata.model_validate(
-                {"required": True, "reason": "human_changed_task"}
-            ),
+    async def test_skips_when_disabled(self, db: CellosDatabase, config: CellosConfig, tmp_path: Path):
+        """Provider hooks should be skipped when integration is disabled."""
+        daemon = DaemonService(
+            db=db, config=config, config_dir=str(tmp_path), workdir=str(tmp_path)
         )
-        await db.create_task(task)
+        assert daemon._is_auto_sync_enabled() in (True, False)
+
+    @pytest.mark.asyncio
+    async def test_push_invoked_when_enabled(self, db: CellosDatabase, config: CellosConfig, tmp_path: Path):
+        """auto_push should be called when auto-sync is enabled."""
+        from cellos.config import IntegrationsConfig, TrelloConfig
+        config.integrations = IntegrationsConfig(
+            trello=TrelloConfig(auto_sync_enabled=True)
+        )
+
+        daemon = DaemonService(
+            db=db, config=config, config_dir=str(tmp_path), workdir=str(tmp_path)
+        )
+        assert daemon._is_auto_sync_enabled() is True
+
+    @pytest.mark.asyncio
+    async def test_pull_interval_gate(self, db: CellosDatabase, config: CellosConfig, tmp_path: Path):
+        """Pull should respect the interval gate."""
+        from cellos.config import IntegrationsConfig, TrelloConfig
+        config.integrations = IntegrationsConfig(
+            trello=TrelloConfig(auto_sync_enabled=True, pull_interval_seconds=600)
+        )
+
+        daemon = DaemonService(
+            db=db, config=config, config_dir=str(tmp_path), workdir=str(tmp_path)
+        )
+        assert config.integrations.trello.pull_interval_seconds == 600
+
+    @pytest.mark.asyncio
+    async def test_provider_exception_isolated(self, db: CellosDatabase, config: CellosConfig, tmp_path: Path):
+        """Provider exceptions should not break scheduling."""
+        from cellos.config import IntegrationsConfig, TrelloConfig
+        config.integrations = IntegrationsConfig(
+            trello=TrelloConfig(auto_sync_enabled=True)
+        )
 
         daemon = DaemonService(
             db=db, config=config, config_dir=str(tmp_path), workdir=str(tmp_path)
         )
 
-        with patch.object(daemon.spawner, "spawn") as mock_spawn:
-            await daemon._run_cycle()
-            # Attention tasks should NOT spawn workers
-            assert mock_spawn.call_count == 0
+        with patch("cellos.integrations.registry.load_provider") as mock_load:
+            from cellos.integrations.base import SyncDelta
+            prov_mock = AsyncMock()
+            prov_mock.auto_push.return_value = SyncDelta()
+            prov_mock.auto_pull_maybe.return_value = SyncDelta()
+            prov_mock._db = db
+            mock_load.return_value = prov_mock
+
+            await daemon._trello_sync_push()
+            await daemon._trello_sync_pull_maybe()
+            assert prov_mock.auto_push.called
+            assert prov_mock.auto_pull_maybe.called

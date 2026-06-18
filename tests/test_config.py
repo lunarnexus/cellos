@@ -202,3 +202,63 @@ class TestPromptProfilesConfig:
 
 
 
+
+
+class TestTrelloConfigBoardId:
+    """Test Trello board_id in config model and writer helper."""
+
+    def test_trello_board_id_default_none(self):
+        from cellos.config import TrelloConfig
+        tc = TrelloConfig()
+        assert tc.board_id is None
+
+    def test_trello_board_id_set(self):
+        from cellos.config import TrelloConfig
+        tc = TrelloConfig(board_id="abc123")
+        assert tc.board_id == "abc123"
+
+    def test_load_config_with_board_id(self, tmp_path):
+        (tmp_path / "config.json").write_text(json.dumps({
+            "integrations": {
+                "trello": {
+                    "auto_sync_enabled": True,
+                    "board_id": "test-board-123"
+                }
+            }
+        }))
+        cfg = load_config(str(tmp_path))
+        assert cfg.integrations.trello.board_id == "test-board-123"
+
+    def test_update_trello_board_id_creates_field(self, tmp_path):
+        from cellos.config import update_trello_board_id
+        (tmp_path / "config.json").write_text(json.dumps({}))
+        update_trello_board_id(str(tmp_path), "new-board-id")
+        cfg = load_config(str(tmp_path))
+        assert cfg.integrations.trello.board_id == "new-board-id"
+
+    def test_update_trello_board_id_overwrites(self, tmp_path):
+        from cellos.config import update_trello_board_id
+        (tmp_path / "config.json").write_text(json.dumps({
+            "integrations": {
+                "trello": {"board_id": "old-board-id"}
+            }
+        }))
+        update_trello_board_id(str(tmp_path), "new-board-id")
+        cfg = load_config(str(tmp_path))
+        assert cfg.integrations.trello.board_id == "new-board-id"
+
+    def test_update_trello_board_id_clears(self, tmp_path):
+        from cellos.config import update_trello_board_id
+        (tmp_path / "config.json").write_text(json.dumps({
+            "integrations": {
+                "trello": {"board_id": "some-board-id"}
+            }
+        }))
+        update_trello_board_id(str(tmp_path), None)
+        cfg = load_config(str(tmp_path))
+        assert cfg.integrations.trello.board_id is None
+
+    def test_update_trello_board_id_file_not_found(self, tmp_path):
+        from cellos.config import update_trello_board_id
+        with pytest.raises(Exception):  # ConfigError or FileNotFoundError
+            update_trello_board_id(str(tmp_path), "id")
