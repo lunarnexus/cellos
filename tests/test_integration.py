@@ -163,14 +163,14 @@ class TestCLICommands:
         """Approving a draft task should fail with clear error."""
         runner.invoke(main, ["--db", db_path, "--config-dir", str(project_dir / ".cellos"), "init"])
         result = runner.invoke(main, ["--db", db_path, "approve", "nonexistent"])
-        assert result.exit_code == 0  # CLI doesn't exit with error code for business logic errors
+        assert result.exit_code == 1
         assert "Error" in result.output or "not found" in result.output.lower()
 
     def test_empty_update_fails(self, runner: CliRunner, project_dir: Path, db_path: str):
         """Updating with no fields should fail with clear error."""
         runner.invoke(main, ["--db", db_path, "--config-dir", str(project_dir / ".cellos"), "init"])
         result = runner.invoke(main, ["--db", db_path, "update", "nonexistent"])
-        assert result.exit_code == 0
+        assert result.exit_code == 1
         assert "Error" in result.output or "not found" in result.output.lower()
 
     def test_plan_command_draft(self, runner: CliRunner, project_dir: Path, db_path: str):
@@ -196,14 +196,14 @@ class TestCLICommands:
         """cellos plan on non-draft task fails with clear error."""
         runner.invoke(main, ["--db", db_path, "--config-dir", str(project_dir / ".cellos"), "init"])
         result = runner.invoke(main, ["--db", db_path, "plan", "nonexistent"])
-        assert result.exit_code == 0
+        assert result.exit_code == 1
         assert "Error" in result.output or "not found" in result.output.lower()
 
     def test_execute_command_wrong_status(self, runner: CliRunner, project_dir: Path, db_path: str):
         """cellos execute on non-approved task fails with clear error."""
         runner.invoke(main, ["--db", db_path, "--config-dir", str(project_dir / ".cellos"), "init"])
         result = runner.invoke(main, ["--db", db_path, "execute", "nonexistent"])
-        assert result.exit_code == 0
+        assert result.exit_code == 1
         assert "Error" in result.output or "not found" in result.output.lower()
 
 

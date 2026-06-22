@@ -14,7 +14,7 @@ Human-governed AI orchestration system that decomposes project work into small, 
 
 4. **Deterministic Orchestration** — Scheduler, state machine, dependency/approval checks are deterministic code; AI only reasons inside approved task boundaries. LLMs do NOT control scheduling or routing logic.
 
-5. **SQLite Is Authoritative** — Internal SQLite database is the single source of truth for all project state. PM tools (Trello/Jira) would be UI sync surfaces, not owners of orchestration logic.
+5. **SQLite Is Authoritative** — Internal SQLite database is the single source of truth for all project state. PM tools (for example WeKan, Plane, and OpenProject) are UI sync surfaces, not owners of orchestration logic.
 
 6. **Best Effort & Recoverable** — One failure shouldn't stop unrelated work. Workers run as isolated subprocesses. Local state supports recovery on the next scheduling pass.
 
@@ -42,7 +42,7 @@ User creates top-level task (title, details, pass/fail criteria)
 - **Primary**: Developer using AI agents to decompose and execute project work
 - **Workflow**: Create high-level task → architect plans decomposition → human approves plan → specialized sub-agents execute focused chunks → results aggregated
 - **Interaction model**: CLI for testing and debugging with daemon scheduler running in background. Human intervenes via `cellos approve`, `cellos comment`, `cellos update`.
-  Primary UI is through Project Management tools (Trello, Asana, etc.)
+  Primary UI is through Project Management tools (for example WeKan, Plane, OpenProject)
 
 ## Scope: What's In and Out
 
@@ -60,7 +60,7 @@ User creates top-level task (title, details, pass/fail criteria)
 - Prompt profiles externalized to JSON config
 
 ### Out (Future)
-- PM tool sync adapters (Trello/Jira connectors)
+- PM tool sync adapters (open-source PM connectors)
 - Custom web UI
 - Cost accounting / token usage tracking
 - Long-lived worker pools (subprocesses spawn-per-task for now)

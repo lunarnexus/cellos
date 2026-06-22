@@ -284,11 +284,11 @@ class DaemonService:
 
         logger.info("Spawned %d workers this cycle", spawned)
 
-        # Auto-sync to Trello if enabled
-        await self._trello_sync_push()
+        # Auto-sync enabled integration providers
+        await self._provider_sync_push()
 
-        # Periodic pull from Trello if enabled
-        await self._trello_sync_pull_maybe()
+        # Periodic pull from enabled integration providers
+        await self._provider_sync_pull_maybe()
 
     async def _spawn_worker(self, task: Task, mode: str) -> None:
         """Spawn a worker subprocess for the task and track it."""
@@ -319,52 +319,93 @@ class DaemonService:
 
         self._running_workers[task.id] = asyncio.create_task(_track_worker())
 
-    async def _trello_sync_push(self) -> None:
-        """Push Cellos task changes to provider if auto-sync is enabled."""
-        enabled = self._is_auto_sync_enabled()
-        if not enabled:
+    async def _provider_sync_push(self) -> None:
+        """Push Cellos task changes to all enabled integration providers."""
+        providers = self._get_auto_sync_provider_names()
+        if not providers:
             return
 
         try:
             from cellos.integrations.registry import load_provider
-
-            prov = load_provider("trello", config=self.config)
-            prov._db = self.db
-            delta = await prov.auto_push()
-
-            total = delta.items_created + delta.items_updated
-            if total > 0:
-                logger.info(
-                    "Integration push: %d created, %d updated",
-                    delta.items_created, delta.items_updated,
-                )
-        except (ImportError, ValueError) as e:
+        except ImportError as e:
             logger.debug("Auto-sync push skipped: %s", e)
-
-    async def _trello_sync_pull_maybe(self) -> None:
-        """Pull changes from provider on configurable interval."""
-        enabled = self._is_auto_sync_enabled()
-        if not enabled:
             return
 
-        pull_interval = self.config.integrations.trello.pull_interval_seconds
+        for provider_name in providers:
+            try:
+                prov = load_provider(provider_name, config=self.config)
+                prov._db = self.db
+                delta = await prov.auto_push()
+
+                total = delta.items_created + delta.items_updated + delta.items_moved
+                if total > 0:
+                    logger.info(
+                        "Integration push [%s]: %d created, %d updated, %d moved",
+                        provider_name,
+                        delta.items_created,
+                        delta.items_updated,
+                        delta.items_moved,
+                    )
+            except (ImportError, ValueError) as e:
+                logger.debug("Auto-sync push skipped for %s: %s", provider_name, e)
+
+    async def _provider_sync_pull_maybe(self) -> None:
+        """Pull changes from enabled integration providers on their configured intervals."""
+        providers = self._get_auto_sync_provider_names()
+        if not providers:
+            return
 
         try:
             from cellos.integrations.registry import load_provider
-
-            prov = load_provider("trello", config=self.config)
-            prov._db = self.db
-            delta = await prov.auto_pull_maybe(pull_interval)
-
-            total = delta.comments_imported + delta.statuses_changed
-            if total > 0:
-                logger.info(
-                    "Integration pull: %d comments, %d status changes",
-                    delta.comments_imported, delta.statuses_changed,
-                )
-        except (ImportError, ValueError) as e:
+        except ImportError as e:
             logger.debug("Auto-sync pull skipped: %s", e)
+            return
+
+        for provider_name in providers:
+            pull_interval = self._get_provider_pull_interval(provider_name)
+            try:
+                prov = load_provider(provider_name, config=self.config)
+                prov._db = self.db
+                delta = await prov.auto_pull_maybe(pull_interval)
+
+                total = delta.comments_imported + delta.statuses_changed + delta.items_updated + delta.items_moved
+                if total > 0:
+                    logger.info(
+                        "Integration pull [%s]: %d comments, %d status changes, %d updated, %d moved",
+                        provider_name,
+                        delta.comments_imported,
+                        delta.statuses_changed,
+                        delta.items_updated,
+                        delta.items_moved,
+                    )
+            except (ImportError, ValueError) as e:
+                logger.debug("Auto-sync pull skipped for %s: %s", provider_name, e)
+
+    def _get_auto_sync_provider_names(self) -> list[str]:
+        """Return integration provider names with auto-sync enabled."""
+        try:
+            from cellos.integrations.registry import get_providers
+        except ImportError:
+            return []
+
+        configured_names = list(getattr(self.config.integrations, "enabled_providers", []) or [])
+        if configured_names:
+            names = configured_names
+        else:
+            names = list(get_providers())
+
+        enabled: list[str] = []
+        for provider_name in names:
+            provider_cfg = getattr(self.config.integrations, provider_name, None)
+            if provider_cfg is not None and getattr(provider_cfg, "auto_sync_enabled", False):
+                enabled.append(provider_name)
+        return enabled
+
+    def _get_provider_pull_interval(self, provider_name: str) -> int:
+        """Return pull interval for a provider, defaulting to 300 seconds."""
+        provider_cfg = getattr(self.config.integrations, provider_name, None)
+        return int(getattr(provider_cfg, "pull_interval_seconds", 300))
 
     def _is_auto_sync_enabled(self) -> bool:
         """Check if any integration auto-sync is enabled."""
-        return self.config.integrations.trello.auto_sync_enabled
+        return bool(self._get_auto_sync_provider_names())

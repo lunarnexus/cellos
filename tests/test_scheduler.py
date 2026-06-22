@@ -301,9 +301,9 @@ class TestSchedulerAutoSync:
     @pytest.mark.asyncio
     async def test_push_invoked_when_enabled(self, db: CellosDatabase, config: CellosConfig, tmp_path: Path):
         """auto_push should be called when auto-sync is enabled."""
-        from cellos.config import IntegrationsConfig, TrelloConfig
+        from cellos.config import IntegrationsConfig, ProviderConfig
         config.integrations = IntegrationsConfig(
-            trello=TrelloConfig(auto_sync_enabled=True)
+            providers={"example": ProviderConfig(auto_sync_enabled=True)}
         )
 
         daemon = DaemonService(
@@ -314,22 +314,23 @@ class TestSchedulerAutoSync:
     @pytest.mark.asyncio
     async def test_pull_interval_gate(self, db: CellosDatabase, config: CellosConfig, tmp_path: Path):
         """Pull should respect the interval gate."""
-        from cellos.config import IntegrationsConfig, TrelloConfig
+        from cellos.config import IntegrationsConfig, ProviderConfig
         config.integrations = IntegrationsConfig(
-            trello=TrelloConfig(auto_sync_enabled=True, pull_interval_seconds=600)
+            providers={"example": ProviderConfig(auto_sync_enabled=True, pull_interval_seconds=600)}
         )
 
         daemon = DaemonService(
             db=db, config=config, config_dir=str(tmp_path), workdir=str(tmp_path)
         )
-        assert config.integrations.trello.pull_interval_seconds == 600
+        assert config.integrations.example.pull_interval_seconds == 600
 
     @pytest.mark.asyncio
     async def test_provider_exception_isolated(self, db: CellosDatabase, config: CellosConfig, tmp_path: Path):
         """Provider exceptions should not break scheduling."""
-        from cellos.config import IntegrationsConfig, TrelloConfig
+        from cellos.config import IntegrationsConfig, ProviderConfig
         config.integrations = IntegrationsConfig(
-            trello=TrelloConfig(auto_sync_enabled=True)
+            enabled_providers=["example"],
+            providers={"example": ProviderConfig(auto_sync_enabled=True)}
         )
 
         daemon = DaemonService(
@@ -344,7 +345,7 @@ class TestSchedulerAutoSync:
             prov_mock._db = db
             mock_load.return_value = prov_mock
 
-            await daemon._trello_sync_push()
-            await daemon._trello_sync_pull_maybe()
+            await daemon._provider_sync_push()
+            await daemon._provider_sync_pull_maybe()
             assert prov_mock.auto_push.called
             assert prov_mock.auto_pull_maybe.called

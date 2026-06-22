@@ -90,11 +90,11 @@ cellos/
 ```
 
 Plus example files at repo root:
-- `cellos.config.example.json` — Main config with scheduler, worker, agents settings (copied to project dir on init)
+- `cellos.config.example.json` — Main config with scheduler, worker, agents settings (copied to the active config dir on init)
 - `agentcatalog.example.json` — 5 agents (coordinator/researcher/architect/engineer/tester) using fake_acp
 - `promptprofiles.example.json` — Role instructions + mode sections for all roles
 
-Config files live in the **project directory** by default. The CLI accepts `--config <path>` to point to a different config directory; defaults to the project directory if omitted.
+Config files default to `~/.cellos/`. The CLI accepts `--config-dir <path>` to point to a different config directory for isolated runs.
 
 ### Acceptance Criteria
 - [ ] CellosConfig loads from three JSON files with Pydantic validation
@@ -151,7 +151,7 @@ cellos/
 ### Commands
 | Command | Description |
 |---------|-------------|
-| `init [--overwrite]` | Create config files in project directory, init SQLite DB |
+| `init [--overwrite]` | Create config files in the active config directory, init SQLite DB |
 | `add-task <title> [-d details] [-r role] [-t type] [-s success_criteria] [-f failure_criteria] [--depends ids]` | Create task |
 | `status [-s status_filter]` | Rich table of tasks with ⚠️ attention markers |
 | `detail <task_id>` | Rich panel showing full task info including plan, conversation, comments |
@@ -165,7 +165,7 @@ cellos/
 - [ ] Rich tables for status (ID, Status bold, Role, Title + ⚠️)
 - [ ] Rich panels for detail view  
 - [ ] Error messages are clear and actionable (e.g., "Cannot approve task in 'draft' status")
-- [ ] `--db` and `--config` global options propagate to all subcommands
+- [ ] `--db` and `--config-dir` global options propagate to all subcommands
 - [ ] Test file `tests/test_cli.py` covers all commands with CliRunner (~14 tests)
 - [ ] Manual smoke test: init → add-task → status → detail → comment → approve → events works
 - [ ] `pytest -q` passes
@@ -304,7 +304,8 @@ Plus CLI command:
 ```
 cellos/cli.py                  # Add: plan, execute commands (manual ACP triggers)
 tests/test_integration.py       # End-to-end lifecycle tests
-docs/smoke-test.md              # 15-step sequential validation flow
+docs/smoke-test.md              # Core generic smoke test
+- `docs/provider-roadmap.md`        # PM provider shortlist and sequencing
 README.md                       # Full documentation with examples
 ```
 

@@ -138,29 +138,31 @@ class TaskConnector(Protocol):
 Generic plugin surface for external providers. Cellos remains authoritative; providers sync outward and accept safe inbound transitions.
 
 **Provider contract** (`IntegrationProvider` ABC):
-- `provider_name` — short identifier (e.g., "trello")
+- `provider_name` — short identifier (e.g., "wekan")
 - `is_configured()` — check if provider has been set up
-- `setup()` — bootstrap or validate external resource, persist state
+- `setup()` — bootstrap or validate external resource, persist state via `SetupResult`
 - `status()` — return structured status for CLI rendering
 - `sync(push, pull)` — bidirectional sync with directional control
 - `auto_push()` / `auto_pull_maybe(interval)` — scheduler hooks
 
-**Registry**: Lazy-loaded in-process registry. New providers register by adding their class to `_build_default_registry()`. No dynamic plugin loading — intentional small surface area.
+**Boundary rule**: core code may know provider names, descriptions, registry loading, and generic DTOs. Core code may not hardcode provider-specific workflow names, API payloads, or setup rules; those belong under `cellos/integrations/<provider>/`.
 
-**Sync semantics**: Cellos DB is source of truth. Push pushes task changes (cards, descriptions, list movement). Pull imports comments and applies forward-safe status transitions only (Doing → IN_PROGRESS, Done → DONE for approved/in-progress tasks).
+**Registry**: Lazy-loaded discovery registry. Provider packages are discovered under `cellos.integrations.<provider>.provider`, and concrete `IntegrationProvider` subclasses are registered automatically using class-level metadata (`PROVIDER_NAME`, `PROVIDER_DESCRIPTION`). Broken provider imports are skipped with a warning so one bad connector does not break the generic `pmcon` surface.
+
+**Sync semantics**: Cellos DB is source of truth. Providers should apply narrowly-defined outbound updates and safe inbound transitions according to provider-specific policy, without leaking provider rules into core.
 
 | Module | Responsibility |
 |--------|---------------|
 | `base.py` | `IntegrationProvider` ABC, `SyncDelta`, `IntegrationStatus` DTOs |
-| `registry.py` | Provider registration, `get_providers()`, `load_provider()` |
-| `trello/client.py` | Async Trello REST API client (aiohttp) |
-| `trello/models.py` | Pydantic models: Board, Card, CardAction, etc. |
-| `trello/mapper.py` | Status↔list mapping + KV store helpers for trello_sync table |
-| `trello/provider.py` | TrelloProvider implementing IntegrationProvider |
+| `registry.py` | Provider discovery, registration, `get_providers()`, `load_provider()` |
+| `<provider>/provider.py` | Concrete provider implementation |
+| `<provider>/client.py` | Provider API client |
+| `<provider>/models.py` | Provider models/types |
+| `<provider>/mapper.py` | Provider-specific mapping helpers |
 
 ### Configuration (`cellos/config.py`)
 
-Config files live in the **project directory** (not `~/.cellos/`). Example files shipped with the repo are copied on first init. The CLI accepts `--config <path>` to point to a different config directory; defaults to the project directory if omitted.
+Config files default to `~/.cellos/`. The CLI accepts `--config-dir <path>` to point to a different config directory when you want an isolated project-local or test-local setup.
 
 Three JSON files loaded into Pydantic models:
 
@@ -170,7 +172,7 @@ Three JSON files loaded into Pydantic models:
 | `agentcatalog.json` | Map of agent_id → AgentConfig (connector type, model name, options dict) |
 | `promptprofiles.json` | Role instructions, mode-specific sections (planning/execution), output format requirements, final instructions |
 
-Example files shipped at repo root: `cellos.config.example.json`, `agentcatalog.example.json`, `promptprofiles.example.json`. On first `init --overwrite`, these are copied to the project directory as `config.json` / `agentcatalog.json` / `promptprofiles.json`.
+Example files ship with the package and are copied on `init --overwrite` into the active config directory (`~/.cellos/` by default, or a custom `--config-dir`).
 
 **preapprove_research_tasks**: Boolean flag (default: false). When true, child tasks of type `research` created via structured actions auto-transition to APPROVED status instead of NEEDS_APPROVAL. All other task types still require human approval.
 

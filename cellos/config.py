@@ -6,7 +6,7 @@ import json
 from pathlib import Path
 from typing import Any, Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ConfigDict, model_validator
 
 
 # ─── Exceptions ──────────────────────────────────────────────────────────────
@@ -24,20 +24,60 @@ class SchedulerConfig(BaseModel):
 
 
 
-class TrelloConfig(BaseModel):
-    """Trello auto-sync configuration."""
+class ProviderConfig(BaseModel):
+    """Generic per-provider integration configuration.
+
+    Provider-specific fields (for example ``board_id`` or ``project_id``) are allowed and kept
+    on the model so providers can validate and consume their own settings.
+    """
+
+    model_config = ConfigDict(extra="allow")
+
     auto_sync_enabled: bool = False
     pull_interval_seconds: int = 300
-    board_id: str | None = Field(default=None, description="Trello board ID — user-editable source of truth for which board CelloS uses.")
+
+    def __getattr__(self, name: str) -> Any:
+        if name.startswith("__"):
+            raise AttributeError(name)
+        extra = object.__getattribute__(self, "__pydantic_extra__") or {}
+        return extra.get(name)
 
 
 class IntegrationsConfig(BaseModel):
     """Integrations-oriented top-level config shape.
 
-    Maps provider name → settings dict. Starting with Trello but extensible.
+    Stores provider configs generically under ``providers`` while preserving the
+    existing ``integrations.<provider>`` access pattern for compatibility.
     """
+
     enabled_providers: list[str] = Field(default_factory=list)
-    trello: TrelloConfig = Field(default_factory=TrelloConfig)
+    providers: dict[str, ProviderConfig] = Field(default_factory=dict)
+
+    @model_validator(mode="before")
+    @classmethod
+    def normalize_provider_blocks(cls, data: Any) -> Any:
+        if not isinstance(data, dict):
+            return data
+
+        raw = dict(data)
+        providers = dict(raw.get("providers") or {})
+        for key in list(raw.keys()):
+            if key in {"enabled_providers", "providers"}:
+                continue
+            providers[key] = raw.pop(key)
+        raw["providers"] = providers
+        return raw
+
+    def __getattr__(self, name: str) -> Any:
+        providers = self.__dict__.setdefault("providers", {})
+        if name.startswith("__"):
+            raise AttributeError(name)
+        if name not in providers:
+            providers[name] = ProviderConfig()
+        return providers[name]
+
+    def get_provider(self, name: str) -> ProviderConfig:
+        return getattr(self, name)
 
 
 class WorkerConfig(BaseModel):
@@ -210,22 +250,3 @@ def ensure_config(config_dir: str, overwrite: bool = False) -> Path:
 
     return dest
 
-
-def update_trello_board_id(config_dir: str, board_id: str | None) -> None:
-    """Update the Trello board ID in the config file.
-
-    Args:
-        config_dir: Path to directory containing config.json.
-        board_id: The new Trello board ID, or None to clear it.
-
-    Raises:
-        ConfigError: If config.json is not found.
-    """
-    cfg_path = Path(config_dir) / "config.json"
-    raw = _load_json(cfg_path)
-
-    raw.setdefault("integrations", {}).setdefault("trello", {})["board_id"] = board_id
-
-    with open(cfg_path, "w", encoding="utf-8") as f:
-        json.dump(raw, f, indent=2)
-        f.write("\n")

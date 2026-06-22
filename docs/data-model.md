@@ -336,4 +336,4 @@ Task model has `model_validator(mode="before")` that maps legacy field names to 
 This allows loading tasks created by older versions without data migration scripts.
 
 ### Config Location
-Config files live in the **project directory** (not `~/.cellos/`). Example files shipped with the repo are copied on first init. This supports per-project isolation — each cellos instance has its own config, agents, and prompt profiles alongside the codebase.
+Config files default to `~/.cellos/`. Example files are copied on first init into the active config directory, and `--config-dir` can be used for isolated per-project or per-test setups.

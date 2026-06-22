@@ -17,7 +17,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-trello = ["aiohttp>=3.9"]
+provider-http = ["aiohttp>=3.9"]
 dev = [
     "pytest",
     "pytest-asyncio",

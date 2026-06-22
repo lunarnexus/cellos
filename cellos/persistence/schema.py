@@ -11,7 +11,7 @@ REQUIRED_TABLES = frozenset({
     "task_events",
     "task_comments",
     "task_attempts",
-    "trello_sync",
+    "integration_sync",
 })
 
 SCHEMA_SQL = """\
@@ -87,7 +87,7 @@ CREATE TABLE IF NOT EXISTS task_attempts (
     completed_at TEXT DEFAULT ''
 );
 
-CREATE TABLE IF NOT EXISTS trello_sync (
+CREATE TABLE IF NOT EXISTS integration_sync (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     key TEXT UNIQUE NOT NULL,
     value TEXT NOT NULL

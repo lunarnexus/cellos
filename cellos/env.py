@@ -101,21 +101,3 @@ def env_has(key: str) -> bool:
     """
     return bool(os.environ.get(key, "").strip())
 
-
-def get_trello_credentials() -> tuple[str, str]:
-    """Get TRELLO_API_KEY and TRELLO_TOKEN from environment.
-
-    Returns:
-        Tuple of (api_key, token).
-
-    Raises:
-        EnvironmentError: If either credential is missing, with setup instructions.
-    """
-    hint = (
-        "Create a Trello Power-Up at https://trello.com/power-ups/admin, "
-        "generate an API key, then generate a user token with at least read,write scope, "
-        "and add both to ~/.cellos/.env:"
-    )
-    api_key = get_required_env("TRELLO_API_KEY", hint)
-    token = get_required_env("TRELLO_TOKEN", hint)
-    return (api_key, token)

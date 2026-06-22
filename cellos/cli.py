@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import sys
 from pathlib import Path
 from typing import Optional
 
@@ -315,7 +316,7 @@ def detail(ctx: click.Context, task_id):
                 task = await service.get_task(task_id)
             except TaskNotFoundError as e:
                 console.print(f"[red]Error: {e}[/]")
-                return
+                sys.exit(1)
 
             panel = _format_detail_panel(task)
             console.print(panel)
@@ -340,10 +341,10 @@ def approve(ctx: click.Context, task_id):
                 approved = await service.approve_task(task_id)
             except TaskNotFoundError as e:
                 console.print(f"[red]Error: {e}[/]")
-                return
+                sys.exit(1)
             except InvalidTaskApprovalError as e:
                 console.print(f"[red]Error: {e}[/]")
-                return
+                sys.exit(1)
 
             console.print(f"✓ Approved task {task_id}")
             console.print(f"  Status: {approved.status.value}")
@@ -370,7 +371,7 @@ def comment(ctx: click.Context, task_id, message):
                 current_task = await service.get_task(task_id)
             except TaskNotFoundError as e:
                 console.print(f"[red]Error: {e}[/]")
-                return
+                sys.exit(1)
 
             comment_obj = await service.add_human_comment(task_id, message)
 
@@ -408,7 +409,7 @@ def events(ctx: click.Context, task_id, limit):
                 await service.get_task(task_id)
             except TaskNotFoundError as e:
                 console.print(f"[red]Error: {e}[/]")
-                return
+                sys.exit(1)
 
             event_list = await db.list_events(task_id, limit=limit)
 
@@ -456,10 +457,10 @@ def update(ctx: click.Context, task_id, title, details, success_criteria, failur
                 )
             except TaskNotFoundError as e:
                 console.print(f"[red]Error: {e}[/]")
-                return
+                sys.exit(1)
             except EmptyTaskUpdateError as e:
                 console.print(f"[red]Error: {e}[/]")
-                return
+                sys.exit(1)
 
             changes = []
             if title:
@@ -507,7 +508,7 @@ def worker(ctx: click.Context, task_id, mode):
             config = load_config(config_dir)
         except (CfgErr, FileNotFoundError):
             console.print(f"[red]Config not found in {config_dir}. Run 'cellos init' first.[/]")
-            return
+            sys.exit(1)
 
         try:
             from cellos.services.worker_service import run_task_worker, WorkerError as WkErr
@@ -515,8 +516,10 @@ def worker(ctx: click.Context, task_id, mode):
             console.print(f"✓ Worker completed for {task_id} (status={result.status.value})")
         except WkErr as e:
             console.print(f"[red]Worker error: {e}[/]")
+            sys.exit(1)
         except Exception as e:
             console.print(f"[red]Unexpected error: {type(e).__name__}: {e}[/]")
+            sys.exit(1)
         finally:
             await db.close()
 
@@ -543,7 +546,7 @@ def run(ctx: click.Context):
         except (CfgErr, FileNotFoundError) as e:
             console.print(f"[red]Config error: {e}[/]")
             console.print(f"  Run 'cellos init' first.")
-            return
+            sys.exit(1)
 
         console.print(f"Starting daemon (concurrent_tasks={config.scheduler.concurrent_tasks})...")
         console.print("  Press Ctrl+C to stop.")
@@ -585,23 +588,23 @@ def plan(ctx: click.Context, task_id):
             config = load_config(config_dir)
         except (CfgErr, FileNotFoundError):
             console.print(f"[red]Config not found in {config_dir}. Run 'cellos init' first.[/]")
-            return
+            sys.exit(1)
 
         task = await db.get_task(task_id)
         if task is None:
             console.print(f"[red]Error: Task {task_id} not found[/]")
             await db.close()
-            return
+            sys.exit(1)
 
         if task.status != TaskStatus.DRAFT:
             console.print(f"[red]Error: Cannot plan task in status '{task.status.value}'. Must be 'draft'.[/]")
             await db.close()
-            return
+            sys.exit(1)
 
         if task.role not in (AgentRole.ARCHITECT, AgentRole.COORDINATOR):
             console.print(f"[red]Error: Cannot plan task with role '{task.role.value}'. Planning is restricted to architect and coordinator roles.[/]")
             await db.close()
-            return
+            sys.exit(1)
 
         console.print(f"▶ Planning {task_id}: {task.title}")
 
@@ -613,8 +616,10 @@ def plan(ctx: click.Context, task_id):
             _notify_daemon()
         except WkErr as e:
             console.print(f"[red]Planning error: {e}[/]")
+            sys.exit(1)
         except Exception as e:
             console.print(f"[red]Unexpected error: {type(e).__name__}: {e}[/]")
+            sys.exit(1)
         finally:
             await db.close()
 
@@ -641,18 +646,18 @@ def execute(ctx: click.Context, task_id):
             config = load_config(config_dir)
         except (CfgErr, FileNotFoundError):
             console.print(f"[red]Config not found in {config_dir}. Run 'cellos init' first.[/]")
-            return
+            sys.exit(1)
 
         task = await db.get_task(task_id)
         if task is None:
             console.print(f"[red]Error: Task {task_id} not found[/]")
             await db.close()
-            return
+            sys.exit(1)
 
         if task.status != TaskStatus.APPROVED:
             console.print(f"[red]Error: Cannot execute task in status '{task.status.value}'. Must be 'approved'.[/]")
             await db.close()
-            return
+            sys.exit(1)
 
         console.print(f"▶ Executing {task_id}: {task.title}")
 
@@ -665,8 +670,10 @@ def execute(ctx: click.Context, task_id):
             _notify_daemon()
         except WkErr as e:
             console.print(f"[red]Execution error: {e}[/]")
+            sys.exit(1)
         except Exception as e:
             console.print(f"[red]Unexpected error: {type(e).__name__}: {e}[/]")
+            sys.exit(1)
         finally:
             await db.close()
 
@@ -685,7 +692,7 @@ def pmcon():
 @click.pass_context
 def pmcon_list(ctx: click.Context):
     """List available PM tool providers."""
-    from cellos.integrations.registry import get_providers
+    from cellos.integrations.registry import get_providers, load_provider
 
     providers = get_providers()
     if not providers:
@@ -696,12 +703,12 @@ def pmcon_list(ctx: click.Context):
     table.add_column("Provider", style="cyan")
     table.add_column("Description")
 
-    descriptions = {
-        "trello": "Trello board sync",
-    }
-
     for name in providers:
-        desc = descriptions.get(name, name)
+        try:
+            prov = load_provider(name)
+            desc = prov.provider_description
+        except Exception:
+            desc = name
         table.add_row(name, desc)
 
     console.print(table)
@@ -727,21 +734,21 @@ def pmcon_setup(ctx: click.Context, provider: str):
             prov = load_provider(provider, config=config, _config_dir=config_dir)
         except ValueError as e:
             console.print(f"[red]{e}[/]")
-            return
+            sys.exit(1)
 
         db = await _get_db(db_path)
         prov._db = db
         try:
-            target_id, mapping = await prov.setup()
+            result = await prov.setup()
         except Exception as e:
             console.print(f"[red]Setup failed:[/] {e}")
-            return
+            sys.exit(1)
         finally:
             await db.close()
 
         console.print(f"✓ Provider '{provider}' configured")
-        console.print(f"  Target ID: {target_id}")
-        for k, v in mapping.items():
+        console.print(f"  Target ID: {result.target_id}")
+        for k, v in result.mappings.items():
             console.print(f"  {k}: {v}")
 
     asyncio.run(_run())
@@ -773,7 +780,7 @@ def pmcon_sync(ctx: click.Context, provider: str, push: bool, pull: bool):
             prov = load_provider(provider, config=config, _config_dir=config_dir)
         except ValueError as e:
             console.print(f"[red]{e}[/]")
-            return
+            sys.exit(1)
 
         db = await _get_db(db_path)
         prov._db = db
@@ -781,7 +788,7 @@ def pmcon_sync(ctx: click.Context, provider: str, push: bool, pull: bool):
             delta = await prov.sync(push=do_push, pull=do_pull)
         except OSError as e:
             console.print(f"[red]Missing credentials:[/] {e}")
-            return
+            sys.exit(1)
         finally:
             await db.close()
 
@@ -825,7 +832,7 @@ def pmcon_status(ctx: click.Context, provider: str):
             prov = load_provider(provider, config=config, _config_dir=config_dir)
         except ValueError as e:
             console.print(f"[red]{e}[/]")
-            return
+            sys.exit(1)
 
         db = await _get_db(db_path)
         prov._db = db

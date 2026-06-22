@@ -38,18 +38,35 @@ class IntegrationStatus:
         return self.configured and self.credentials_configured
 
 
+@dataclass
+class SetupResult:
+    """Structured result of provider setup/bootstrap."""
+
+    target_id: str
+    mappings: dict[str, str] = field(default_factory=dict)
+    details: dict[str, Any] = field(default_factory=dict)
+
+
 class IntegrationProvider(abc.ABC):
     """Abstract base for integration providers.
 
-    Each provider (Trello, GitHub Projects, Linear, etc.) implements this
+    Each provider (WeKan, Plane, OpenProject, GitHub Projects, etc.) implements this
     contract to participate in the generic CLI surface and scheduler hooks.
     """
+
+    PROVIDER_NAME: str = ""
+    PROVIDER_DESCRIPTION: str = ""
 
     @property
     @abc.abstractmethod
     def provider_name(self) -> str:
-        """Short identifier used in CLI commands (e.g., 'trello')."""
+        """Short identifier used in CLI commands (e.g., 'wekan')."""
         ...
+
+    @property
+    def provider_description(self) -> str:
+        """Human-readable provider description for generic CLI rendering."""
+        return self.PROVIDER_DESCRIPTION or self.provider_name
 
     @abc.abstractmethod
     async def is_configured(self) -> bool:
@@ -57,12 +74,12 @@ class IntegrationProvider(abc.ABC):
         ...
 
     @abc.abstractmethod
-    async def setup(self) -> tuple[str, dict[str, str]]:
+    async def setup(self) -> SetupResult:
         """Bootstrap or validate the external resource and persist state.
 
         Returns:
-            Tuple of (target_id, mapping_dict) where target_id is the board/
-            project ID and mapping_dict contains any discovered mappings.
+            SetupResult where target_id is the board/project ID and mappings
+            contains any discovered workflow/list/state mappings.
         """
         ...
 

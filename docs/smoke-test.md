@@ -1,239 +1,199 @@
-# CelloS Smoke Test
+# CelloS Core Smoke Test
 
-Sequential validation flow covering the complete CelloS system.
-Each step must pass before proceeding to the next.
-
-**Prerequisites:**
-- Python 3.12+ installed
-- pipx installed (`python3 -m pip install --user pipx && python3 -m pipx ensurepath`)
-- `pipx install --editable ".[dev]"` completed from the `cellos/` directory
+Generic validation flow for the CelloS core CLI and provider framework.
+This smoke test is intentionally **connector-independent**: it must pass without
+any external PM tool or provider credentials.
 
 ---
 
-## Step 1: Unit Tests
+## Scope
 
-Run the full test suite to verify all code is working.
+This smoke test verifies:
+
+- core CLI entry points
+- local config/database initialization
+- basic task lifecycle commands
+- generic `pmcon` command surface
+- provider discovery/listing
+- clean failure for unknown providers
+
+This smoke test does **not** verify any specific connector. Use a
+separate connector smoke test for that when a real provider exists.
+
+---
+
+## Prerequisites
+
+- Python 3.12+
+- test/dev dependencies installed for the repo
+- run from the repo root:
 
 ```bash
 cd ~/workspace/cellos
+```
+
+Optional but recommended first check:
+
+```bash
 python3 -m pytest tests/ -q
 ```
 
-**Expected:** All tests pass.
-
-**Troubleshooting:**
-| Symptom | Fix |
-|---------|-----|
-| Import errors | Re-run `pipx install --force --editable ".[dev]"` in `cellos/` |
-| Test failures in specific module | Check that module's implementation matches test expectations |
+**Expected:** test suite passes (warnings may still be present if documented elsewhere).
 
 ---
 
-## Step 2: CLI Entry Point
+## Process
 
-Verify the CLI is installed and responds to help.
+You are a tester only.  You are READ-ONLY.  
+Do not install, change, or fix test steps, code, timeouts, unless specifically approved in this document.
+List each Step, and the expected outcome.  
+Optionally pause and wait for user approval to proceed.  
+Then run the step, compare with expected outcomes, list the next step and optionally pause for the user.  
+
+---
+
+## Step 1: CLI Entry Point
 
 ```bash
 cellos --help
 ```
 
-**Expected:** Shows command group with all subcommands listed: init, add-task, status, detail, approve, comment, events, update, plan, execute, worker, run, pmcon.
+**Expected:** Help renders and includes `pmcon` in the command list.
 
 ---
 
-## Step 3: Initialize
+## Step 2: Initialize Local State
 
-Create config files and database.
+Use an isolated temp directory so the smoke test does not depend on or mutate an
+existing real setup.
 
 ```bash
-cellos init --overwrite
-cellos status
+export CELLOS_SMOKE_ROOT=$(mktemp -d)
+export CELLOS_SMOKE_CFG="$CELLOS_SMOKE_ROOT/.cellos"
+export CELLOS_SMOKE_DB="$CELLOS_SMOKE_ROOT/cellos.sqlite"
+
+cellos --config-dir "$CELLOS_SMOKE_CFG" --db "$CELLOS_SMOKE_DB" init --overwrite
+cellos --config-dir "$CELLOS_SMOKE_CFG" --db "$CELLOS_SMOKE_DB" status
 ```
 
 **Expected:**
-- Config written to `~/.cellos/` (config.json, agentcatalog.json, promptprofiles.json)
-- Database initialized at `~/.cellos/cellos.sqlite`
-- Status shows "No tasks found"
+- config files written under `$CELLOS_SMOKE_CFG`
+- database initialized at `$CELLOS_SMOKE_DB`
+- `status` reports no tasks found
 
 ---
 
-## Step 4: Create Task
-
-Create a task and verify it appears.
+## Step 3: Generic `pmcon` Help
 
 ```bash
-TASK_ID=$(cellos add-task "Count the number of lines in ~/workspace/cellos/README.md and report back" -d "Count lines and report your findings" -r architect | grep -oP 'Created task \K[^:\s]+')
-cellos status
+cellos --config-dir "$CELLOS_SMOKE_CFG" --db "$CELLOS_SMOKE_DB" pmcon --help
 ```
 
-**Expected:** Task created with ID, role=architect, status=draft. Status table shows the task.
+**Expected:** shows generic `pmcon` subcommands:
+- `list`
+- `setup`
+- `sync`
+- `status`
 
 ---
 
-## Step 5: Plan Task
-
-Generate a plan via agent (opencode).
+## Step 4: Provider Discovery
 
 ```bash
-cellos plan $TASK_ID
+cellos --config-dir "$CELLOS_SMOKE_CFG" --db "$CELLOS_SMOKE_DB" pmcon list
 ```
 
-**Expected:** "Plan generated for <id>", Status: needs_approval.
+**Expected:** command succeeds and lists discovered provider(s).
+
+Notes:
+- This verifies generic provider discovery.
+- It does **not** require provider credentials.
+- The exact provider list may grow over time.
 
 ---
 
-## Step 6: Task Detail
-
-View full task information.
+## Step 5: Unknown Provider Guard
 
 ```bash
-cellos detail $TASK_ID
+cellos --config-dir "$CELLOS_SMOKE_CFG" --db "$CELLOS_SMOKE_DB" pmcon status doesnotexist
 ```
 
-**Expected:** Panel showing title, status=needs_approval, role, type, details, plan text, and ⚠️ attention marker.
+**Expected:** command fails cleanly with an unknown-provider error.
 
 ---
 
-## Step 7: Events
-
-View audit trail.
+## Step 6: Create a Local Task
 
 ```bash
-cellos events $TASK_ID
+TASK_ID=$(cellos --config-dir "$CELLOS_SMOKE_CFG" --db "$CELLOS_SMOKE_DB" add-task \
+  "Smoke test task" \
+  -d "Validate core local CLI behavior" \
+  -r architect | grep -oP 'Created task \K[^:\s]+')
+
+cellos --config-dir "$CELLOS_SMOKE_CFG" --db "$CELLOS_SMOKE_DB" status
 ```
 
-**Expected:** Chronological events including task_created, planning_saved, status_changed.
+**Expected:**
+- task is created
+- task appears in `status`
+- initial status is `draft`
 
 ---
 
-## Step 8: Approve Task
-
-Human gate: approve the plan for execution.
+## Step 7: Detail and Events
 
 ```bash
-cellos approve $TASK_ID
+cellos --config-dir "$CELLOS_SMOKE_CFG" --db "$CELLOS_SMOKE_DB" detail "$TASK_ID"
+cellos --config-dir "$CELLOS_SMOKE_CFG" --db "$CELLOS_SMOKE_DB" events "$TASK_ID"
 ```
 
-**Expected:** "✓ Approved task <id>", Status: approved (parent waits for children to complete).
+**Expected:**
+- `detail` shows the task record
+- `events` includes `task_created`
 
 ---
 
-## Step 9: Verify Result
-
-Confirm final task state.
+## Step 8: Invalid Approval Guard
 
 ```bash
-cellos detail $TASK_ID
+cellos --config-dir "$CELLOS_SMOKE_CFG" --db "$CELLOS_SMOKE_DB" approve "$TASK_ID"
 ```
 
-**Expected:** Status: approved (waiting for child tasks to complete). If the architect created child tasks and they complete, the parent auto-transitions to done.
+**Expected:** fails cleanly because a `draft` task cannot be approved.
 
 ---
 
-## Step 9a: Parent Completion (with child tasks)
-
-If the architect plan created child tasks, verify parent completion:
+## Step 9: Comment / Attention Path
 
 ```bash
-# After children complete via execution
-cellos detail $TASK_ID
+cellos --config-dir "$CELLOS_SMOKE_CFG" --db "$CELLOS_SMOKE_DB" comment "$TASK_ID" -m "Smoke-test comment"
+cellos --config-dir "$CELLOS_SMOKE_CFG" --db "$CELLOS_SMOKE_DB" status
 ```
 
-**Expected:** Status: done (all child tasks completed successfully).
-If any child failed, status shows ⚠️ attention with reason child_failed.
+**Expected:**
+- comment is added
+- task remains visible
+- attention/comment indicators appear if supported by current UI output
 
 ---
 
-## Step 9b: Engineer Execution (optional)
-
-To test execution, create an engineer task with a concrete plan:
+## Step 10: Cleanup
 
 ```bash
-ENG_ID=$(cellos add-task "Count lines in README.md" -d "Use wc -l to count lines" -r engineer | grep -oP 'Created task \K[^:\s]+')
-cellos approve $ENG_ID  # Engineer tasks need approval without planning — requires 'ready' command (future)
-cellos execute $ENG_ID
-cellos detail $ENG_ID
+rm -rf "$CELLOS_SMOKE_ROOT"
+unset CELLOS_SMOKE_ROOT CELLOS_SMOKE_CFG CELLOS_SMOKE_DB
 ```
 
-**Expected:** Task executed, status: done, with result summary.
-
----
-
-## Step 11: Comments & Attention
-
-Add comment and verify attention triggers.
-
-```bash
-COMMENT_TASK_ID=$(cellos add-task "Task for comment test" -r engineer | grep -oP 'Created task \K[^:\s]+')
-cellos comment $COMMENT_TASK_ID -m "Please use approach X"
-cellos status
-```
-
-**Expected:** Comment added, ⚠️ attention marker visible in status table.
-
----
-
-## Step 12: Dependencies
-
-Create tasks with dependencies.
-
-```bash
-PARENT_ID=$(cellos add-task "Parent task" -r engineer | grep -oP 'Created task \K[^:\s]+')
-CHILD_ID=$(cellos add-task "Child task" -r engineer | grep -oP 'Created task \K[^:\s]+')
-cellos update $PARENT_ID --add-dep $CHILD_ID
-cellos detail $PARENT_ID
-```
-
-**Expected:** Parent task shows dependency on child in detail view.
-
----
-
-## Step 13: Invalid Approval Guard
-
-Attempt to approve a draft task (should fail).
-
-```bash
-DRAFT_ID=$(cellos add-task "Draft task" -r engineer | grep -oP 'Created task \K[^:\s]+')
-cellos approve $DRAFT_ID
-```
-
-**Expected:** "Error: Cannot approve task in status 'draft'. Must be 'needs_approval'."
-
----
-
-## Step 14: Empty Update Guard
-
-Attempt to update with no fields (should fail).
-
-```bash
-cellos update $DRAFT_ID
-```
-
-**Expected:** "Error: No fields specified for update."
-
----
-
-## Step 15: Daemon Scheduler
-
-Start daemon, verify it picks up work.
-
-```bash
-cellos add-task "Daemon test task" -r engineer
-cellos run
-```
-
-**Expected:** Daemon starts, picks up draft task for planning, fake_acp generates plan, status shows needs_approval.
-Press Ctrl+C to stop.
+**Expected:** temporary smoke-test files are removed.
 
 ---
 
 ## Troubleshooting
 
-| Step | Symptom | Fix |
-|------|---------|-----|
-| 1 | Import errors | `pipx install --force --editable ".[dev]"` |
-| 3 | Config not found | Delete `~/.cellos` and re-run `cellos init` |
-| 5 | Worker error | Check fake_acp config in agentcatalog.json |
-| 8 | Cannot approve | Task must be in needs_approval status |
-| 9 | Execution error | Verify task is approved, check agent config |
-| 15 | Daemon hangs | Check concurrent_tasks config, verify fake_acp works |
+| Symptom | Likely cause | Check |
+|---|---|---|
+| `cellos --help` fails | CLI not installed or env not active | reinstall/editable install, verify PATH |
+| `init` fails | config example files missing or bad path | inspect `cellos.config.json.example` and `--config-dir` |
+| `pmcon list` fails | provider discovery/import problem | inspect `cellos/integrations/registry.py` and provider modules |
+| `pmcon status doesnotexist` does not fail cleanly | registry error handling regressed | inspect unknown-provider path in `load_provider()` |
+| local task commands fail | DB/config mismatch | verify `--db` and `--config-dir` point to same temp run |
