@@ -158,6 +158,22 @@ class TestLoadConfig:
         assert len(cfg.agent_catalog) == 1
         assert "test_agent" in cfg.agent_catalog
 
+    def test_example_env_includes_vikunja_variables(self):
+        env_example = Path(__file__).resolve().parents[1] / "cellos" / "env.example"
+        content = env_example.read_text()
+
+        assert "VIKUNJA_BASE_URL=" in content
+        assert "VIKUNJA_API_TOKEN=" in content
+
+    def test_example_config_mentions_vikunja_provider_shape(self):
+        config_example = Path(__file__).resolve().parents[1] / "cellos" / "cellos.config.json.example"
+        data = json.loads(config_example.read_text())
+
+        assert "vikunja" in data["integrations"]["providers"]
+        assert data["integrations"]["providers"]["vikunja"]["project_id"]
+        assert data["integrations"]["providers"]["vikunja"]["view_id"]
+        assert data["integrations"]["providers"]["vikunja"]["bucket_map"]
+
 
 class TestEnsureConfig:
     def test_creates_files(self, tmp_path):
@@ -233,3 +249,19 @@ class TestProviderConfigBoardId:
         }))
         cfg = load_config(str(tmp_path))
         assert cfg.integrations.wekan.board_id == "test-board-123"
+
+    def test_load_config_with_vikunja_provider_block(self, tmp_path):
+        (tmp_path / "config.json").write_text(json.dumps({
+            "integrations": {
+                "vikunja": {
+                    "auto_sync_enabled": True,
+                    "project_id": "project-7",
+                    "view_id": "view-2",
+                    "bucket_map": {"backlog": "11", "done": "22"}
+                }
+            }
+        }))
+        cfg = load_config(str(tmp_path))
+        assert cfg.integrations.vikunja.project_id == "project-7"
+        assert cfg.integrations.vikunja.view_id == "view-2"
+        assert cfg.integrations.vikunja.bucket_map == {"backlog": "11", "done": "22"}

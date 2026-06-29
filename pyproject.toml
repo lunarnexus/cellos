@@ -31,5 +31,8 @@ asyncio_mode = "auto"
 [tool.setuptools.package-data]
 cellos = ["*.example"]
 
+[tool.setuptools.packages.find]
+include = ["cellos*"]
+
 [project.scripts]
 cellos = "cellos.cli:main"

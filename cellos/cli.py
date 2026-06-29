@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import sqlite3
 import sys
 from pathlib import Path
 from typing import Optional
@@ -17,7 +18,7 @@ from rich.console import Console
 from rich.panel import Panel
 from rich.table import Table
 
-from cellos.config import ensure_config, load_config
+from cellos.config import ensure_config, load_config, update_provider_config
 from cellos.env import load_env
 from cellos.db import CellosDatabase
 from cellos.models import (
@@ -28,7 +29,7 @@ from cellos.models import (
     TaskStatus,
     TaskType,
 )
-from cellos.persistence.schema import init_db
+from cellos.persistence.schema import DatabaseNotInitialized, init_db
 from cellos.services.task_service import (
     EmptyTaskUpdateError,
     InvalidTaskApprovalError,
@@ -92,7 +93,16 @@ def main(ctx: click.Context, db: str, config_dir: str, debug: str | None):
 async def _get_db(db_path: str) -> CellosDatabase:
     """Create and connect a CellosDatabase instance."""
     db = CellosDatabase(db_path)
-    await db.connect()
+    try:
+        await db.connect()
+    except DatabaseNotInitialized as exc:
+        raise click.ClickException(str(exc)) from exc
+    except sqlite3.OperationalError as exc:
+        if "unable to open database file" not in str(exc).lower():
+            raise
+        raise click.ClickException(
+            f"Unable to open database at {db_path}. Run 'cellos init' to create it."
+        ) from exc
     return db
 
 
@@ -716,8 +726,9 @@ def pmcon_list(ctx: click.Context):
 
 @pmcon.command("setup")
 @click.argument("provider", required=True)
+@click.option("--clean", is_flag=True, default=False, help="Reset managed remote project state before recreating baseline.")
 @click.pass_context
-def pmcon_setup(ctx: click.Context, provider: str):
+def pmcon_setup(ctx: click.Context, provider: str, clean: bool):
     """Bootstrap or validate an external PM tool integration.
 
     Creates or links the target resource (board, project, etc.) and persists state.
@@ -739,7 +750,9 @@ def pmcon_setup(ctx: click.Context, provider: str):
         db = await _get_db(db_path)
         prov._db = db
         try:
-            result = await prov.setup()
+            result = await prov.setup(clean=clean)
+            if provider == "vikunja" and result.mappings:
+                update_provider_config(config_dir, provider, {"bucket_map": result.mappings})
         except Exception as e:
             console.print(f"[red]Setup failed:[/] {e}")
             sys.exit(1)
@@ -786,8 +799,11 @@ def pmcon_sync(ctx: click.Context, provider: str, push: bool, pull: bool):
         prov._db = db
         try:
             delta = await prov.sync(push=do_push, pull=do_pull)
-        except OSError as e:
+        except FileNotFoundError as e:
             console.print(f"[red]Missing credentials:[/] {e}")
+            sys.exit(1)
+        except OSError as e:
+            console.print(f"[red]Sync failed:[/] {e}")
             sys.exit(1)
         finally:
             await db.close()

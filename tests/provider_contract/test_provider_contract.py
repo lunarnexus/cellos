@@ -3,7 +3,7 @@ from __future__ import annotations
 import pytest
 
 
-@pytest.mark.parametrize("provider_name", ["example"])
+@pytest.mark.parametrize("provider_name", ["example", "vikunja"])
 def test_provider_registry_loads_known_provider(provider_name):
     from cellos.integrations.registry import load_provider
 

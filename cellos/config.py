@@ -210,6 +210,21 @@ def load_config(config_dir: str) -> CellosConfig:
     return config
 
 
+def update_provider_config(config_dir: str, provider_name: str, updates: dict[str, Any]) -> None:
+    """Persist shallow updates into a provider block inside config.json."""
+    cfg_path = Path(config_dir) / "config.json"
+    raw_main = _load_json(cfg_path)
+
+    integrations = raw_main.setdefault("integrations", {})
+    providers = integrations.setdefault("providers", {})
+    provider_block = providers.setdefault(provider_name, {})
+    provider_block.update(updates)
+
+    with open(cfg_path, "w", encoding="utf-8") as f:
+        json.dump(raw_main, f, indent=2)
+        f.write("\n")
+
+
 # ─── Init helpers ─────────────────────────────────────────────────────────────
 
 def ensure_config(config_dir: str, overwrite: bool = False) -> Path:

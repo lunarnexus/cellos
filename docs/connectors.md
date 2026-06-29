@@ -242,3 +242,52 @@ Not every connector needs all of these files. Keep it small.
 **Core stays generic. Provider packages own provider behavior.**
 
 If a change requires the core to learn provider-specific domain rules, the design is probably wrong.
+
+---
+
+## Vikunja Connector Notes
+
+The repo now includes a provider-owned Vikunja connector under:
+
+```text
+cellos/integrations/vikunja/
+```
+
+### Required environment
+
+- `VIKUNJA_BASE_URL` — full API base URL, for example `http://host:3456/api/v1`
+- `VIKUNJA_API_TOKEN` — bearer token for the Vikunja user
+
+Important: `VIKUNJA_BASE_URL` must include the `/api/v1` prefix. The provider does not append it automatically.
+
+### Required provider config
+
+Example:
+
+```yaml
+integrations:
+  providers:
+    vikunja:
+      project_id: "1"
+      view_id: "4"
+      bucket_map:
+        to-do: "1"
+        doing: "2"
+        done: "3"
+```
+
+### Sync behavior
+
+- **Push**: creates remote tasks for unmapped local tasks and updates mapped remote tasks.
+- **Pull**: imports unmapped remote project tasks into CelloS and updates mapped local task status from Vikunja.
+- **Comments**: imports remote task comments into local `task_comments` with duplicate prevention.
+
+### Vikunja-specific semantics
+
+- Kanban buckets are **view-scoped** in Vikunja.
+- The authoritative write path for moving a card between buckets is:
+  - `POST /projects/{project}/views/{view}/buckets/{bucket}/tasks`
+- The authoritative read path for bucket placement is task fetches with:
+  - `expand=buckets`
+
+Do not rely on raw `task.bucket_id` alone for status reconstruction. On the live test instance used during implementation, `bucket_id` remained `0` even when `expand=buckets` showed the correct kanban bucket.

@@ -14,7 +14,17 @@
     "preapprove_research_tasks": false
   },
   "integrations": {
-    "enabled_providers": [],
-    "providers": {}
+    "enabled_providers": ["vikunja"],
+    "providers": {
+      "vikunja": {
+        "project_id": "1",
+        "view_id": "4",
+        "bucket_map": {
+          "to-do": "1",
+          "doing": "2",
+          "done": "3"
+        }
+      }
+    }
   }
 }

@@ -4,8 +4,10 @@ Tests use real SQLite databases in temp directories (no mocking). Each test
 initializes a fresh DB to avoid cross-test contamination.
 """
 
-import pytest
+import json
 from pathlib import Path
+
+import pytest
 from click.testing import CliRunner
 
 from cellos.cli import main
@@ -132,6 +134,19 @@ def test_add_task_with_dependencies(runner):
 
 
 # ── status ──────────────────────────────────────────────────────────────
+
+def test_status_before_init_fails_cleanly(runner):
+    cli_runner, tmp_path, db, config_dir = runner
+
+    result = cli_runner.invoke(
+        main, ["--config-dir", config_dir, "--db", db, "status"]
+    )
+    assert result.exit_code == 1
+    assert result.exception is not None
+    assert "Database not initialized" in result.output
+    assert "Run 'cellos init' to create them" in result.output
+    assert "Traceback" not in result.output
+
 
 def test_status_empty(runner):
     cli_runner, tmp_path, db, config_dir = runner
@@ -457,6 +472,23 @@ def test_pmcon_status_unknown_provider(runner):
     assert "Unknown integration provider 'wekan'" in result.output
 
 
+
+def test_pmcon_status_vikunja_provider(runner, monkeypatch):
+    cli_runner, tmp_path, db, config_dir = runner
+
+    init_result = cli_runner.invoke(main, ["--config-dir", config_dir, "--db", db, "init"])
+    assert init_result.exit_code == 0
+
+    monkeypatch.setenv("VIKUNJA_BASE_URL", "https://vikunja.example")
+    monkeypatch.setenv("VIKUNJA_API_TOKEN", "secret-token")
+
+    result = cli_runner.invoke(main, [
+        "--config-dir", config_dir, "--db", db, "pmcon", "status", "vikunja"
+    ])
+    assert result.exit_code == 0
+    assert "vikunja" in result.output.lower()
+
+
 def test_pmcon_status_example_provider(runner):
     cli_runner, tmp_path, db, config_dir = runner
 
@@ -468,3 +500,86 @@ def test_pmcon_status_example_provider(runner):
     ])
     assert result.exit_code == 0
     assert "example" in result.output.lower()
+
+
+def test_pmcon_setup_passes_clean_flag(runner, monkeypatch):
+    cli_runner, tmp_path, db, config_dir = runner
+
+    init_result = cli_runner.invoke(main, ["--config-dir", config_dir, "--db", db, "init"])
+    assert init_result.exit_code == 0
+
+    captured = {}
+
+    class FakeProvider:
+        def __init__(self):
+            self._db = None
+
+        async def setup(self, clean: bool = False):
+            captured["clean"] = clean
+            from cellos.integrations.base import SetupResult
+            return SetupResult(target_id="17", mappings={"to-do": "1"}, details={})
+
+    monkeypatch.setattr("cellos.integrations.registry.load_provider", lambda *args, **kwargs: FakeProvider())
+
+    result = cli_runner.invoke(main, [
+        "--config-dir", config_dir, "--db", db, "pmcon", "setup", "vikunja", "--clean"
+    ])
+    assert result.exit_code == 0
+    assert captured["clean"] is True
+
+
+def test_pmcon_setup_persists_vikunja_bucket_mapping(runner, monkeypatch):
+    cli_runner, tmp_path, db, config_dir = runner
+
+    init_result = cli_runner.invoke(main, ["--config-dir", config_dir, "--db", db, "init"])
+    assert init_result.exit_code == 0
+
+    class FakeProvider:
+        def __init__(self):
+            self._db = None
+
+        async def setup(self, clean: bool = False):
+            from cellos.integrations.base import SetupResult
+            return SetupResult(
+                target_id="17",
+                mappings={"to-do": "4", "doing": "5", "done": "6"},
+                details={},
+            )
+
+    monkeypatch.setattr("cellos.integrations.registry.load_provider", lambda *args, **kwargs: FakeProvider())
+
+    result = cli_runner.invoke(main, [
+        "--config-dir", config_dir, "--db", db, "pmcon", "setup", "vikunja", "--clean"
+    ])
+    assert result.exit_code == 0
+
+    saved = json.loads((Path(config_dir) / "config.json").read_text())
+    assert saved["integrations"]["providers"]["vikunja"]["bucket_map"] == {
+        "to-do": "4",
+        "doing": "5",
+        "done": "6",
+    }
+
+
+def test_pmcon_sync_reports_non_credential_http_errors(runner, monkeypatch):
+    cli_runner, tmp_path, db, config_dir = runner
+
+    init_result = cli_runner.invoke(main, ["--config-dir", config_dir, "--db", db, "init"])
+    assert init_result.exit_code == 0
+
+    class FakeProvider:
+        def __init__(self):
+            self._db = None
+
+        async def sync(self, push: bool = True, pull: bool = True):
+            raise OSError("HTTP Error 404: Not Found")
+
+    monkeypatch.setattr("cellos.integrations.registry.load_provider", lambda *args, **kwargs: FakeProvider())
+
+    result = cli_runner.invoke(main, [
+        "--config-dir", config_dir, "--db", db, "pmcon", "sync", "vikunja", "--push"
+    ])
+    assert result.exit_code == 1
+    assert "Sync failed:" in result.output
+    assert "HTTP Error 404: Not Found" in result.output
+    assert "Missing credentials:" not in result.output

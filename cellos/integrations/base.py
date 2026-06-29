@@ -74,8 +74,11 @@ class IntegrationProvider(abc.ABC):
         ...
 
     @abc.abstractmethod
-    async def setup(self) -> SetupResult:
+    async def setup(self, clean: bool = False) -> SetupResult:
         """Bootstrap or validate the external resource and persist state.
+
+        Args:
+            clean: When true, reset managed remote state before recreating the baseline.
 
         Returns:
             SetupResult where target_id is the board/project ID and mappings

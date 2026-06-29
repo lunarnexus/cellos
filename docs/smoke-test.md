@@ -25,20 +25,35 @@ separate connector smoke test for that when a real provider exists.
 ## Prerequisites
 
 - Python 3.12+
-- test/dev dependencies installed for the repo
+- `pipx`
+- `cellos` installed and available on `PATH`
 - run from the repo root:
 
 ```bash
 cd ~/workspace/cellos
 ```
 
-Optional but recommended first check:
+Install the CLI once from the repo checkout:
 
 ```bash
+pipx install --python python3.12 --editable .
+```
+
+Why this install mode:
+- `--python python3.12` is required because CelloS requires Python 3.12+
+- `--editable` keeps the installed `cellos` command pointing at this working tree, so source edits are picked up without reinstalling
+- reinstall only when packaging metadata or dependencies change
+
+Optional but recommended first checks:
+
+```bash
+cellos --help
 python3 -m pytest tests/ -q
 ```
 
-**Expected:** test suite passes (warnings may still be present if documented elsewhere).
+**Expected:**
+- `cellos --help` succeeds
+- test suite passes (warnings may still be present if documented elsewhere)
 
 ---
 
@@ -64,21 +79,16 @@ cellos --help
 
 ## Step 2: Initialize Local State
 
-Use an isolated temp directory so the smoke test does not depend on or mutate an
-existing real setup.
+Use the normal default local Cellos path.
 
 ```bash
-export CELLOS_SMOKE_ROOT=$(mktemp -d)
-export CELLOS_SMOKE_CFG="$CELLOS_SMOKE_ROOT/.cellos"
-export CELLOS_SMOKE_DB="$CELLOS_SMOKE_ROOT/cellos.sqlite"
-
-cellos --config-dir "$CELLOS_SMOKE_CFG" --db "$CELLOS_SMOKE_DB" init --overwrite
-cellos --config-dir "$CELLOS_SMOKE_CFG" --db "$CELLOS_SMOKE_DB" status
+cellos init --overwrite
+cellos status
 ```
 
 **Expected:**
-- config files written under `$CELLOS_SMOKE_CFG`
-- database initialized at `$CELLOS_SMOKE_DB`
+- config files written under `~/.cellos/`
+- database initialized at `~/.cellos/cellos.sqlite`
 - `status` reports no tasks found
 
 ---
@@ -86,7 +96,7 @@ cellos --config-dir "$CELLOS_SMOKE_CFG" --db "$CELLOS_SMOKE_DB" status
 ## Step 3: Generic `pmcon` Help
 
 ```bash
-cellos --config-dir "$CELLOS_SMOKE_CFG" --db "$CELLOS_SMOKE_DB" pmcon --help
+cellos pmcon --help
 ```
 
 **Expected:** shows generic `pmcon` subcommands:
@@ -100,7 +110,7 @@ cellos --config-dir "$CELLOS_SMOKE_CFG" --db "$CELLOS_SMOKE_DB" pmcon --help
 ## Step 4: Provider Discovery
 
 ```bash
-cellos --config-dir "$CELLOS_SMOKE_CFG" --db "$CELLOS_SMOKE_DB" pmcon list
+cellos pmcon list
 ```
 
 **Expected:** command succeeds and lists discovered provider(s).
@@ -115,7 +125,7 @@ Notes:
 ## Step 5: Unknown Provider Guard
 
 ```bash
-cellos --config-dir "$CELLOS_SMOKE_CFG" --db "$CELLOS_SMOKE_DB" pmcon status doesnotexist
+cellos pmcon status doesnotexist
 ```
 
 **Expected:** command fails cleanly with an unknown-provider error.
@@ -125,12 +135,12 @@ cellos --config-dir "$CELLOS_SMOKE_CFG" --db "$CELLOS_SMOKE_DB" pmcon status doe
 ## Step 6: Create a Local Task
 
 ```bash
-TASK_ID=$(cellos --config-dir "$CELLOS_SMOKE_CFG" --db "$CELLOS_SMOKE_DB" add-task \
+TASK_ID=$(cellos add-task \
   "Smoke test task" \
   -d "Validate core local CLI behavior" \
   -r architect | grep -oP 'Created task \K[^:\s]+')
 
-cellos --config-dir "$CELLOS_SMOKE_CFG" --db "$CELLOS_SMOKE_DB" status
+cellos status
 ```
 
 **Expected:**
@@ -143,8 +153,8 @@ cellos --config-dir "$CELLOS_SMOKE_CFG" --db "$CELLOS_SMOKE_DB" status
 ## Step 7: Detail and Events
 
 ```bash
-cellos --config-dir "$CELLOS_SMOKE_CFG" --db "$CELLOS_SMOKE_DB" detail "$TASK_ID"
-cellos --config-dir "$CELLOS_SMOKE_CFG" --db "$CELLOS_SMOKE_DB" events "$TASK_ID"
+cellos detail "$TASK_ID"
+cellos events "$TASK_ID"
 ```
 
 **Expected:**
@@ -156,7 +166,7 @@ cellos --config-dir "$CELLOS_SMOKE_CFG" --db "$CELLOS_SMOKE_DB" events "$TASK_ID
 ## Step 8: Invalid Approval Guard
 
 ```bash
-cellos --config-dir "$CELLOS_SMOKE_CFG" --db "$CELLOS_SMOKE_DB" approve "$TASK_ID"
+cellos approve "$TASK_ID"
 ```
 
 **Expected:** fails cleanly because a `draft` task cannot be approved.
@@ -166,8 +176,8 @@ cellos --config-dir "$CELLOS_SMOKE_CFG" --db "$CELLOS_SMOKE_DB" approve "$TASK_I
 ## Step 9: Comment / Attention Path
 
 ```bash
-cellos --config-dir "$CELLOS_SMOKE_CFG" --db "$CELLOS_SMOKE_DB" comment "$TASK_ID" -m "Smoke-test comment"
-cellos --config-dir "$CELLOS_SMOKE_CFG" --db "$CELLOS_SMOKE_DB" status
+cellos comment "$TASK_ID" -m "Smoke-test comment"
+cellos status
 ```
 
 **Expected:**
@@ -180,11 +190,10 @@ cellos --config-dir "$CELLOS_SMOKE_CFG" --db "$CELLOS_SMOKE_DB" status
 ## Step 10: Cleanup
 
 ```bash
-rm -rf "$CELLOS_SMOKE_ROOT"
-unset CELLOS_SMOKE_ROOT CELLOS_SMOKE_CFG CELLOS_SMOKE_DB
+rm -rf ~/.cellos
 ```
 
-**Expected:** temporary smoke-test files are removed.
+**Expected:** local smoke-test files are removed.
 
 ---
 
@@ -192,8 +201,8 @@ unset CELLOS_SMOKE_ROOT CELLOS_SMOKE_CFG CELLOS_SMOKE_DB
 
 | Symptom | Likely cause | Check |
 |---|---|---|
-| `cellos --help` fails | CLI not installed or env not active | reinstall/editable install, verify PATH |
+| `cellos --help` fails | CLI not installed or PATH is wrong | rerun `pipx install --python python3.12 --editable .`, verify `cellos` is on `PATH` |
 | `init` fails | config example files missing or bad path | inspect `cellos.config.json.example` and `--config-dir` |
 | `pmcon list` fails | provider discovery/import problem | inspect `cellos/integrations/registry.py` and provider modules |
 | `pmcon status doesnotexist` does not fail cleanly | registry error handling regressed | inspect unknown-provider path in `load_provider()` |
-| local task commands fail | DB/config mismatch | verify `--db` and `--config-dir` point to same temp run |
+| local task commands fail | DB/config mismatch | verify Cellos is using the expected default local state under `~/.cellos/` |

@@ -4,14 +4,33 @@ Human-governed AI orchestration system that decomposes project work into small, 
 
 ## Installation
 
-**Prerequisites:** Python 3.12+ and pipx installed.
+**Prerequisites:** Python 3.12+ and `pipx`.
+
+Install CelloS as a normal CLI command:
 
 ```bash
-python3 -m ensurepip --default-pip && python3 -m pip install --user pipx
-python3 -m pipx ensurepath
-cd cellos
-pipx install --editable ".[dev]"
+cd ~/workspace/cellos
+pipx install --python python3.12 --editable .
 cellos init
+```
+
+### Notes
+
+- `--python python3.12` matters because CelloS requires Python 3.12+.
+- `--editable` keeps the installed `cellos` command pointing at this working tree, so source edits are picked up without reinstalling.
+- Reinstall only when packaging metadata or dependencies change.
+
+Verify the install:
+
+```bash
+cellos --help
+```
+
+For local development with test dependencies:
+
+```bash
+cd ~/workspace/cellos
+pipx install --python python3.12 --editable ".[dev]"
 ```
 
 ## Quick Start
