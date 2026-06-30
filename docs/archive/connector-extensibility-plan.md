@@ -1,5 +1,7 @@
 # Connector Extensibility Plan
 
+> Archived: the current connector authoring guide is `../connectors.md`; this note is retained for design intent.
+
 **Goal:** Make it straightforward to add new PM connectors such as WeKan, Plane, and OpenProject without leaking provider-specific assumptions into core.
 
 ## Current baseline

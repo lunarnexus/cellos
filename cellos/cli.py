@@ -18,7 +18,7 @@ from rich.console import Console
 from rich.panel import Panel
 from rich.table import Table
 
-from cellos.config import ensure_config, load_config, update_provider_config
+from cellos.config import enable_provider, ensure_config, load_config, update_provider_config
 from cellos.env import load_env
 from cellos.db import CellosDatabase
 from cellos.models import (
@@ -751,6 +751,7 @@ def pmcon_setup(ctx: click.Context, provider: str, clean: bool):
         prov._db = db
         try:
             result = await prov.setup(clean=clean)
+            enable_provider(config_dir, provider)
             if provider == "vikunja" and result.mappings:
                 update_provider_config(config_dir, provider, {"bucket_map": result.mappings})
         except Exception as e:

@@ -1,5 +1,7 @@
 # Open-Source PM Provider Implementation Plan
 
+> Archived: this plan predates the implemented Vikunja connector and is retained for provider-strategy history.
+
 > **For Hermes:** Use subagent-driven-development skill to implement this plan task-by-task.
 
 **Goal:** Replace the abandoned Trello direction with a clean provider strategy for WeKan, Plane, and OpenProject while preserving CelloS's generic PM integration core.

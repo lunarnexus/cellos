@@ -76,7 +76,7 @@
 ## Module Boundaries
 
 ### CLI (`cellos/cli.py`)
-- Click command group with `--db` and `--config` global options
+- Click command group with `--db` and `--config-dir` global options
 - Each command wraps async logic in `asyncio.run(_inner())`
 - Rich output: tables for status, panels for detail, markdown rendering
 - Attention markers (⚠️) shown inline in task lists
@@ -266,7 +266,7 @@ The IN_PROGRESS transition at step 3 is meaningful — it prevents the scheduler
 | Database locked | SQLite handles concurrent reads; writes are serialized via aiosqlite |
 | Config file missing/invalid | Pydantic validation error with clear message at startup |
 | Task in wrong state for operation | Custom exception (e.g., `InvalidTaskApprovalError`) → CLI prints error |
-| OpenCode binary not found | Falls back to fake_acp connector if configured, else clear error |
+| OpenCode binary not found | Worker attempt fails clearly unless the selected agent is configured to use another connector such as `fake_acp` |
 
 ## Testing Strategy
 

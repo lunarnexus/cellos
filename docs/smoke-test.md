@@ -62,8 +62,8 @@ python3 -m pytest tests/ -q
 You are a tester only.  You are READ-ONLY.  
 Do not install, change, or fix test steps, code, timeouts, unless specifically approved in this document.
 List each Step, and the expected outcome.  
-Optionally pause and wait for user approval to proceed.  
-Then run the step, compare with expected outcomes, list the next step and optionally pause for the user.  
+Then run the step, compare with expected outcomes.
+If you encounter ANY abonormalities, unexpected values, errors, failures, or issues of ANY kind, STOP immediately and report to the user.
 
 ---
 

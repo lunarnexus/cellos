@@ -67,7 +67,7 @@ class MyProvider(IntegrationProvider):
     async def is_configured(self) -> bool:
         ...
 
-    async def setup(self) -> SetupResult:
+    async def setup(self, clean: bool = False) -> SetupResult:
         ...
 
     async def status(self) -> IntegrationStatus:
@@ -280,7 +280,7 @@ integrations:
 
 - **Push**: creates remote tasks for unmapped local tasks and updates mapped remote tasks.
 - **Pull**: imports unmapped remote project tasks into CelloS and updates mapped local task status from Vikunja.
-- **Comments**: imports remote task comments into local `task_comments` with duplicate prevention.
+- **Comments**: exports local comments to Vikunja and imports remote task comments into local `task_comments` with duplicate prevention.
 
 ### Vikunja-specific semantics
 

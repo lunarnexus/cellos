@@ -73,13 +73,14 @@ CelloS keeps a generic provider interface under `cellos/integrations/`.
 
 Current state:
 - generic integration scaffolding is present
-- no production PM connector is currently active
-- the next planned providers are **WeKan**, **Plane**, and **OpenProject**
+- **Vikunja** is implemented as the first real PM connector
+- the next planned providers remain **WeKan**, **Plane**, and **OpenProject**
 
 See:
 - `docs/connectors.md`
 - `docs/provider-roadmap.md`
-- `docs/provider-implementation-plan.md`
+- `docs/archive/provider-implementation-plan.md` for the historical provider implementation plan
+- `docs/vikunja-smoke-test.md` for the Vikunja connector smoke test
 
 ## Configuration
 

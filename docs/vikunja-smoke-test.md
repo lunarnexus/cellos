@@ -17,6 +17,7 @@ This smoke test verifies:
 - `cellos pmcon status vikunja` reports a configured Vikunja integration
 - a task created in Cellos can be pushed to Vikunja
 - a task created in Vikunja can be pulled into Cellos
+- a comment added on one side can sync to the other without duplicating on repeat sync
 
 This smoke test does not verify:
 - daemon scheduling
@@ -24,7 +25,6 @@ This smoke test does not verify:
 - approval
 - execution
 - child-task orchestration
-- comment sync
 
 Those belong in a deeper integration test.
 
@@ -115,7 +115,7 @@ cellos init --overwrite
 
 ---
 
-## Step 2: Bootstrap the Vikunja integration
+## Step 2: setup the Vikunja integration
 
 ```bash
 cellos pmcon setup vikunja --clean
@@ -124,12 +124,23 @@ cellos pmcon setup vikunja --clean
 **Expected:**
 - command succeeds
 - configured project and view are valid
-- required reusable labels exist: `architect`, `engineer`
 - baseline bucket structure is present
 
 ---
 
-## Step 3: Verify the Vikunja integration is configured
+## Step 3: Verify reusable labels in Vikunja
+
+Open the configured Vikunja project in the browser UI and verify the reusable labels required by the connector are available.
+
+The URL is: http://10.1.3.35:3456/. Do NOT use the API; use the browser and navigate with browser_* tools.
+
+**Expected in Vikunja:**
+- reusable label `architect` exists
+- reusable label `engineer` exists
+
+---
+
+## Step 4: Verify the Vikunja integration is configured
 
 ```bash
 cellos pmcon status vikunja
@@ -143,9 +154,9 @@ cellos pmcon status vikunja
 
 ---
 
-## Step 4: Prove Cellos -> Vikunja push
+## Step 5: Prove Cellos -> Vikunja push
 
-### 4a. Create a local Cellos task
+### 5a. Create a local Cellos task
 
 ```bash
 cellos add-task "[vikunja smoke YYYY-MM-DD HH:MM] Local push test" -d "Created in Cellos to verify push into Vikunja." -r engineer
@@ -156,7 +167,7 @@ cellos status
 - the new task appears in local status output
 - the task has a visible local task ID
 
-### 4b. Push to Vikunja
+### 5b. Push to Vikunja
 
 ```bash
 cellos pmcon sync vikunja --push
@@ -167,9 +178,11 @@ cellos pmcon sync vikunja --push
 - sync reports at least one created or updated item
 - if this is the first push for the task, exactly one corresponding task should exist in Vikunja after verification
 
-### 4c. Verify in Vikunja
+### 5c. Verify in Vikunja
 
-Open the configured Vikunja project in the browser and confirm the task created in Step 4a exists there.
+Open the configured Vikunja project in the browser and confirm the task created in Step 5a exists there.
+
+The URL is: http://10.1.3.35:3456/.  Do NOT use the API, you MUST use the browser and navigate with browser_* tools.
 
 **Expected in Vikunja:**
 - the task title matches the Cellos task title
@@ -177,9 +190,9 @@ Open the configured Vikunja project in the browser and confirm the task created 
 - the task appears in the configured project
 - the task is visible in the expected bucket for its current Cellos status
 
-### 4d. Update the Cellos task and push again
+### 5d. Update the Cellos task and push again
 
-Use the local task ID from Step 4a.
+Use the local task ID from Step 5a.
 
 ```bash
 cellos update <PUSHED_TASK_ID> --details "Updated in Cellos to verify Vikunja reflects task edits."
@@ -190,7 +203,7 @@ cellos pmcon sync vikunja --push
 - update succeeds
 - push completes successfully
 
-### 4e. Verify the update in Vikunja
+### 5e. Verify the update in Vikunja
 
 Refresh the same Vikunja task in the browser.
 
@@ -200,9 +213,9 @@ Refresh the same Vikunja task in the browser.
 
 ---
 
-## Step 5: Prove Vikunja -> Cellos pull
+## Step 6: Prove Vikunja -> Cellos pull
 
-### 5a. Create a remote Vikunja task
+### 6a. Create a remote Vikunja task
 
 Create a task directly in Vikunja in the browser with:
 - title: `[vikunja smoke YYYY-MM-DD HH:MM] Remote pull test`
@@ -215,7 +228,7 @@ Create a task directly in Vikunja in the browser with:
 - label `architect` is attached
 - task is visible before running pull
 
-### 5b. Pull into Cellos
+### 6b. Pull into Cellos
 
 ```bash
 cellos pmcon sync vikunja --pull
@@ -228,7 +241,7 @@ cellos status
 - the imported task is present after pull without running the daemon
 - existing synced tasks are not duplicated locally
 
-### 5c. Verify imported local details
+### 6c. Verify imported local details
 
 Identify the imported task ID from `cellos status`, then inspect it:
 
@@ -245,7 +258,7 @@ cellos detail <PULLED_TASK_ID>
 Note:
 - a local Cellos `draft` task pushed into Vikunja `To-Do` may later appear locally as `approved` after pull; that is current connector status-normalization behavior and is not by itself a smoke-test failure
 
-### 5d. Re-run pull to verify idempotence
+### 6d. Re-run pull to verify idempotence
 
 ```bash
 cellos pmcon sync vikunja --pull
@@ -258,6 +271,66 @@ cellos status
 - previously imported and previously pushed tasks remain singular in local status output
 
 ---
+
+## Step 7: Prove comment sync remains idempotent
+
+Use the pushed local task ID from Step 5a.
+
+### 7a. Add a local Cellos comment and push
+
+```bash
+cellos comment <PUSHED_TASK_ID> -m "Smoke-test local comment to verify Vikunja sync."
+cellos pmcon sync vikunja --push
+```
+
+**Expected in Cellos:**
+- comment command succeeds
+- push completes successfully
+
+### 7b. Verify the comment in Vikunja
+
+Refresh the already-synced task in the Vikunja browser UI.
+
+**Expected in Vikunja:**
+- the new comment is visible on the same task
+- the comment appears exactly once
+
+### 7c. Re-run push to verify no duplicate outbound export
+
+```bash
+cellos pmcon sync vikunja --push
+```
+
+**Expected in Cellos:**
+- push completes successfully
+
+**Expected in Vikunja:**
+- the same comment still appears exactly once
+
+### 7d. Add a remote Vikunja comment and pull
+
+In the Vikunja browser UI, add a new comment to the same task, then run:
+
+```bash
+cellos pmcon sync vikunja --pull
+cellos detail <PUSHED_TASK_ID>
+```
+
+**Expected in Cellos:**
+- pull completes successfully
+- the Vikunja comment appears in local task details/comments
+- the remote comment appears exactly once
+
+### 7e. Re-run pull to verify no duplicate inbound import
+
+```bash
+cellos pmcon sync vikunja --pull
+cellos detail <PUSHED_TASK_ID>
+```
+
+**Expected in Cellos:**
+- pull completes successfully
+- the same Vikunja comment still appears exactly once
 
 ## Troubleshooting
 

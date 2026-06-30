@@ -141,38 +141,64 @@ class VikunjaProvider(IntegrationProvider):
             raise ValueError("Vikunja provider requires integrations.vikunja.view_id in config.")
         client = self._build_client()
         for task in await self._db.list_tasks():
-            if task.status == TaskStatus.CANCELLED:
-                continue
-            payload = self._task_to_vikunja_payload(task)
-            target_bucket_id = payload.pop("bucket_id", None)
             mapping = await self._get_mapping(task.id)
+            local_comments = await self._db.list_comments(task.id)
+            local_snapshot = self._local_comment_snapshot(local_comments)
             if mapping and mapping.get("remote_task_id"):
                 remote_task_id = int(mapping["remote_task_id"])
-                await client.update_task(str(remote_task_id), payload)
-                if target_bucket_id is not None:
+                payload_fields = self._fields_to_push(mapping, task)
+                payload = self._task_to_vikunja_payload(task, include_fields=payload_fields)
+                target_bucket_id = payload.pop("bucket_id", None)
+                should_move = "status" in payload_fields and target_bucket_id is not None
+                if payload:
+                    await client.update_task(str(remote_task_id), payload)
+                    delta.items_updated += 1
+                if should_move:
                     await client.move_task_to_bucket(str(project_id), str(view_id), int(target_bucket_id), remote_task_id)
-                delta.items_updated += 1
-                if mapping.get("last_synced_status") != task.status.value:
+                if mapping.get("last_synced_status") != task.status.value and "status" in payload_fields:
                     delta.statuses_changed += 1
                     delta.items_moved += 1
-                await self._save_mapping(task.id, {
-                    **mapping,
-                    "remote_task_id": remote_task_id,
-                    "last_synced_status": task.status.value,
-                    "last_bucket_id": target_bucket_id,
-                    "last_push_ts": _utc_now_iso(),
-                })
+                mapping = self._record_push_state(
+                    mapping,
+                    task=task,
+                    local_snapshot=local_snapshot,
+                    pushed_fields=payload_fields,
+                    remote_task_id=remote_task_id,
+                    target_bucket_id=target_bucket_id,
+                )
+                mapping = await self._export_local_comments(
+                    client=client,
+                    local_task_id=task.id,
+                    remote_task_id=remote_task_id,
+                    comments=local_comments,
+                    mapping=mapping,
+                    local_snapshot=local_snapshot,
+                )
+                await self._save_mapping(task.id, mapping)
             else:
+                payload = self._task_to_vikunja_payload(task)
+                target_bucket_id = payload.pop("bucket_id", None)
                 created = await client.create_task(str(project_id), payload)
                 remote_task_id = int(created["id"])
                 if target_bucket_id is not None:
                     await client.move_task_to_bucket(str(project_id), str(view_id), int(target_bucket_id), remote_task_id)
-                await self._save_mapping(task.id, {
-                    "remote_task_id": remote_task_id,
-                    "last_synced_status": task.status.value,
-                    "last_bucket_id": target_bucket_id,
-                    "last_push_ts": _utc_now_iso(),
-                })
+                mapping = self._record_push_state(
+                    {},
+                    task=task,
+                    local_snapshot=local_snapshot,
+                    pushed_fields={"title", "details", "status", "role"},
+                    remote_task_id=remote_task_id,
+                    target_bucket_id=target_bucket_id,
+                )
+                mapping = await self._export_local_comments(
+                    client=client,
+                    local_task_id=task.id,
+                    remote_task_id=remote_task_id,
+                    comments=local_comments,
+                    mapping=mapping,
+                    local_snapshot=local_snapshot,
+                )
+                await self._save_mapping(task.id, mapping)
                 delta.items_created += 1
         await self._record_sync_timestamp("last_push_ts")
 
@@ -187,8 +213,11 @@ class VikunjaProvider(IntegrationProvider):
         for remote_task in remote_tasks:
             remote_task_id = int(remote_task["id"])
             local_task_id, mapping = await self._find_local_by_remote_task_id(remote_task_id)
-            remote_status = _remote_task_to_local_status(remote_task)
+            mapping = self._normalize_mapping(mapping)
+            remote_status = _resolved_remote_status(remote_task, mapping)
             remote_bucket_id = _remote_bucket_id(remote_task)
+            remote_comments = await client.get_task_comments(str(remote_task_id))
+            remote_snapshot = self._remote_comment_snapshot(remote_comments)
             if local_task_id is None:
                 local_task = Task(
                     id=_imported_local_task_id(remote_task_id),
@@ -198,13 +227,14 @@ class VikunjaProvider(IntegrationProvider):
                     status=remote_status,
                 )
                 await self._db.create_task(local_task)
-                mapping = {
-                    "remote_task_id": remote_task_id,
-                    "last_synced_status": remote_status.value,
-                    "last_bucket_id": remote_bucket_id,
-                    "imported_comment_ids": [],
-                    "last_pull_ts": _utc_now_iso(),
-                }
+                mapping = self._record_pull_state(
+                    {},
+                    task=local_task,
+                    remote_snapshot=remote_snapshot,
+                    remote_task_id=remote_task_id,
+                    remote_bucket_id=remote_bucket_id,
+                    synced_fields={"title", "details", "status", "role"},
+                )
                 await self._save_mapping(local_task.id, mapping)
                 delta.items_created += 1
                 delta.statuses_changed += 1
@@ -213,22 +243,51 @@ class VikunjaProvider(IntegrationProvider):
                 current = await self._db.get_task(local_task_id)
                 if current is None:
                     continue
-                if current.status != remote_status:
-                    await self._db.update_task(current.model_copy(update={"status": remote_status}))
+                synced_fields: set[str] = set()
+                if self._has_synced_values(mapping):
+                    updates: dict[str, Any] = {}
+                    if self._field_changed_remotely(mapping, remote_task, remote_status, "title") and not self._field_changed_locally(mapping, current, "title"):
+                        remote_title = str(remote_task.get("title") or current.title)
+                        if remote_title != current.title:
+                            updates["title"] = remote_title
+                            synced_fields.add("title")
+
+                    if self._field_changed_remotely(mapping, remote_task, remote_status, "details") and not self._field_changed_locally(mapping, current, "details"):
+                        remote_details = str(remote_task.get("description") or "") or None
+                        if remote_details != current.details:
+                            updates["details"] = remote_details
+                            synced_fields.add("details")
+
+                    if self._field_changed_remotely(mapping, remote_task, remote_status, "status") and not self._field_changed_locally(mapping, current, "status") and current.status != remote_status:
+                        updates["status"] = remote_status
+                        synced_fields.add("status")
+
+                    if updates:
+                        current = current.model_copy(update=updates)
+                        await self._db.update_task(current)
+                        delta.items_updated += 1
+                        if "status" in updates:
+                            delta.statuses_changed += 1
+                elif current.status != remote_status:
+                    current = current.model_copy(update={"status": remote_status})
+                    await self._db.update_task(current)
                     delta.items_updated += 1
                     delta.statuses_changed += 1
-                mapping = mapping or {}
-                await self._save_mapping(local_task_id, {
-                    **mapping,
-                    "remote_task_id": remote_task_id,
-                    "last_synced_status": remote_status.value,
-                    "last_bucket_id": remote_bucket_id,
-                    "last_pull_ts": _utc_now_iso(),
-                })
+                    synced_fields.add("status")
+                mapping = self._record_pull_state(
+                    mapping,
+                    task=current,
+                    remote_snapshot=remote_snapshot,
+                    remote_task_id=remote_task_id,
+                    remote_bucket_id=remote_bucket_id,
+                    synced_fields=synced_fields,
+                )
+                await self._save_mapping(local_task_id, mapping)
             imported = await self._import_remote_comments(
                 client=client,
                 local_task_id=local_task_id,
                 remote_task_id=remote_task_id,
+                remote_comments=remote_comments,
             )
             delta.comments_imported += imported
         await self._record_sync_timestamp("last_pull_ts")
@@ -239,15 +298,18 @@ class VikunjaProvider(IntegrationProvider):
     async def auto_pull_maybe(self, pull_interval_seconds: int) -> SyncDelta:
         return await self.sync(push=False, pull=True)
 
-    def _task_to_vikunja_payload(self, task: Task) -> dict[str, Any]:
-        bucket_id = self._resolve_bucket_id(task.status)
-        payload: dict[str, Any] = {
-            "title": task.title,
-            "description": task.details or "",
-            "done": task.status == TaskStatus.DONE,
-        }
-        if bucket_id is not None:
-            payload["bucket_id"] = bucket_id
+    def _task_to_vikunja_payload(self, task: Task, include_fields: set[str] | None = None) -> dict[str, Any]:
+        fields = {"title", "details", "status"} if include_fields is None else include_fields
+        payload: dict[str, Any] = {}
+        if "title" in fields:
+            payload["title"] = task.title
+        if "details" in fields:
+            payload["description"] = task.details or ""
+        if "status" in fields:
+            payload["done"] = task.status in {TaskStatus.DONE, TaskStatus.CANCELLED}
+            bucket_id = self._resolve_bucket_id(task.status)
+            if bucket_id is not None:
+                payload["bucket_id"] = bucket_id
         return payload
 
     def _resolve_bucket_id(self, status: TaskStatus) -> int | None:
@@ -372,7 +434,7 @@ class VikunjaProvider(IntegrationProvider):
         row = await cursor.fetchone()
         if not row:
             return None
-        return json.loads(row[0])
+        return self._normalize_mapping(json.loads(row[0]))
 
     async def _find_local_by_remote_task_id(self, remote_task_id: int) -> tuple[str | None, dict[str, Any] | None]:
         if self._db is None:
@@ -382,41 +444,209 @@ class VikunjaProvider(IntegrationProvider):
         )
         rows = await cursor.fetchall()
         for key, raw in rows:
-            value = json.loads(raw)
+            value = self._normalize_mapping(json.loads(raw))
             if int(value.get("remote_task_id", -1)) == remote_task_id:
                 return str(key).removeprefix("vikunja.task."), value
         return None, None
 
-    async def _import_remote_comments(self, client: VikunjaClient, local_task_id: str, remote_task_id: int) -> int:
-        mapping = await self._get_mapping(local_task_id) or {}
+    async def _import_remote_comments(
+        self,
+        client: VikunjaClient,
+        local_task_id: str,
+        remote_task_id: int,
+        remote_comments: list[dict[str, Any]] | None = None,
+    ) -> int:
+        mapping = await self._get_mapping(local_task_id) or self._normalize_mapping({})
         imported_comment_ids = {str(v) for v in mapping.get("imported_comment_ids", [])}
-        remote_comments = await client.get_task_comments(str(remote_task_id))
+        comment_map = {str(k): str(v) for k, v in mapping.get("comment_map", {}).items()}
+        exported_remote_comment_ids = set(comment_map.values())
+        remote_comments = remote_comments if remote_comments is not None else await client.get_task_comments(str(remote_task_id))
         imported = 0
         for remote_comment in remote_comments:
             remote_comment_id = str(remote_comment.get("id"))
-            if not remote_comment_id or remote_comment_id in imported_comment_ids:
+            if (
+                not remote_comment_id
+                or remote_comment_id in imported_comment_ids
+                or remote_comment_id in exported_remote_comment_ids
+            ):
                 continue
             content = str(remote_comment.get("comment") or remote_comment.get("comment_plain") or "").strip()
             if not content:
                 continue
             author = remote_comment.get("author") or {}
             author_id = author.get("username") or author.get("name") or None
-            await self._db.create_comment(
+            local_comment = await self._db.create_comment(
                 local_task_id,
                 CommentAuthorType.SYSTEM,
                 content,
                 author_id=str(author_id) if author_id else None,
             )
+            comment_map[local_comment.id] = remote_comment_id
             imported_comment_ids.add(remote_comment_id)
             imported += 1
         if imported:
+            remote_snapshot = self._remote_comment_snapshot(remote_comments)
             await self._save_mapping(local_task_id, {
                 **mapping,
                 "remote_task_id": remote_task_id,
+                "comment_map": comment_map,
                 "imported_comment_ids": sorted(imported_comment_ids),
+                "last_synced": {
+                    **mapping.get("last_synced", {}),
+                    "comments": remote_snapshot.get("comments") or _utc_now_iso(),
+                },
                 "last_pull_ts": _utc_now_iso(),
             })
         return imported
+
+    def _normalize_mapping(self, mapping: dict[str, Any] | None) -> dict[str, Any]:
+        value = dict(mapping or {})
+        value["comment_map"] = {str(k): str(v) for k, v in (value.get("comment_map") or {}).items()}
+        value["imported_comment_ids"] = [str(v) for v in value.get("imported_comment_ids", [])]
+        value["last_synced_values"] = {
+            str(k): str(v) for k, v in (value.get("last_synced_values") or {}).items() if v is not None
+        }
+        for key in ("last_synced",):
+            value[key] = {str(k): str(v) for k, v in (value.get(key) or {}).items() if v}
+        return value
+
+    def _has_synced_values(self, mapping: dict[str, Any]) -> bool:
+        return bool(mapping.get("last_synced_values"))
+
+    def _local_comment_snapshot(self, comments: list[Any]) -> dict[str, str | None]:
+        return {"comments": _latest_comment_timestamp(comments)}
+
+    def _remote_comment_snapshot(self, remote_comments: list[dict[str, Any]]) -> dict[str, str | None]:
+        return {"comments": _latest_remote_comment_timestamp(remote_comments)}
+
+    def _fields_to_push(self, mapping: dict[str, Any], task: Task) -> set[str]:
+        if not self._has_synced_values(mapping):
+            return {"title", "details", "status"}
+
+        fields: set[str] = set()
+        for field in ("title", "details", "status"):
+            if self._field_changed_locally(mapping, task, field):
+                fields.add(field)
+        return fields
+
+    def _field_changed_locally(self, mapping: dict[str, Any], task: Task, field: str) -> bool:
+        if field not in mapping.get("last_synced_values", {}):
+            return True
+        return self._task_sync_value(task, field) != mapping["last_synced_values"].get(field)
+
+    def _field_changed_remotely(
+        self,
+        mapping: dict[str, Any],
+        remote_task: dict[str, Any],
+        remote_status: TaskStatus,
+        field: str,
+    ) -> bool:
+        if field not in mapping.get("last_synced_values", {}):
+            return True
+        remote_updated_at = _parse_iso(_remote_task_updated_at(remote_task))
+        last_push_at = _parse_iso(mapping.get("last_task_push_ts") or mapping.get("last_push_ts"))
+        if remote_updated_at is not None and last_push_at is not None and remote_updated_at <= last_push_at:
+            return False
+        return _remote_sync_value(remote_task, remote_status, field) != mapping["last_synced_values"].get(field)
+
+    def _task_sync_value(self, task: Task, field: str) -> str:
+        if field == "title":
+            return task.title
+        if field == "details":
+            return task.details or ""
+        if field == "status":
+            return task.status.value
+        if field == "role":
+            return task.role.value
+        raise ValueError(f"Unsupported sync field: {field}")
+
+    def _record_push_state(
+        self,
+        mapping: dict[str, Any],
+        task: Task,
+        local_snapshot: dict[str, str | None],
+        pushed_fields: set[str],
+        remote_task_id: int,
+        target_bucket_id: int | None,
+    ) -> dict[str, Any]:
+        mapping = self._normalize_mapping(mapping)
+        last_synced = dict(mapping.get("last_synced", {}))
+        last_synced_values = dict(mapping.get("last_synced_values", {}))
+        for field in pushed_fields:
+            field_ts = _utc_now_iso()
+            last_synced[field] = field_ts
+            last_synced_values[field] = self._task_sync_value(task, field)
+        updated = {
+            **mapping,
+            "remote_task_id": remote_task_id,
+            "last_synced_status": task.status.value if "status" in pushed_fields else mapping.get("last_synced_status", task.status.value),
+            "last_bucket_id": target_bucket_id if "status" in pushed_fields else mapping.get("last_bucket_id"),
+            "last_synced": last_synced,
+            "last_synced_values": last_synced_values,
+        }
+        if pushed_fields:
+            task_push_ts = _utc_now_iso()
+            updated["last_task_push_ts"] = task_push_ts
+            updated["last_push_ts"] = task_push_ts
+        return updated
+
+    def _record_pull_state(
+        self,
+        mapping: dict[str, Any],
+        task: Task,
+        remote_snapshot: dict[str, str | None],
+        remote_task_id: int,
+        remote_bucket_id: int | None,
+        synced_fields: set[str],
+    ) -> dict[str, Any]:
+        mapping = self._normalize_mapping(mapping)
+        last_synced = dict(mapping.get("last_synced", {}))
+        last_synced_values = dict(mapping.get("last_synced_values", {}))
+        for field in synced_fields:
+            last_synced[field] = _utc_now_iso()
+            last_synced_values[field] = self._task_sync_value(task, field)
+        return {
+            **mapping,
+            "remote_task_id": remote_task_id,
+            "last_synced_status": task.status.value,
+            "last_bucket_id": remote_bucket_id,
+            "last_synced": last_synced,
+            "last_synced_values": last_synced_values,
+            "last_pull_ts": _utc_now_iso(),
+        }
+
+    async def _export_local_comments(
+        self,
+        client: VikunjaClient,
+        local_task_id: str,
+        remote_task_id: int,
+        comments: list[Any],
+        mapping: dict[str, Any],
+        local_snapshot: dict[str, str | None],
+    ) -> dict[str, Any]:
+        updated_mapping = self._normalize_mapping(mapping)
+        comment_map = dict(updated_mapping.get("comment_map", {}))
+        changed = False
+        for comment in comments:
+            if comment.id in comment_map:
+                continue
+            created = await client.create_task_comment(str(remote_task_id), comment.content)
+            remote_comment_id = str(created.get("id") or "")
+            if not remote_comment_id:
+                continue
+            comment_map[comment.id] = remote_comment_id
+            changed = True
+        if not changed:
+            return updated_mapping
+
+        comment_ts = local_snapshot.get("comments") or _utc_now_iso()
+        updated_mapping["comment_map"] = comment_map
+        updated_mapping["last_synced"] = {
+            **updated_mapping.get("last_synced", {}),
+            "comments": comment_ts,
+        }
+        updated_mapping["last_comment_push_ts"] = _utc_now_iso()
+        return updated_mapping
 
     async def _save_mapping(self, local_task_id: str, value: dict[str, Any]) -> None:
         if self._db is None:
@@ -469,6 +699,22 @@ def _remote_bucket_id(remote_task: dict[str, Any]) -> int | None:
     return int(bucket_id)
 
 
+def _remote_task_updated_at(remote_task: dict[str, Any]) -> str | None:
+    for key in ("updated", "updated_at", "updatedAt", "created", "created_at", "createdAt"):
+        value = remote_task.get(key)
+        if value:
+            return _coerce_iso(value)
+    return None
+
+
+def _remote_comment_updated_at(remote_comment: dict[str, Any]) -> str | None:
+    for key in ("updated", "updated_at", "updatedAt", "created", "created_at", "createdAt"):
+        value = remote_comment.get(key)
+        if value:
+            return _coerce_iso(value)
+    return None
+
+
 def _remote_task_to_local_status(remote_task: dict[str, Any]) -> TaskStatus:
     if remote_task.get("done") is True:
         return TaskStatus.DONE
@@ -485,6 +731,23 @@ def _remote_task_to_local_status(remote_task: dict[str, Any]) -> TaskStatus:
     if _remote_bucket_id(remote_task) is None:
         return TaskStatus.APPROVED
     return TaskStatus.IN_PROGRESS
+
+
+def _resolved_remote_status(remote_task: dict[str, Any], mapping: dict[str, Any]) -> TaskStatus:
+    remote_status = _remote_task_to_local_status(remote_task)
+    if remote_status == TaskStatus.DONE and mapping.get("last_synced_status") == TaskStatus.CANCELLED.value:
+        return TaskStatus.CANCELLED
+    return remote_status
+
+
+def _remote_sync_value(remote_task: dict[str, Any], remote_status: TaskStatus, field: str) -> str:
+    if field == "title":
+        return str(remote_task.get("title") or "")
+    if field == "details":
+        return str(remote_task.get("description") or "")
+    if field == "status":
+        return remote_status.value
+    raise ValueError(f"Unsupported sync field: {field}")
 
 
 def _remote_task_to_local_role(remote_task: dict[str, Any]) -> AgentRole:
@@ -515,3 +778,38 @@ def _imported_local_task_id(remote_task_id: int) -> str:
 
 def _utc_now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def _coerce_iso(value: Any) -> str | None:
+    if value in (None, ""):
+        return None
+    if isinstance(value, datetime):
+        dt = value
+    else:
+        text = str(value)
+        if text.endswith("Z"):
+            text = text[:-1] + "+00:00"
+        dt = datetime.fromisoformat(text)
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(timezone.utc).isoformat()
+
+
+def _parse_iso(value: str | None) -> datetime | None:
+    if not value:
+        return None
+    text = value[:-1] + "+00:00" if value.endswith("Z") else value
+    dt = datetime.fromisoformat(text)
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(timezone.utc)
+
+
+def _latest_comment_timestamp(comments: list[Any]) -> str | None:
+    timestamps = [_coerce_iso(getattr(comment, "timestamp", None)) for comment in comments]
+    return max((ts for ts in timestamps if ts), default=None)
+
+
+def _latest_remote_comment_timestamp(remote_comments: list[dict[str, Any]]) -> str | None:
+    timestamps = [_remote_comment_updated_at(comment) for comment in remote_comments]
+    return max((ts for ts in timestamps if ts), default=None)

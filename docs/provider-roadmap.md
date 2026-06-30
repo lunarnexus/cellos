@@ -1,6 +1,6 @@
 # Provider Roadmap
 
-## Immediate direction
+## Current direction
 
 CelloS is pivoting away from Trello-specific integration work and toward open-source PM tools.
 
@@ -8,6 +8,7 @@ CelloS is pivoting away from Trello-specific integration work and toward open-so
 
 - **Vikunja** is now implemented as the first real provider under `cellos/integrations/vikunja/`.
 - The current connector supports provider discovery, setup/status, outbound task push, inbound task pull, bucket-aware status mapping, and remote comment import.
+- The immediate product focus is real user testing and refinement of the Vikunja connector before starting the next provider.
 
 ### Next provider shortlist
 1. **WeKan** — closest open-source Trello-style board

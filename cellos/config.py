@@ -225,6 +225,22 @@ def update_provider_config(config_dir: str, provider_name: str, updates: dict[st
         f.write("\n")
 
 
+def enable_provider(config_dir: str, provider_name: str) -> None:
+    """Ensure a provider is listed in integrations.enabled_providers."""
+    cfg_path = Path(config_dir) / "config.json"
+    raw_main = _load_json(cfg_path)
+
+    integrations = raw_main.setdefault("integrations", {})
+    enabled = list(integrations.setdefault("enabled_providers", []))
+    if provider_name not in enabled:
+        enabled.append(provider_name)
+    integrations["enabled_providers"] = enabled
+
+    with open(cfg_path, "w", encoding="utf-8") as f:
+        json.dump(raw_main, f, indent=2)
+        f.write("\n")
+
+
 # ─── Init helpers ─────────────────────────────────────────────────────────────
 
 def ensure_config(config_dir: str, overwrite: bool = False) -> Path:
@@ -264,4 +280,3 @@ def ensure_config(config_dir: str, overwrite: bool = False) -> Path:
         shutil.copy2(str(src), str(dst))
 
     return dest
-

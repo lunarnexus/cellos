@@ -561,6 +561,31 @@ def test_pmcon_setup_persists_vikunja_bucket_mapping(runner, monkeypatch):
     }
 
 
+def test_pmcon_setup_enables_provider_in_config(runner, monkeypatch):
+    cli_runner, tmp_path, db, config_dir = runner
+
+    init_result = cli_runner.invoke(main, ["--config-dir", config_dir, "--db", db, "init"])
+    assert init_result.exit_code == 0
+
+    class FakeProvider:
+        def __init__(self):
+            self._db = None
+
+        async def setup(self, clean: bool = False):
+            from cellos.integrations.base import SetupResult
+            return SetupResult(target_id="17", mappings={}, details={})
+
+    monkeypatch.setattr("cellos.integrations.registry.load_provider", lambda *args, **kwargs: FakeProvider())
+
+    result = cli_runner.invoke(main, [
+        "--config-dir", config_dir, "--db", db, "pmcon", "setup", "vikunja"
+    ])
+    assert result.exit_code == 0
+
+    saved = json.loads((Path(config_dir) / "config.json").read_text())
+    assert saved["integrations"]["enabled_providers"] == ["vikunja"]
+
+
 def test_pmcon_sync_reports_non_credential_http_errors(runner, monkeypatch):
     cli_runner, tmp_path, db, config_dir = runner
 

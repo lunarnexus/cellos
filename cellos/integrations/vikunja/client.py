@@ -157,6 +157,15 @@ class VikunjaClient:
         result = await asyncio.to_thread(self._request, "GET", f"/tasks/{task_id}/comments")
         return result or []
 
+    async def create_task_comment(self, task_id: str, comment_text: str) -> dict[str, Any]:
+        result = await asyncio.to_thread(
+            self._request,
+            "PUT",
+            f"/tasks/{task_id}/comments",
+            {"comment": comment_text},
+        )
+        return result or {}
+
     async def get_labels(self) -> list[dict[str, Any]]:
         result = await asyncio.to_thread(self._request, "GET", "/labels")
         return result or []

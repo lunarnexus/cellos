@@ -1,5 +1,7 @@
 # CelloS Build Plan
 
+> Archived: this build plan is complete and retained for historical acceptance criteria.
+
 ## Phase Overview
 
 Each phase is self-contained with clear acceptance criteria. Phases build on each other but can be tested independently via unit tests before integration testing in later phases.

@@ -53,6 +53,7 @@ Alternative terminal states: blocked, failed, change_requested, cancelled
 | `human_changed_task` | Human edited title/details/criteria via update |
 | `dependency_done` | A dependency completed, potentially unblocking this task |
 | `child_change_requested` | Child execution requested changes to parent plan |
+| `child_failed` | Child execution failed and needs parent-level attention |
 | `approved` | Task approved and ready for human awareness before execution |
 | `execution_failed` | Worker failed, needs human review |
 | `human_commented` | Human added comment on draft/needs_approval task |
@@ -180,6 +181,15 @@ class TaskResult(BaseModel):
     summary: str                                   # Brief result description
     output: Optional[str] = None                   # Full agent output (truncated to 5000 chars)
     timestamp: datetime                            # When result was recorded
+```
+
+### ChangeRequestReport
+
+```python
+class ChangeRequestReport(BaseModel):
+    reason: str                                  # Why the child task needs a parent-plan change
+    requested_changes: list[str]                 # Concrete requested changes
+    timestamp: datetime                          # When the change request was recorded
 ```
 
 ### TaskAttempt
@@ -315,6 +325,18 @@ CREATE TABLE IF NOT EXISTS task_attempts (
     completed_at TEXT DEFAULT ''
 );
 ```
+
+### Table: integration_sync
+Provider sync metadata and mapping storage:
+```sql
+CREATE TABLE IF NOT EXISTS integration_sync (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    key TEXT UNIQUE NOT NULL,
+    value TEXT NOT NULL
+);
+```
+
+Current Vikunja mappings use keys like `vikunja.task.<local_task_id>` for local/remote task mappings and `vikunja.meta.<name>` for sync timestamps.
 
 ## Notes on Data Design Decisions
 
