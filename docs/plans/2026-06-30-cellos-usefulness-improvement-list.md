@@ -208,21 +208,18 @@ Save a future task for a full CLI review after the core flow is useful.
 
 ### 9. Task graph / dependency visibility
 
-**Priority:** Discuss later
+**Priority:** Complete
 
-This needs more discussion before planning.
+Implemented `cellos graph <task_id>` which shows a visual dependency
+graph: parent, dependencies with satisfied/unsatisfied status, children,
+blocked tasks with reasons, and dependents. Combined with existing
+`cellos tree` and `cellos deps`, this covers the dependency visibility
+needs.
 
-Possible direction:
-- Make parent/child/dependency structure easier to inspect.
-- Show why a task is blocked and what completion would unblock it.
-- Possibly add tree or graph views.
-
-Candidate commands:
-- `cellos tree <task_id>`
-- `cellos graph <task_id>`
-- `cellos deps <task_id>`
-
-Do not prioritize until the desired operator view is clearer.
+Candidate commands now all present:
+- `cellos tree <task_id>` — ancestor/descendant tree view
+- `cellos graph <task_id>` — visual dependency graph with status
+- `cellos deps <task_id>` — direct parent/child/dependency relationships
 
 ---
 
@@ -294,7 +291,7 @@ Output should be CelloS-specific design notes, not a direct integration plan.
 5. Human-created child tasks.
 6. Recovery/operator commands.
 7. CLI usability additions as pain appears.
-8. Later discussion: task graph views, agent/profile isolation, richer metadata.
+8. Later discussion: agent/profile isolation, richer metadata.
 
 ---
 

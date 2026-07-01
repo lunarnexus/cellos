@@ -7,11 +7,12 @@ No ACP integration yet — everything is local state manipulation via services l
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
+import os
 import sqlite3
 import sys
 from pathlib import Path
-from typing import Optional
 
 import click
 from rich.console import Console
@@ -23,7 +24,6 @@ from cellos.env import load_env
 from cellos.db import CellosDatabase
 from cellos.models import (
     AgentRole,
-    AttentionReason,
     CommentAuthorType,
     TaskDependency,
     TaskStatus,
@@ -33,6 +33,10 @@ from cellos.persistence.schema import DatabaseNotInitialized, init_db
 from cellos.services.task_service import (
     EmptyTaskUpdateError,
     InvalidTaskApprovalError,
+    InvalidTaskBlockError,
+    InvalidTaskRecoverError,
+    InvalidTaskRetryError,
+    InvalidTaskUnblockError,
     TaskNotFoundError,
     TaskService,
 )
@@ -116,6 +120,42 @@ def _notify_daemon(config_dir: str | None = None, workdir: str = ".") -> None:
     notify_path.touch()
 
 
+def _daemon_status_path(workdir: str = ".") -> Path:
+    return Path(workdir) / ".cellos" / "daemon_status.json"
+
+
+def _pid_is_alive(pid: int | None) -> bool:
+    if not pid or pid <= 0:
+        return False
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
+
+
+def _format_daemon_workers_table(workers):
+    table = Table(show_header=True, header_style="bold")
+    table.add_column("Task ID", style="magenta", width=14)
+    table.add_column("Mode", width=10)
+    table.add_column("PID", width=8)
+    table.add_column("Started", style="dim")
+    table.add_column("Log", overflow="fold")
+
+    for worker in workers:
+        table.add_row(
+            str(worker.get("task_id", "-")),
+            str(worker.get("mode", "-")),
+            str(worker.get("pid", "-")),
+            str(worker.get("started_at", "-")),
+            str(worker.get("log_path", "-")),
+        )
+
+    return table
+
+
 def _format_status_table(tasks, status_filter=None):
     """Format tasks as Rich table with attention markers."""
     table = Table(show_header=True, header_style="bold")
@@ -166,7 +206,7 @@ def _format_detail_panel(task):
     if task.attention.required:
         lines.insert(
             2,
-            f"\n[red bold]⚠️ ATTENTION REQUIRED[/]",
+            "\n[red bold]⚠️ ATTENTION REQUIRED[/]",
         )
         lines.insert(3, f"   Reason: {task.attention.reason.value if task.attention.reason else 'unknown'}")
         if task.attention.detail:
@@ -202,6 +242,70 @@ def _format_events_table(events, limit=None):
         table.add_row(time_str, e.event_type, e.message[:80])
 
     return table
+
+
+def _format_attempts_table(attempts):
+    """Format attempt history as a Rich table."""
+    table = Table(show_header=True, header_style="bold")
+    table.add_column("Started", style="dim")
+    table.add_column("Status", style="cyan")
+    table.add_column("Mode", width=10)
+    table.add_column("Agent", width=12)
+    table.add_column("Summary / Error", overflow="fold")
+
+    for attempt in attempts:
+        started = attempt.started_at.strftime("%Y-%m-%d %H:%M:%S")
+        summary = attempt.result_summary or attempt.error_message or ""
+        table.add_row(
+            started,
+            attempt.status.value,
+            attempt.mode or "-",
+            attempt.agent_id or "-",
+            summary[:100],
+        )
+
+    return table
+
+
+def _format_recent_failures_table(attempts):
+    """Format recent failed attempts across tasks as a Rich table."""
+    table = Table(show_header=True, header_style="bold")
+    table.add_column("Started", style="dim")
+    table.add_column("Task ID", style="magenta", width=14)
+    table.add_column("Mode", width=10)
+    table.add_column("Agent", width=12)
+    table.add_column("Error", overflow="fold")
+
+    for attempt in attempts:
+        started = attempt.started_at.strftime("%Y-%m-%d %H:%M:%S")
+        summary = attempt.error_message or attempt.result_summary or ""
+        table.add_row(
+            started,
+            attempt.task_id,
+            attempt.mode or "-",
+            attempt.agent_id or "-",
+            summary[:100],
+        )
+
+    return table
+
+
+def _relationship_line(task, *, satisfied: bool | None = None) -> str:
+    status = task.status.value if hasattr(task, "status") else "unknown"
+    line = f"- {task.id}: {task.title} [{status}]"
+    if satisfied is not None:
+        line += " ✓ satisfied" if satisfied else " ✗ unsatisfied"
+    return line
+
+
+def _tree_lines(node: dict, focus_task_id: str, depth: int = 0) -> list[str]:
+    task = node["task"]
+    marker = " *" if task.id == focus_task_id else ""
+    indent = "  " * depth
+    lines = [f"{indent}- {task.id}: {task.title} [{task.status.value}]{marker}"]
+    for child in node["children"]:
+        lines.extend(_tree_lines(child, focus_task_id, depth + 1))
+    return lines
 
 
 # ── Commands ────────────────────────────────────────────────────────────────
@@ -252,8 +356,9 @@ def init(ctx: click.Context, overwrite: bool):
 @click.option(
     "--depends", multiple=True, default=(), help="Dependency task IDs (can specify multiple)."
 )
+@click.option("--parent", default=None, help="Parent task ID to create this as a child task.")
 @click.pass_context
-def add_task(ctx: click.Context, title, details, role, task_type, success_criteria, failure_criteria, depends):
+def add_task(ctx: click.Context, title, details, role, task_type, success_criteria, failure_criteria, depends, parent):
     """Create a new task."""
 
     async def _run():
@@ -263,20 +368,37 @@ def add_task(ctx: click.Context, title, details, role, task_type, success_criter
         try:
             deps = [TaskDependency(task_id=dep_id) for dep_id in depends] if depends else []
 
-            created = await service.create_task(
-                title=title,
-                details=details,
-                role=AgentRole(role),
-                task_type=TaskType(task_type) if task_type else None,
-                success_criteria=success_criteria,
-                failure_criteria=failure_criteria,
-                dependencies=deps,
-            )
+            try:
+                if parent:
+                    created = await service.create_child_task(
+                        parent_id=parent,
+                        title=title,
+                        details=details,
+                        role=AgentRole(role),
+                        task_type=TaskType(task_type) if task_type else None,
+                        success_criteria=success_criteria,
+                        failure_criteria=failure_criteria,
+                    )
+                else:
+                    created = await service.create_task(
+                        title=title,
+                        details=details,
+                        role=AgentRole(role),
+                        task_type=TaskType(task_type) if task_type else None,
+                        success_criteria=success_criteria,
+                        failure_criteria=failure_criteria,
+                        dependencies=deps,
+                    )
+            except TaskNotFoundError as e:
+                console.print(f"[red]Error: {e}[/]")
+                sys.exit(1)
 
             console.print(f"✓ Created task {created.id}: {title}")
             console.print(
                 f"  Role: {created.role.value} | Type: {created.task_type.value} | Status: {created.status.value}"
             )
+            if parent:
+                console.print(f"  Parent: {parent}")
             _notify_daemon()
         finally:
             await db.close()
@@ -305,6 +427,337 @@ def status(ctx: click.Context, status_filter):
             table = _format_status_table(tasks, status_filter)
             console.print(table)
             console.print(f"\nTotal: {len(tasks)} task{'s' if len(tasks) != 1 else ''}")
+        finally:
+            await db.close()
+
+    asyncio.run(_run())
+
+
+@main.command()
+@click.pass_context
+def inbox(ctx: click.Context):
+    """List tasks that currently require human attention."""
+
+    async def _run():
+        db = await _get_db(ctx.obj["db"])
+        service = TaskService(db)
+
+        try:
+            tasks = await service.list_attention_tasks()
+
+            if not tasks:
+                console.print("Inbox empty.")
+                return
+
+            table = _format_status_table(tasks)
+            console.print(table)
+            console.print(f"\nTotal: {len(tasks)} task{'s' if len(tasks) != 1 else ''} need{'s' if len(tasks) == 1 else ''} attention")
+        finally:
+            await db.close()
+
+    asyncio.run(_run())
+
+
+@main.command()
+@click.pass_context
+def blocked(ctx: click.Context):
+    """List manually blocked tasks."""
+
+    async def _run():
+        db = await _get_db(ctx.obj["db"])
+        service = TaskService(db)
+
+        try:
+            tasks = await service.list_tasks(status_filter=TaskStatus.BLOCKED)
+
+            if not tasks:
+                console.print("No blocked tasks.")
+                return
+
+            table = _format_status_table(tasks, status_filter=TaskStatus.BLOCKED.value)
+            console.print(table)
+            console.print(f"\nTotal: {len(tasks)} blocked task{'s' if len(tasks) != 1 else ''}")
+        finally:
+            await db.close()
+
+    asyncio.run(_run())
+
+
+@main.command()
+@click.pass_context
+def ready(ctx: click.Context):
+    """List execution tasks that are runnable by the daemon right now."""
+
+    async def _run():
+        db = await _get_db(ctx.obj["db"])
+        service = TaskService(db)
+
+        try:
+            tasks = await service.list_ready_tasks()
+
+            if not tasks:
+                console.print("No ready tasks found.")
+                return
+
+            table = _format_status_table(tasks, status_filter=TaskStatus.APPROVED.value)
+            console.print(table)
+            console.print(f"\nTotal ready: {len(tasks)} task{'s' if len(tasks) != 1 else ''}")
+        finally:
+            await db.close()
+
+    asyncio.run(_run())
+
+
+@main.command()
+@click.pass_context
+def review(ctx: click.Context):
+    """List tasks currently awaiting human approval or review."""
+
+    async def _run():
+        db = await _get_db(ctx.obj["db"])
+        service = TaskService(db)
+
+        try:
+            tasks = await service.list_review_tasks()
+
+            if not tasks:
+                console.print("No review tasks found.")
+                return
+
+            table = _format_status_table(tasks)
+            console.print(table)
+            console.print(f"\nTotal review: {len(tasks)} task{'s' if len(tasks) != 1 else ''}")
+        finally:
+            await db.close()
+
+    asyncio.run(_run())
+
+
+@main.command(name="recent-failures")
+@click.option("--limit", default=10, show_default=True, help="Max failed attempts to show.")
+@click.pass_context
+def recent_failures(ctx: click.Context, limit):
+    """Show recent failed attempts across all tasks."""
+
+    async def _run():
+        db = await _get_db(ctx.obj["db"])
+        service = TaskService(db)
+
+        try:
+            attempts = await service.list_recent_failed_attempts(limit=limit)
+
+            if not attempts:
+                console.print("No recent failed attempts.")
+                return
+
+            console.print(_format_recent_failures_table(attempts))
+            console.print(f"\nTotal failed attempts shown: {len(attempts)}")
+        finally:
+            await db.close()
+
+    asyncio.run(_run())
+
+
+@main.command(name="daemon-status")
+def daemon_status():
+    """Show persisted daemon health and tracked worker state."""
+    status_path = _daemon_status_path()
+    if not status_path.exists():
+        console.print("No daemon status found.")
+        return
+
+    payload = json.loads(status_path.read_text(encoding="utf-8"))
+    pid = payload.get("pid")
+    pid_alive = _pid_is_alive(pid)
+    state = str(payload.get("state", "unknown"))
+    display_state = state if pid_alive else f"stale ({state})"
+
+    console.print(f"State: {display_state}")
+    console.print(f"PID: {pid}")
+    console.print(f"Heartbeat: {payload.get('last_heartbeat_at', '-')}")
+    console.print(f"Started: {payload.get('started_at', '-')}")
+    console.print(f"Concurrency limit: {payload.get('concurrent_limit', '-')}")
+    console.print(f"Auto-sync enabled: {payload.get('auto_sync_enabled', False)}")
+    console.print(f"Workdir: {payload.get('workdir', '-')}")
+
+    workers = payload.get("running_workers", []) or []
+    if not workers:
+        console.print("\nNo tracked workers.")
+        return
+
+    console.print(f"\nTracked workers: {len(workers)}")
+    console.print(_format_daemon_workers_table(workers))
+
+
+@main.command()
+@click.argument("task_id", required=True)
+@click.pass_context
+def deps(ctx: click.Context, task_id):
+    """Show direct parent/child/dependency relationships for a task."""
+
+    async def _run():
+        db = await _get_db(ctx.obj["db"])
+        service = TaskService(db)
+
+        try:
+            try:
+                view = await service.get_dependency_view(task_id)
+            except TaskNotFoundError as e:
+                console.print(f"[red]Error: {e}[/]")
+                sys.exit(1)
+
+            task = view["task"]
+            console.print(f"Task: {task.id}: {task.title} [{task.status.value}]")
+
+            parent = view["parent"]
+            console.print("\nParent:")
+            if parent is None:
+                console.print("- none")
+            else:
+                console.print(_relationship_line(parent))
+
+            console.print("\nDepends on:")
+            if not view["dependencies"]:
+                console.print("- none")
+            else:
+                for entry in view["dependencies"]:
+                    dep = entry["dependency"]
+                    dep_task = entry["task"]
+                    if dep_task is not None:
+                        console.print(_relationship_line(dep_task, satisfied=dep.status_satisfied))
+                    else:
+                        missing_line = f"- {dep.task_id}: [missing task]"
+                        missing_line += " ✓ satisfied" if dep.status_satisfied else " ✗ unsatisfied"
+                        console.print(missing_line)
+
+            console.print("\nBlocks:")
+            if not view["dependents"]:
+                console.print("- none")
+            else:
+                for dependent in view["dependents"]:
+                    satisfied = next(
+                        dep.status_satisfied for dep in dependent.dependencies if dep.task_id == task.id
+                    )
+                    console.print(_relationship_line(dependent, satisfied=satisfied))
+
+            console.print("\nChildren:")
+            if not view["children"]:
+                console.print("- none")
+            else:
+                for child in view["children"]:
+                    console.print(_relationship_line(child))
+        finally:
+            await db.close()
+
+    asyncio.run(_run())
+
+
+@main.command()
+@click.argument("task_id", required=True)
+@click.pass_context
+def graph(ctx: click.Context, task_id):
+    """Show a visual dependency graph for a task."""
+
+    async def _run():
+        db = await _get_db(ctx.obj["db"])
+        service = TaskService(db)
+
+        try:
+            try:
+                view = await service.get_dependency_view(task_id)
+            except TaskNotFoundError as e:
+                console.print(f"[red]Error: {e}[/]")
+                sys.exit(1)
+
+            task = view["task"]
+            console.print(f"[bold]{task.id}: {task.title}[/] [{task.status.value}]")
+
+            # Parent arrow
+            parent = view["parent"]
+            if parent is not None:
+                console.print(f"  {parent.id}: {parent.title} [{parent.status.value}]")
+                console.print("      ⬆ parent")
+
+            # Dependencies (arrow down)
+            deps_list = view["dependencies"]
+            if deps_list:
+                console.print("  Dependencies (⬇):")
+                for entry in deps_list:
+                    dep = entry["dependency"]
+                    dep_task = entry["task"]
+                    status_char = "✓" if dep.status_satisfied else "✗"
+                    if dep_task is not None:
+                        console.print(
+                            f"    [{status_char}] {dep.task_id}: {dep_task.title} [{dep_task.status.value}]"
+                        )
+                    else:
+                        console.print(
+                            f"    [{status_char}] {dep.task_id}: [missing]"
+                        )
+
+            # Blocked by reason
+            if task.status == TaskStatus.BLOCKED:
+                console.print(f"  [red bold]⛔ BLOCKED[/] {task.attention.detail or 'manually blocked'}")
+            elif not view["dependencies"] or all(e["dependency"].status_satisfied for e in deps_list):
+                pass  # not blocked
+            elif deps_list:
+                unsatisfied = [e for e in deps_list if not e["dependency"].status_satisfied]
+                if unsatisfied:
+                    console.print(f"  [yellow]⏸ waiting on {[e['dependency'].task_id for e in unsatisfied]}[/]")
+
+            # Children
+            children = view["children"]
+            if children:
+                console.print("  Children:")
+                for child in children:
+                    console.print(
+                        f"    {child.id}: {child.title} [{child.status.value}]"
+                    )
+
+            # Blocks (dependents)
+            dependents = view["dependents"]
+            if dependents:
+                console.print("  Blocks:")
+                for dep in dependents:
+                    console.print(f"    {dep.id}: {dep.title} [{dep.status.value}]")
+
+        finally:
+            await db.close()
+
+    asyncio.run(_run())
+
+
+@main.command()
+@click.argument("task_id", required=True)
+@click.pass_context
+def tree(ctx: click.Context, task_id):
+    """Show parent/child tree context for a task."""
+
+    async def _run():
+        db = await _get_db(ctx.obj["db"])
+        service = TaskService(db)
+
+        try:
+            try:
+                view = await service.get_tree_view(task_id)
+            except TaskNotFoundError as e:
+                console.print(f"[red]Error: {e}[/]")
+                sys.exit(1)
+
+            task = view["task"]
+            console.print(f"Task: {task.id}: {task.title} [{task.status.value}]")
+
+            console.print("\nAncestor path:")
+            if not view["ancestors"]:
+                console.print("- none")
+            else:
+                for depth, ancestor in enumerate(view["ancestors"]):
+                    indent = "  " * depth
+                    console.print(f"{indent}- {ancestor.id}: {ancestor.title} [{ancestor.status.value}]")
+
+            console.print("\nTree:")
+            for line in _tree_lines(view["tree"], task.id):
+                console.print(line)
         finally:
             await db.close()
 
@@ -383,7 +836,7 @@ def comment(ctx: click.Context, task_id, message):
                 console.print(f"[red]Error: {e}[/]")
                 sys.exit(1)
 
-            comment_obj = await service.add_human_comment(task_id, message)
+            await service.add_human_comment(task_id, message)
 
             # Check if attention was triggered (non-approved tasks)
             attention_triggered = current_task.status not in (
@@ -429,6 +882,161 @@ def events(ctx: click.Context, task_id, limit):
 
             table = _format_events_table(event_list, limit)
             console.print(table)
+        finally:
+            await db.close()
+
+    asyncio.run(_run())
+
+
+@main.command()
+@click.argument("task_id", required=True)
+@click.pass_context
+def runs(ctx: click.Context, task_id):
+    """Show attempt history for a task."""
+
+    async def _run():
+        db = await _get_db(ctx.obj["db"])
+        service = TaskService(db)
+
+        try:
+            try:
+                attempts = await service.list_attempts(task_id)
+            except TaskNotFoundError as e:
+                console.print(f"[red]Error: {e}[/]")
+                sys.exit(1)
+
+            if not attempts:
+                console.print("No attempts found.")
+                return
+
+            console.print(_format_attempts_table(attempts))
+        finally:
+            await db.close()
+
+    asyncio.run(_run())
+
+
+@main.command()
+@click.argument("task_id", required=True)
+@click.pass_context
+def retry(ctx: click.Context, task_id):
+    """Retry a failed task by restoring it to a runnable state."""
+
+    async def _run():
+        db = await _get_db(ctx.obj["db"])
+        service = TaskService(db)
+
+        try:
+            try:
+                retried = await service.retry_task(task_id)
+            except TaskNotFoundError as e:
+                console.print(f"[red]Error: {e}[/]")
+                sys.exit(1)
+            except InvalidTaskRetryError as e:
+                console.print(f"[red]Error: {e}[/]")
+                sys.exit(1)
+
+            console.print(f"✓ Retried task {task_id}")
+            console.print(f"  Status: {retried.status.value}")
+            _notify_daemon()
+        finally:
+            await db.close()
+
+    asyncio.run(_run())
+
+
+@main.command()
+@click.argument("task_id", required=True)
+@click.pass_context
+def recover(ctx: click.Context, task_id):
+    """Recover a stuck in-progress task to its last safe state."""
+
+    async def _run():
+        db = await _get_db(ctx.obj["db"])
+        service = TaskService(db)
+
+        try:
+            try:
+                recovered = await service.recover_task(task_id)
+            except TaskNotFoundError as e:
+                console.print(f"[red]Error: {e}[/]")
+                sys.exit(1)
+            except InvalidTaskRecoverError as e:
+                console.print(f"[red]Error: {e}[/]")
+                sys.exit(1)
+
+            console.print(f"✓ Recovered task {task_id}")
+            console.print(f"  Status: {recovered.status.value}")
+            if recovered.attention.detail:
+                console.print(f"  Detail: {recovered.attention.detail}")
+            _notify_daemon()
+        finally:
+            await db.close()
+
+    asyncio.run(_run())
+
+
+@main.command()
+@click.argument("task_id", required=True)
+@click.option("--reason", required=True, help="Why this task is being manually blocked.")
+@click.pass_context
+def block(ctx: click.Context, task_id, reason):
+    """Manually block a task that cannot proceed until operator action resolves it."""
+
+    async def _run():
+        db = await _get_db(ctx.obj["db"])
+        service = TaskService(db)
+
+        try:
+            try:
+                blocked = await service.block_task(task_id, reason)
+            except TaskNotFoundError as e:
+                console.print(f"[red]Error: {e}[/]")
+                sys.exit(1)
+            except InvalidTaskBlockError as e:
+                console.print(f"[red]Error: {e}[/]")
+                sys.exit(1)
+
+            console.print(f"✓ Blocked task {task_id}")
+            console.print(f"  Status: {blocked.status.value}")
+            console.print(f"  Reason: {reason}")
+            _notify_daemon()
+        finally:
+            await db.close()
+
+    asyncio.run(_run())
+
+
+@main.command()
+@click.argument("task_id", required=True)
+@click.option(
+    "--to",
+    "target_status",
+    required=True,
+    type=click.Choice(["draft", "needs_approval", "approved", "change_requested", "failed"]),
+    help="Status to restore the blocked task to.",
+)
+@click.pass_context
+def unblock(ctx: click.Context, task_id, target_status):
+    """Restore a blocked task to an explicit target status."""
+
+    async def _run():
+        db = await _get_db(ctx.obj["db"])
+        service = TaskService(db)
+
+        try:
+            try:
+                unblocked = await service.unblock_task(task_id, TaskStatus(target_status))
+            except TaskNotFoundError as e:
+                console.print(f"[red]Error: {e}[/]")
+                sys.exit(1)
+            except InvalidTaskUnblockError as e:
+                console.print(f"[red]Error: {e}[/]")
+                sys.exit(1)
+
+            console.print(f"✓ Unblocked task {task_id}")
+            console.print(f"  Status: {unblocked.status.value}")
+            _notify_daemon()
         finally:
             await db.close()
 
@@ -555,7 +1163,7 @@ def run(ctx: click.Context):
             config = load_config(config_dir)
         except (CfgErr, FileNotFoundError) as e:
             console.print(f"[red]Config error: {e}[/]")
-            console.print(f"  Run 'cellos init' first.")
+            console.print("  Run 'cellos init' first.")
             sys.exit(1)
 
         console.print(f"Starting daemon (concurrent_tasks={config.scheduler.concurrent_tasks})...")
@@ -810,15 +1418,15 @@ def pmcon_sync(ctx: click.Context, provider: str, push: bool, pull: bool):
             await db.close()
 
         if do_push and not do_pull:
-            console.print(f"✓ Push complete")
+            console.print("✓ Push complete")
             console.print(f"  Items created: {delta.items_created}")
             console.print(f"  Items updated: {delta.items_updated}")
         elif do_pull and not do_push:
-            console.print(f"✓ Pull complete")
+            console.print("✓ Pull complete")
             console.print(f"  Comments imported: {delta.comments_imported}")
             console.print(f"  Statuses changed: {delta.statuses_changed}")
         else:
-            console.print(f"✓ Sync complete")
+            console.print("✓ Sync complete")
             console.print(f"  Created: {delta.items_created} | Updated: {delta.items_updated}")
             console.print(f"  Comments imported: {delta.comments_imported} | Statuses changed: {delta.statuses_changed}")
 
