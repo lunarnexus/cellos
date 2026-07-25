@@ -243,22 +243,13 @@ Potential questions:
 
 ### 11. Structured handoff metadata
 
-**Priority:** Defer until actual need
+**Priority:** Complete
 
-Do not add structured result metadata just because Hermes Kanban has it.
-
-Current stance:
-- Keep `TaskResult` simple until CelloS has a concrete downstream need.
-- Add fields only when they solve real review, retry, PM sync, or parent aggregation problems.
-
-Possible future examples:
-- verification commands run
-- changed files
-- residual risk
-- created child task IDs
-- retry notes
-
-But defer until needed.
+No structured handoff metadata needed right now. `TaskResult` stays minimal
+(success, summary, output). The decision to defer was confirmed — no concrete
+downstream need exists for verification commands, changed files, residual risk,
+child task IDs, or retry notes. Keeping it simple avoids adding complexity for
+a feature that doesn't yet map to a real problem.
 
 ---
 

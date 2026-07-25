@@ -10,7 +10,7 @@ from cellos.config import CellosConfig
 from cellos.db import CellosDatabase
 from cellos.env import env_has, get_required_env
 from cellos.integrations.base import IntegrationProvider, IntegrationStatus, SetupResult, SyncDelta
-from cellos.models import AgentRole, CommentAuthorType, Task, TaskStatus
+from cellos.models import AgentRole, AttentionReason, CommentAuthorType, Task, TaskStatus
 
 from .client import VikunjaClient
 
@@ -226,7 +226,18 @@ class VikunjaProvider(IntegrationProvider):
                     role=_remote_task_to_local_role(remote_task),
                     status=remote_status,
                 )
+                if remote_status == TaskStatus.APPROVED:
+                    local_task = local_task.requires_attention(
+                        AttentionReason.APPROVED,
+                        detail="Provider pull imported executable task; review before daemon execution.",
+                    )
                 await self._db.create_task(local_task)
+                if remote_status == TaskStatus.APPROVED:
+                    await self._db.create_event(
+                        local_task.id,
+                        "provider_status_synced",
+                        f"Provider pull imported task in {remote_status.value} status; attention required before execution.",
+                    )
                 mapping = self._record_pull_state(
                     {},
                     task=local_task,
@@ -263,17 +274,39 @@ class VikunjaProvider(IntegrationProvider):
                         synced_fields.add("status")
 
                     if updates:
+                        previous_status = current.status
                         current = current.model_copy(update=updates)
+                        if updates.get("status") == TaskStatus.APPROVED:
+                            current = current.requires_attention(
+                                AttentionReason.APPROVED,
+                                detail="Provider pull moved task into approved; review before daemon execution.",
+                            )
                         await self._db.update_task(current)
                         delta.items_updated += 1
                         if "status" in updates:
                             delta.statuses_changed += 1
+                            await self._db.create_event(
+                                current.id,
+                                "provider_status_synced",
+                                f"Provider pull changed status from {previous_status.value} to {updates['status'].value}.",
+                            )
                 elif current.status != remote_status:
+                    previous_status = current.status
                     current = current.model_copy(update={"status": remote_status})
+                    if remote_status == TaskStatus.APPROVED:
+                        current = current.requires_attention(
+                            AttentionReason.APPROVED,
+                            detail="Provider pull moved task into approved; review before daemon execution.",
+                        )
                     await self._db.update_task(current)
                     delta.items_updated += 1
                     delta.statuses_changed += 1
                     synced_fields.add("status")
+                    await self._db.create_event(
+                        current.id,
+                        "provider_status_synced",
+                        f"Provider pull changed status from {previous_status.value} to {remote_status.value}.",
+                    )
                 mapping = self._record_pull_state(
                     mapping,
                     task=current,
@@ -296,6 +329,18 @@ class VikunjaProvider(IntegrationProvider):
         return await self.sync(push=True, pull=False)
 
     async def auto_pull_maybe(self, pull_interval_seconds: int) -> SyncDelta:
+        if self._db is None:
+            return SyncDelta()
+        cursor = await self._db.conn.execute(
+            "SELECT value FROM integration_sync WHERE key = ?",
+            ("vikunja.meta.last_pull_ts",),
+        )
+        row = await cursor.fetchone()
+        last_pull = _parse_iso(str(row[0])) if row and row[0] else None
+        if last_pull is not None:
+            elapsed = (datetime.now(timezone.utc) - last_pull).total_seconds()
+            if elapsed < max(0, pull_interval_seconds):
+                return SyncDelta()
         return await self.sync(push=False, pull=True)
 
     def _task_to_vikunja_payload(self, task: Task, include_fields: set[str] | None = None) -> dict[str, Any]:

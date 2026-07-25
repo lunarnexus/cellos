@@ -14,7 +14,10 @@ Priority ordering per cycle:
 from __future__ import annotations
 
 import asyncio
+import datetime
+import json
 import logging
+import os
 import signal
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -22,7 +25,7 @@ from typing import Optional
 
 from cellos.config import CellosConfig
 from cellos.db import CellosDatabase
-from cellos.models import Task
+from cellos.models import AttentionReason, Task, TaskAttemptStatus, TaskStatus
 from cellos.services.worker_spawner import WorkerSpawner
 
 logger = logging.getLogger(__name__)
@@ -35,6 +38,18 @@ class ScheduleResult:
     attention_tasks: list[Task] = field(default_factory=list)
     planning_tasks: list[Task] = field(default_factory=list)
     execution_tasks: list[Task] = field(default_factory=list)
+
+
+@dataclass
+class TrackedWorker:
+    """Runtime metadata for a worker subprocess tracked by the daemon."""
+
+    task_id: str
+    mode: str
+    pid: int | None
+    log_path: str
+    started_at: str
+    tracker: asyncio.Task
 
 
 class SchedulerService:
@@ -116,12 +131,14 @@ class DaemonService:
 
         # Event-driven wake mechanism
         self._wake_event = asyncio.Event()
-        self._running_workers: dict[str, asyncio.Task] = {}
+        self._running_workers: dict[str, TrackedWorker] = {}
         self._shutdown = False
 
-        # Notification file for CLI actions to signal the daemon
-        self._notification_file = Path(self.workdir) / ".cellos" / "daemon_notify"
-        self._notification_file.parent.mkdir(parents=True, exist_ok=True)
+        # Notification/state files for CLI→daemon coordination and status inspection
+        self._cellos_dir = Path(self.workdir) / ".cellos"
+        self._notification_file = self._cellos_dir / "daemon_notify"
+        self._status_file = self._cellos_dir / "daemon_status.json"
+        self._cellos_dir.mkdir(parents=True, exist_ok=True)
 
         # File watcher
         self._file_watcher_task: Optional[asyncio.Task] = None
@@ -141,6 +158,35 @@ class DaemonService:
         except OSError:
             pass
 
+    def _status_payload(self, state: str) -> dict:
+        """Build a serializable daemon status snapshot."""
+        return {
+            "pid": os.getpid(),
+            "state": state,
+            "started_at": getattr(self, "_started_at", None),
+            "last_heartbeat_at": datetime.datetime.now(datetime.UTC).isoformat(),
+            "concurrent_limit": self.config.scheduler.concurrent_tasks,
+            "auto_sync_enabled": self._is_auto_sync_enabled(),
+            "workdir": str(Path(self.workdir).resolve()),
+            "running_workers": [
+                {
+                    "task_id": worker.task_id,
+                    "mode": worker.mode,
+                    "pid": worker.pid if isinstance(worker.pid, int) else None,
+                    "log_path": worker.log_path,
+                    "started_at": worker.started_at,
+                }
+                for worker in self._running_workers.values()
+            ],
+        }
+
+    def _write_status(self, state: str) -> None:
+        """Persist daemon runtime status for cross-process CLI inspection."""
+        self._status_file.write_text(
+            json.dumps(self._status_payload(state), indent=2) + "\n",
+            encoding="utf-8",
+        )
+
     async def start(self) -> None:
         """Start the daemon loop.
 
@@ -148,6 +194,8 @@ class DaemonService:
         On shutdown: waits for running workers, closes DB connection.
         """
         logger.info("Daemon starting in %s", self.workdir)
+        self._started_at = datetime.datetime.now(datetime.UTC).isoformat()
+        self._write_status("starting")
 
         # Register signal handlers
         loop = asyncio.get_running_loop()
@@ -171,11 +219,13 @@ class DaemonService:
 
                 # If no workers are running and not shutting down, wait for next signal
                 if not self._running_workers and not self._shutdown:
+                    self._write_status("idle")
                     logger.info("No workers running, waiting for signal...")
                     # Don't return here — loop back to await _wake_event
         finally:
             # Cleanup
             logger.info("Daemon shutting down...")
+            self._write_status("shutting_down")
             if self._file_watcher_task:
                 self._file_watcher_task.cancel()
                 try:
@@ -189,8 +239,12 @@ class DaemonService:
                     "Waiting for %d running workers to finish...",
                     len(self._running_workers),
                 )
-                await asyncio.gather(*self._running_workers.values(), return_exceptions=True)
+                await asyncio.gather(
+                    *(worker.tracker for worker in self._running_workers.values()),
+                    return_exceptions=True,
+                )
 
+            self._write_status("stopped")
             await self.db.close()
             logger.info("Daemon stopped.")
 
@@ -218,10 +272,61 @@ class DaemonService:
             except OSError:
                 pass
 
+    async def _reconcile_orphaned_in_progress_tasks(self) -> None:
+        """Recover tasks stuck in in_progress without a live tracked worker."""
+        in_progress_tasks = await self.db.list_tasks(status_filter=TaskStatus.IN_PROGRESS.value)
+        for task in in_progress_tasks:
+            if task.id in self._running_workers:
+                continue
+
+            attempts = await self.db.list_attempts(task.id)
+            latest_attempt = attempts[0] if attempts else None
+
+            restore_status = TaskStatus.DRAFT
+            attempt_mode = "unknown"
+            detail = "Daemon found task in_progress with no live tracked worker"
+            if latest_attempt and latest_attempt.mode == "planning":
+                restore_status = TaskStatus.DRAFT
+                attempt_mode = "planning"
+            elif latest_attempt and latest_attempt.mode == "execution":
+                restore_status = TaskStatus.APPROVED
+                attempt_mode = "execution"
+            elif not latest_attempt:
+                restore_status = TaskStatus.DRAFT
+                detail = "Daemon found task in_progress with no attempt record"
+
+            recovered = task.requires_attention(
+                AttentionReason.EXECUTION_FAILED,
+                detail=f"{detail} (mode={attempt_mode})",
+            ).model_copy(update={
+                "status": restore_status,
+            })
+            await self.db.update_task(recovered)
+            await self.db.create_event(
+                task.id,
+                "worker_orphaned",
+                f"Recovered orphaned in_progress task; restoring to {restore_status.value} (mode={attempt_mode})",
+            )
+            await self.db.create_event(
+                task.id,
+                "task_recovered",
+                f"Task restored from in_progress to {restore_status.value} after orphan detection",
+            )
+
+            if latest_attempt and latest_attempt.status == TaskAttemptStatus.STARTED:
+                await self.db.update_attempt(
+                    latest_attempt.id,
+                    TaskStatus.FAILED,
+                    error_message=f"orphaned_task_recovered: {detail} (mode={attempt_mode})",
+                )
+
     async def _run_cycle(self) -> None:
         """Run a single scheduling cycle: pick work and spawn workers."""
         if self._shutdown:
+            self._write_status("shutting_down")
             return
+
+        await self._reconcile_orphaned_in_progress_tasks()
 
         max_concurrent = self.config.scheduler.concurrent_tasks
 
@@ -230,6 +335,7 @@ class DaemonService:
         available_slots = max_concurrent - running_count
 
         if available_slots <= 0:
+            self._write_status("at_capacity")
             logger.info(
                 "At concurrency limit (%d/%d), skipping cycle",
                 running_count, max_concurrent,
@@ -246,6 +352,7 @@ class DaemonService:
         )
 
         if total_picked == 0:
+            self._write_status("idle")
             logger.debug("No work to schedule")
             return
 
@@ -299,6 +406,8 @@ class DaemonService:
             config_dir=self.config_dir,
             workdir=self.workdir,
         )
+        started_at = datetime.datetime.now(datetime.UTC).isoformat()
+        log_path = str(Path(self.workdir) / "logs" / f"worker-{task.id}.log")
 
         # Track the worker process — we'll poll for its exit
         async def _track_worker() -> None:
@@ -315,9 +424,19 @@ class DaemonService:
             finally:
                 # Remove from tracking and wake daemon for next cycle
                 self._running_workers.pop(task.id, None)
+                self._write_status("idle" if not self._running_workers else "running")
                 self._wake_event.set()
 
-        self._running_workers[task.id] = asyncio.create_task(_track_worker())
+        tracker = asyncio.create_task(_track_worker())
+        self._running_workers[task.id] = TrackedWorker(
+            task_id=task.id,
+            mode=mode,
+            pid=proc.pid,
+            log_path=log_path,
+            started_at=started_at,
+            tracker=tracker,
+        )
+        self._write_status("running")
 
     async def _provider_sync_push(self) -> None:
         """Push Cellos task changes to all enabled integration providers."""

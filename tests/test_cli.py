@@ -5,6 +5,7 @@ initializes a fresh DB to avoid cross-test contamination.
 """
 
 import json
+import os
 from pathlib import Path
 
 import pytest
@@ -133,6 +134,46 @@ def test_add_task_with_dependencies(runner):
     assert result.exit_code == 0
 
 
+def test_add_child_task_with_parent_link(runner):
+    cli_runner, tmp_path, db, config_dir = runner
+
+    cli_runner.invoke(main, ["--config-dir", config_dir, "--db", db, "init"])
+
+    r1 = cli_runner.invoke(
+        main, ["--config-dir", config_dir, "--db", db, "add-task", "Parent task"]
+    )
+    assert r1.exit_code == 0
+    parent_id = r1.output.split("Created task ")[1].split(":")[0].strip()
+
+    result = cli_runner.invoke(
+        main,
+        [
+            "--config-dir", config_dir,
+            "--db", db,
+            "add-task", "Child task", "--parent", parent_id
+        ],
+    )
+    assert result.exit_code == 0
+    assert f"Parent: {parent_id}" in result.output
+
+
+def test_add_child_task_with_missing_parent_fails(runner):
+    cli_runner, tmp_path, db, config_dir = runner
+
+    cli_runner.invoke(main, ["--config-dir", config_dir, "--db", db, "init"])
+
+    result = cli_runner.invoke(
+        main,
+        [
+            "--config-dir", config_dir,
+            "--db", db,
+            "add-task", "Child task", "--parent", "missing123"
+        ],
+    )
+    assert result.exit_code == 1
+    assert "Task missing123 not found" in result.output
+
+
 # ── status ──────────────────────────────────────────────────────────────
 
 def test_status_before_init_fails_cleanly(runner):
@@ -191,6 +232,662 @@ def test_status_filter(runner):
     )
     assert result.exit_code == 0
     assert "Total: 1 task" in result.output
+
+
+def test_inbox_empty(runner):
+    cli_runner, tmp_path, db, config_dir = runner
+
+    cli_runner.invoke(main, ["--config-dir", config_dir, "--db", db, "init"])
+
+    result = cli_runner.invoke(
+        main, ["--config-dir", config_dir, "--db", db, "inbox"]
+    )
+    assert result.exit_code == 0
+    assert "Inbox empty" in result.output
+
+
+def test_inbox_lists_tasks_requiring_attention(runner):
+    cli_runner, tmp_path, db, config_dir = runner
+
+    cli_runner.invoke(main, ["--config-dir", config_dir, "--db", db, "init"])
+    r1 = cli_runner.invoke(
+        main, ["--config-dir", config_dir, "--db", db, "add-task", "Inbox task"]
+    )
+    assert r1.exit_code == 0
+    task_id = r1.output.split("Created task ")[1].split(":")[0].strip()
+
+    comment_result = cli_runner.invoke(
+        main,
+        ["--config-dir", config_dir, "--db", db, "comment", task_id, "-m", "Need review"],
+    )
+    assert comment_result.exit_code == 0
+
+    result = cli_runner.invoke(
+        main, ["--config-dir", config_dir, "--db", db, "inbox"]
+    )
+    assert result.exit_code == 0
+    assert "Inbox task" in result.output
+    assert "⚠️" in result.output
+    assert "Total: 1 task needs attention" in result.output
+
+
+def test_blocked_empty(runner):
+    cli_runner, tmp_path, db, config_dir = runner
+
+    cli_runner.invoke(main, ["--config-dir", config_dir, "--db", db, "init"])
+
+    result = cli_runner.invoke(
+        main, ["--config-dir", config_dir, "--db", db, "blocked"]
+    )
+    assert result.exit_code == 0
+    assert "No blocked tasks" in result.output
+
+
+def test_blocked_lists_blocked_tasks(runner):
+    cli_runner, tmp_path, db, config_dir = runner
+
+    cli_runner.invoke(main, ["--config-dir", config_dir, "--db", db, "init"])
+    r1 = cli_runner.invoke(
+        main, ["--config-dir", config_dir, "--db", db, "add-task", "Blocked list task"]
+    )
+    assert r1.exit_code == 0
+    task_id = r1.output.split("Created task ")[1].split(":")[0].strip()
+
+    block_result = cli_runner.invoke(
+        main,
+        ["--config-dir", config_dir, "--db", db, "block", task_id, "--reason", "waiting on vendor"],
+    )
+    assert block_result.exit_code == 0
+
+    result = cli_runner.invoke(
+        main, ["--config-dir", config_dir, "--db", db, "blocked"]
+    )
+    assert result.exit_code == 0
+    assert "Blocked list task" in result.output
+    assert "blocked" in result.output
+    assert "⚠️" in result.output
+    assert "Total: 1 blocked task" in result.output
+
+
+def test_ready_empty(runner):
+    cli_runner, tmp_path, db, config_dir = runner
+
+    cli_runner.invoke(main, ["--config-dir", config_dir, "--db", db, "init"])
+
+    result = cli_runner.invoke(
+        main, ["--config-dir", config_dir, "--db", db, "ready"]
+    )
+    assert result.exit_code == 0
+    assert "No ready tasks found" in result.output
+
+
+def test_ready_shows_approved_unblocked_execution_task(runner):
+    import asyncio
+
+    from cellos.db import CellosDatabase
+    from cellos.models import TaskStatus
+
+    cli_runner, tmp_path, db, config_dir = runner
+
+    cli_runner.invoke(main, ["--config-dir", config_dir, "--db", db, "init"])
+    r1 = cli_runner.invoke(
+        main, ["--config-dir", config_dir, "--db", db, "add-task", "Ready task"]
+    )
+    assert r1.exit_code == 0
+    task_id = r1.output.split("Created task ")[1].split(":")[0].strip()
+
+    async def _seed_approved():
+        database = CellosDatabase(db)
+        await database.connect()
+        try:
+            task = await database.get_task(task_id)
+            assert task is not None
+            await database.update_task(task.model_copy(update={"status": TaskStatus.APPROVED}))
+        finally:
+            await database.close()
+
+    asyncio.run(_seed_approved())
+
+    result = cli_runner.invoke(
+        main, ["--config-dir", config_dir, "--db", db, "ready"]
+    )
+    assert result.exit_code == 0
+    assert "Ready task" in result.output
+    assert "approved" in result.output
+    assert "Total ready: 1 task" in result.output
+
+
+def test_ready_excludes_approved_task_with_unsatisfied_dependency(runner):
+    import asyncio
+
+    from cellos.db import CellosDatabase
+    from cellos.models import TaskStatus
+
+    cli_runner, tmp_path, db, config_dir = runner
+
+    cli_runner.invoke(main, ["--config-dir", config_dir, "--db", db, "init"])
+    dep = cli_runner.invoke(
+        main, ["--config-dir", config_dir, "--db", db, "add-task", "Dependency"]
+    )
+    assert dep.exit_code == 0
+    dep_id = dep.output.split("Created task ")[1].split(":")[0].strip()
+
+    dependent = cli_runner.invoke(
+        main,
+        [
+            "--config-dir", config_dir,
+            "--db", db,
+            "add-task", "Dependent task", "--depends", dep_id,
+        ],
+    )
+    assert dependent.exit_code == 0
+    task_id = dependent.output.split("Created task ")[1].split(":")[0].strip()
+
+    async def _seed_approved():
+        database = CellosDatabase(db)
+        await database.connect()
+        try:
+            task = await database.get_task(task_id)
+            assert task is not None
+            await database.update_task(task.model_copy(update={"status": TaskStatus.APPROVED}))
+        finally:
+            await database.close()
+
+    asyncio.run(_seed_approved())
+
+    result = cli_runner.invoke(
+        main, ["--config-dir", config_dir, "--db", db, "ready"]
+    )
+    assert result.exit_code == 0
+    assert "Dependent task" not in result.output
+
+
+def test_ready_excludes_approved_architect_task(runner):
+    import asyncio
+
+    from cellos.db import CellosDatabase
+    from cellos.models import TaskStatus
+
+    cli_runner, tmp_path, db, config_dir = runner
+
+    cli_runner.invoke(main, ["--config-dir", config_dir, "--db", db, "init"])
+    r1 = cli_runner.invoke(
+        main,
+        ["--config-dir", config_dir, "--db", db, "add-task", "Architect task", "--role", "architect"],
+    )
+    assert r1.exit_code == 0
+    task_id = r1.output.split("Created task ")[1].split(":")[0].strip()
+
+    async def _seed_approved():
+        database = CellosDatabase(db)
+        await database.connect()
+        try:
+            task = await database.get_task(task_id)
+            assert task is not None
+            await database.update_task(task.model_copy(update={"status": TaskStatus.APPROVED}))
+        finally:
+            await database.close()
+
+    asyncio.run(_seed_approved())
+
+    result = cli_runner.invoke(
+        main, ["--config-dir", config_dir, "--db", db, "ready"]
+    )
+    assert result.exit_code == 0
+    assert "Architect task" not in result.output
+
+
+def test_ready_excludes_blocked_task(runner):
+    cli_runner, tmp_path, db, config_dir = runner
+
+    cli_runner.invoke(main, ["--config-dir", config_dir, "--db", db, "init"])
+    r1 = cli_runner.invoke(
+        main, ["--config-dir", config_dir, "--db", db, "add-task", "Blocked ready task"]
+    )
+    assert r1.exit_code == 0
+    task_id = r1.output.split("Created task ")[1].split(":")[0].strip()
+
+    block_result = cli_runner.invoke(
+        main,
+        ["--config-dir", config_dir, "--db", db, "block", task_id, "--reason", "paused"],
+    )
+    assert block_result.exit_code == 0
+
+    result = cli_runner.invoke(
+        main, ["--config-dir", config_dir, "--db", db, "ready"]
+    )
+    assert result.exit_code == 0
+    assert "Blocked ready task" not in result.output
+
+
+def test_review_empty(runner):
+    cli_runner, tmp_path, db, config_dir = runner
+
+    cli_runner.invoke(main, ["--config-dir", config_dir, "--db", db, "init"])
+
+    result = cli_runner.invoke(
+        main, ["--config-dir", config_dir, "--db", db, "review"]
+    )
+    assert result.exit_code == 0
+    assert "No review tasks found" in result.output
+
+
+def test_review_includes_needs_approval_task(runner):
+    import asyncio
+
+    from cellos.db import CellosDatabase
+    from cellos.models import AttentionMetadata, AttentionReason, TaskStatus
+
+    cli_runner, tmp_path, db, config_dir = runner
+
+    cli_runner.invoke(main, ["--config-dir", config_dir, "--db", db, "init"])
+    r1 = cli_runner.invoke(
+        main, ["--config-dir", config_dir, "--db", db, "add-task", "Plan review task"]
+    )
+    assert r1.exit_code == 0
+    task_id = r1.output.split("Created task ")[1].split(":")[0].strip()
+
+    async def _seed_review_state():
+        database = CellosDatabase(db)
+        await database.connect()
+        try:
+            task = await database.get_task(task_id)
+            assert task is not None
+            updated = task.model_copy(update={
+                "status": TaskStatus.NEEDS_APPROVAL,
+                "attention": AttentionMetadata.required_attention(
+                    AttentionReason.PLANNING_COMPLETE,
+                    "Plan generated and ready for approval",
+                ),
+            })
+            await database.update_task(updated)
+        finally:
+            await database.close()
+
+    asyncio.run(_seed_review_state())
+
+    result = cli_runner.invoke(
+        main, ["--config-dir", config_dir, "--db", db, "review"]
+    )
+    assert result.exit_code == 0
+    assert "Plan review task" in result.output
+    assert "needs_approval" in result.output
+    assert "Total review: 1 task" in result.output
+
+
+def test_review_includes_execution_failure_attention(runner):
+    import asyncio
+
+    from cellos.db import CellosDatabase
+    from cellos.models import AttentionMetadata, AttentionReason, TaskStatus
+
+    cli_runner, tmp_path, db, config_dir = runner
+
+    cli_runner.invoke(main, ["--config-dir", config_dir, "--db", db, "init"])
+    r1 = cli_runner.invoke(
+        main, ["--config-dir", config_dir, "--db", db, "add-task", "Execution review task"]
+    )
+    assert r1.exit_code == 0
+    task_id = r1.output.split("Created task ")[1].split(":")[0].strip()
+
+    async def _seed_execution_review():
+        database = CellosDatabase(db)
+        await database.connect()
+        try:
+            task = await database.get_task(task_id)
+            assert task is not None
+            updated = task.model_copy(update={
+                "status": TaskStatus.APPROVED,
+                "attention": AttentionMetadata.required_attention(
+                    AttentionReason.EXECUTION_FAILED,
+                    "Worker failed in execution mode",
+                ),
+            })
+            await database.update_task(updated)
+        finally:
+            await database.close()
+
+    asyncio.run(_seed_execution_review())
+
+    result = cli_runner.invoke(
+        main, ["--config-dir", config_dir, "--db", db, "review"]
+    )
+    assert result.exit_code == 0
+    assert "Execution review task" in result.output
+    assert "approved" in result.output
+
+
+def test_review_excludes_non_review_attention(runner):
+    cli_runner, tmp_path, db, config_dir = runner
+
+    cli_runner.invoke(main, ["--config-dir", config_dir, "--db", db, "init"])
+    r1 = cli_runner.invoke(
+        main, ["--config-dir", config_dir, "--db", db, "add-task", "Inbox-only task"]
+    )
+    assert r1.exit_code == 0
+    task_id = r1.output.split("Created task ")[1].split(":")[0].strip()
+
+    comment_result = cli_runner.invoke(
+        main,
+        ["--config-dir", config_dir, "--db", db, "comment", task_id, "-m", "Need input"],
+    )
+    assert comment_result.exit_code == 0
+
+    result = cli_runner.invoke(
+        main, ["--config-dir", config_dir, "--db", db, "review"]
+    )
+    assert result.exit_code == 0
+    assert "Inbox-only task" not in result.output
+
+
+def test_recent_failures_empty(runner):
+    cli_runner, tmp_path, db, config_dir = runner
+
+    cli_runner.invoke(main, ["--config-dir", config_dir, "--db", db, "init"])
+
+    result = cli_runner.invoke(
+        main, ["--config-dir", config_dir, "--db", db, "recent-failures"]
+    )
+    assert result.exit_code == 0
+    assert "No recent failed attempts" in result.output
+
+
+def test_recent_failures_lists_newest_failed_attempts(runner):
+    import asyncio
+
+    from cellos.db import CellosDatabase
+    from cellos.models import TaskStatus
+
+    cli_runner, tmp_path, db, config_dir = runner
+    cli_runner.invoke(main, ["--config-dir", config_dir, "--db", db, "init"])
+
+    first = cli_runner.invoke(
+        main, ["--config-dir", config_dir, "--db", db, "add-task", "Older failure task"]
+    )
+    second = cli_runner.invoke(
+        main, ["--config-dir", config_dir, "--db", db, "add-task", "Newer failure task"]
+    )
+    assert first.exit_code == 0
+    assert second.exit_code == 0
+    first_id = first.output.split("Created task ")[1].split(":")[0].strip()
+    second_id = second.output.split("Created task ")[1].split(":")[0].strip()
+
+    async def _seed_attempts():
+        database = CellosDatabase(db)
+        await database.connect()
+        try:
+            a1 = await database.create_attempt(first_id, mode="execution", agent_id="engineer")
+            await database.update_attempt(a1.id, TaskStatus.FAILED, error_message="older boom")
+            a2 = await database.create_attempt(second_id, mode="planning", agent_id="architect")
+            await database.update_attempt(a2.id, TaskStatus.FAILED, error_message="newer boom")
+        finally:
+            await database.close()
+
+    asyncio.run(_seed_attempts())
+
+    result = cli_runner.invoke(
+        main, ["--config-dir", config_dir, "--db", db, "recent-failures"]
+    )
+    assert result.exit_code == 0
+    assert first_id in result.output
+    assert second_id in result.output
+    assert "older boom" in result.output
+    assert "newer boom" in result.output
+    assert result.output.index(second_id) < result.output.index(first_id)
+    assert "Total failed attempts shown: 2" in result.output
+
+
+def test_recent_failures_honors_limit(runner):
+    import asyncio
+
+    from cellos.db import CellosDatabase
+    from cellos.models import TaskStatus
+
+    cli_runner, tmp_path, db, config_dir = runner
+    cli_runner.invoke(main, ["--config-dir", config_dir, "--db", db, "init"])
+
+    task_ids = []
+    for title in ["Failure one", "Failure two", "Failure three"]:
+        created = cli_runner.invoke(
+            main, ["--config-dir", config_dir, "--db", db, "add-task", title]
+        )
+        assert created.exit_code == 0
+        task_ids.append(created.output.split("Created task ")[1].split(":")[0].strip())
+
+    async def _seed_attempts():
+        database = CellosDatabase(db)
+        await database.connect()
+        try:
+            for idx, task_id in enumerate(task_ids, start=1):
+                attempt = await database.create_attempt(task_id, mode="execution", agent_id=f"agent-{idx}")
+                await database.update_attempt(attempt.id, TaskStatus.FAILED, error_message=f"boom-{idx}")
+        finally:
+            await database.close()
+
+    asyncio.run(_seed_attempts())
+
+    result = cli_runner.invoke(
+        main, ["--config-dir", config_dir, "--db", db, "recent-failures", "--limit", "2"]
+    )
+    assert result.exit_code == 0
+    assert "Total failed attempts shown: 2" in result.output
+
+
+def test_daemon_status_missing(runner):
+    cli_runner, tmp_path, db, config_dir = runner
+
+    result = cli_runner.invoke(main, ["daemon-status"])
+    assert result.exit_code == 0
+    assert "No daemon status found" in result.output
+
+
+def test_daemon_status_reads_live_status_file(runner):
+    cli_runner, tmp_path, db, config_dir = runner
+
+    with cli_runner.isolated_filesystem(temp_dir=str(tmp_path.parent)):
+        cwd = Path.cwd()
+        status_dir = cwd / ".cellos"
+        status_dir.mkdir(parents=True, exist_ok=True)
+        (status_dir / "daemon_status.json").write_text(
+            json.dumps(
+                {
+                    "pid": os.getpid(),
+                    "state": "running",
+                    "started_at": "2026-06-30T16:00:00+00:00",
+                    "last_heartbeat_at": "2026-06-30T16:01:00+00:00",
+                    "concurrent_limit": 4,
+                    "auto_sync_enabled": False,
+                    "workdir": str(cwd),
+                    "running_workers": [
+                        {
+                            "task_id": "task123",
+                            "mode": "execution",
+                            "pid": 4321,
+                            "log_path": str(cwd / "logs" / "worker-task123.log"),
+                            "started_at": "2026-06-30T16:00:30+00:00",
+                        }
+                    ],
+                }
+            )
+        )
+        result = cli_runner.invoke(main, ["daemon-status"])
+
+    assert result.exit_code == 0
+    assert "State: running" in result.output
+    assert "PID:" in result.output
+    assert "Tracked workers: 1" in result.output
+    assert "task123" in result.output
+    assert "execution" in result.output
+
+
+def test_deps_missing_task_fails(runner):
+    cli_runner, tmp_path, db, config_dir = runner
+
+    cli_runner.invoke(main, ["--config-dir", config_dir, "--db", db, "init"])
+    result = cli_runner.invoke(
+        main, ["--config-dir", config_dir, "--db", db, "deps", "missing123"]
+    )
+    assert result.exit_code == 1
+    assert "Task missing123 not found" in result.output
+
+
+def test_deps_shows_direct_relationships(runner):
+    cli_runner, tmp_path, db, config_dir = runner
+
+    cli_runner.invoke(main, ["--config-dir", config_dir, "--db", db, "init"])
+
+    upstream = cli_runner.invoke(
+        main, ["--config-dir", config_dir, "--db", db, "add-task", "Upstream dependency"]
+    )
+    focus = cli_runner.invoke(
+        main,
+        [
+            "--config-dir", config_dir,
+            "--db", db,
+            "add-task", "Focus task", "--depends",
+            upstream.output.split("Created task ")[1].split(":")[0].strip(),
+        ],
+    )
+    assert upstream.exit_code == 0
+    assert focus.exit_code == 0
+
+    focus_id = focus.output.split("Created task ")[1].split(":")[0].strip()
+
+    downstream = cli_runner.invoke(
+        main,
+        [
+            "--config-dir", config_dir,
+            "--db", db,
+            "add-task", "Downstream dependent", "--depends", focus_id,
+        ],
+    )
+    assert downstream.exit_code == 0
+
+    result = cli_runner.invoke(
+        main, ["--config-dir", config_dir, "--db", db, "deps", focus_id]
+    )
+    assert result.exit_code == 0
+    assert "Parent:" in result.output
+    assert "- none" in result.output
+    assert "Depends on:" in result.output
+    assert "Upstream dependency" in result.output
+    assert "unsatisfied" in result.output
+    assert "Blocks:" in result.output
+    assert "Downstream dependent" in result.output
+    assert "Children:" in result.output
+    assert "- none" in result.output
+
+
+def test_deps_shows_child_and_no_parent(runner):
+    cli_runner, tmp_path, db, config_dir = runner
+
+    cli_runner.invoke(main, ["--config-dir", config_dir, "--db", db, "init"])
+
+    root = cli_runner.invoke(
+        main, ["--config-dir", config_dir, "--db", db, "add-task", "Root task"]
+    )
+    assert root.exit_code == 0
+    root_id = root.output.split("Created task ")[1].split(":")[0].strip()
+
+    child = cli_runner.invoke(
+        main,
+        ["--config-dir", config_dir, "--db", db, "add-task", "Leaf child", "--parent", root_id],
+    )
+    assert child.exit_code == 0
+
+    result = cli_runner.invoke(
+        main, ["--config-dir", config_dir, "--db", db, "deps", root_id]
+    )
+    assert result.exit_code == 0
+    assert "Parent:" in result.output
+    assert "- none" in result.output
+    assert "Children:" in result.output
+    assert "Leaf child" in result.output
+
+
+def test_tree_missing_task_fails(runner):
+    cli_runner, tmp_path, db, config_dir = runner
+
+    cli_runner.invoke(main, ["--config-dir", config_dir, "--db", db, "init"])
+    result = cli_runner.invoke(
+        main, ["--config-dir", config_dir, "--db", db, "tree", "missing123"]
+    )
+    assert result.exit_code == 1
+    assert "Task missing123 not found" in result.output
+
+
+def test_tree_shows_root_subtree(runner):
+    cli_runner, tmp_path, db, config_dir = runner
+
+    cli_runner.invoke(main, ["--config-dir", config_dir, "--db", db, "init"])
+
+    root = cli_runner.invoke(
+        main, ["--config-dir", config_dir, "--db", db, "add-task", "Root task"]
+    )
+    assert root.exit_code == 0
+    root_id = root.output.split("Created task ")[1].split(":")[0].strip()
+
+    child = cli_runner.invoke(
+        main,
+        ["--config-dir", config_dir, "--db", db, "add-task", "Child task", "--parent", root_id],
+    )
+    assert child.exit_code == 0
+    child_id = child.output.split("Created task ")[1].split(":")[0].strip()
+
+    grandchild = cli_runner.invoke(
+        main,
+        ["--config-dir", config_dir, "--db", db, "add-task", "Grandchild task", "--parent", child_id],
+    )
+    assert grandchild.exit_code == 0
+
+    result = cli_runner.invoke(
+        main, ["--config-dir", config_dir, "--db", db, "tree", root_id]
+    )
+    assert result.exit_code == 0
+    assert "Ancestor path:" in result.output
+    assert "- none" in result.output
+    assert "Tree:" in result.output
+    assert "Root task" in result.output
+    assert "Child task" in result.output
+    assert "Grandchild task" in result.output
+
+
+def test_tree_shows_ancestor_path_and_focus(runner):
+    cli_runner, tmp_path, db, config_dir = runner
+
+    cli_runner.invoke(main, ["--config-dir", config_dir, "--db", db, "init"])
+
+    root = cli_runner.invoke(
+        main, ["--config-dir", config_dir, "--db", db, "add-task", "Root task"]
+    )
+    assert root.exit_code == 0
+    root_id = root.output.split("Created task ")[1].split(":")[0].strip()
+
+    child = cli_runner.invoke(
+        main,
+        ["--config-dir", config_dir, "--db", db, "add-task", "Child task", "--parent", root_id],
+    )
+    assert child.exit_code == 0
+    child_id = child.output.split("Created task ")[1].split(":")[0].strip()
+
+    grandchild = cli_runner.invoke(
+        main,
+        ["--config-dir", config_dir, "--db", db, "add-task", "Grandchild task", "--parent", child_id],
+    )
+    assert grandchild.exit_code == 0
+    grandchild_id = grandchild.output.split("Created task ")[1].split(":")[0].strip()
+
+    result = cli_runner.invoke(
+        main, ["--config-dir", config_dir, "--db", db, "tree", child_id]
+    )
+    assert result.exit_code == 0
+    assert "Ancestor path:" in result.output
+    assert root_id in result.output
+    assert "Root task" in result.output
+    assert child_id in result.output
+    assert "Child task  *" in result.output
+    assert grandchild_id in result.output
+    assert "Grandchild task" in result.output
 
 
 # ── detail ──────────────────────────────────────────────────────────────
@@ -294,6 +991,255 @@ def test_events_empty(runner):
     assert result.exit_code == 0
 
 
+def test_runs_empty(runner):
+    cli_runner, tmp_path, db, config_dir = runner
+
+    cli_runner.invoke(main, ["--config-dir", config_dir, "--db", db, "init"])
+    r1 = cli_runner.invoke(
+        main, ["--config-dir", config_dir, "--db", db, "add-task", "Runs test"]
+    )
+    assert r1.exit_code == 0
+    task_id = r1.output.split("Created task ")[1].split(":")[0].strip()
+
+    result = cli_runner.invoke(
+        main, ["--config-dir", config_dir, "--db", db, "runs", task_id]
+    )
+    assert result.exit_code == 0
+    assert "No attempts found" in result.output
+
+
+def test_runs_shows_attempt_history(runner):
+    import asyncio
+
+    from cellos.db import CellosDatabase
+    from cellos.models import TaskStatus
+
+    cli_runner, tmp_path, db, config_dir = runner
+    cli_runner.invoke(main, ["--config-dir", config_dir, "--db", db, "init"])
+    r1 = cli_runner.invoke(
+        main, ["--config-dir", config_dir, "--db", db, "add-task", "Attempted task"]
+    )
+    assert r1.exit_code == 0
+    task_id = r1.output.split("Created task ")[1].split(":")[0].strip()
+
+    async def _seed_attempt():
+        database = CellosDatabase(db)
+        await database.connect()
+        try:
+            attempt = await database.create_attempt(task_id, mode="execution", agent_id="engineer")
+            await database.update_attempt(attempt.id, TaskStatus.FAILED, error_message="boom")
+        finally:
+            await database.close()
+
+    asyncio.run(_seed_attempt())
+
+    result = cli_runner.invoke(
+        main, ["--config-dir", config_dir, "--db", db, "runs", task_id]
+    )
+    assert result.exit_code == 0
+    assert "execution" in result.output
+    assert "engineer" in result.output
+    assert "boom" in result.output
+
+
+def test_retry_failed_execution_task(runner):
+    import asyncio
+
+    from cellos.db import CellosDatabase
+    from cellos.models import TaskStatus
+
+    cli_runner, tmp_path, db, config_dir = runner
+    cli_runner.invoke(main, ["--config-dir", config_dir, "--db", db, "init"])
+    r1 = cli_runner.invoke(
+        main, ["--config-dir", config_dir, "--db", db, "add-task", "Retry target"]
+    )
+    assert r1.exit_code == 0
+    task_id = r1.output.split("Created task ")[1].split(":")[0].strip()
+
+    async def _seed_failed_execution():
+        database = CellosDatabase(db)
+        await database.connect()
+        try:
+            task = await database.get_task(task_id)
+            assert task is not None
+            await database.update_task(task.model_copy(update={"status": TaskStatus.FAILED}))
+            attempt = await database.create_attempt(task_id, mode="execution", agent_id="engineer")
+            await database.update_attempt(attempt.id, TaskStatus.FAILED, error_message="boom")
+        finally:
+            await database.close()
+
+    asyncio.run(_seed_failed_execution())
+
+    result = cli_runner.invoke(
+        main, ["--config-dir", config_dir, "--db", db, "retry", task_id]
+    )
+    assert result.exit_code == 0
+    assert "Retried task" in result.output
+    assert "approved" in result.output
+
+
+def test_retry_non_failed_task_rejected(runner):
+    cli_runner, tmp_path, db, config_dir = runner
+
+    cli_runner.invoke(main, ["--config-dir", config_dir, "--db", db, "init"])
+    r1 = cli_runner.invoke(
+        main, ["--config-dir", config_dir, "--db", db, "add-task", "Retry target"]
+    )
+    assert r1.exit_code == 0
+    task_id = r1.output.split("Created task ")[1].split(":")[0].strip()
+
+    result = cli_runner.invoke(
+        main, ["--config-dir", config_dir, "--db", db, "retry", task_id]
+    )
+    assert result.exit_code == 1
+    assert "Cannot retry task in status 'draft'" in result.output
+
+
+def test_recover_in_progress_execution_task(runner):
+    import asyncio
+
+    from cellos.db import CellosDatabase
+    from cellos.models import TaskStatus
+
+    cli_runner, tmp_path, db, config_dir = runner
+    cli_runner.invoke(main, ["--config-dir", config_dir, "--db", db, "init"])
+    r1 = cli_runner.invoke(
+        main, ["--config-dir", config_dir, "--db", db, "add-task", "Recover target"]
+    )
+    assert r1.exit_code == 0
+    task_id = r1.output.split("Created task ")[1].split(":")[0].strip()
+
+    async def _seed_in_progress_execution():
+        database = CellosDatabase(db)
+        await database.connect()
+        try:
+            task = await database.get_task(task_id)
+            assert task is not None
+            await database.update_task(task.model_copy(update={"status": TaskStatus.IN_PROGRESS}))
+            await database.create_attempt(task_id, mode="execution", agent_id="engineer")
+        finally:
+            await database.close()
+
+    asyncio.run(_seed_in_progress_execution())
+
+    result = cli_runner.invoke(
+        main, ["--config-dir", config_dir, "--db", db, "recover", task_id]
+    )
+    assert result.exit_code == 0
+    assert "Recovered task" in result.output
+    assert "approved" in result.output
+
+    events_result = cli_runner.invoke(
+        main, ["--config-dir", config_dir, "--db", db, "events", task_id]
+    )
+    assert events_result.exit_code == 0
+    assert "operator_recovered" in events_result.output
+    assert "task_recovered" in events_result.output
+
+
+def test_recover_non_in_progress_rejected(runner):
+    cli_runner, tmp_path, db, config_dir = runner
+
+    cli_runner.invoke(main, ["--config-dir", config_dir, "--db", db, "init"])
+    r1 = cli_runner.invoke(
+        main, ["--config-dir", config_dir, "--db", db, "add-task", "Recover target"]
+    )
+    assert r1.exit_code == 0
+    task_id = r1.output.split("Created task ")[1].split(":")[0].strip()
+
+    result = cli_runner.invoke(
+        main, ["--config-dir", config_dir, "--db", db, "recover", task_id]
+    )
+    assert result.exit_code == 1
+    assert "Cannot recover task in status 'draft'" in result.output
+
+
+def test_block_task_and_unblock_to_approved(runner):
+    cli_runner, tmp_path, db, config_dir = runner
+
+    cli_runner.invoke(main, ["--config-dir", config_dir, "--db", db, "init"])
+    r1 = cli_runner.invoke(
+        main, ["--config-dir", config_dir, "--db", db, "add-task", "Blocked target"]
+    )
+    assert r1.exit_code == 0
+    task_id = r1.output.split("Created task ")[1].split(":")[0].strip()
+
+    blocked = cli_runner.invoke(
+        main,
+        ["--config-dir", config_dir, "--db", db, "block", task_id, "--reason", "waiting on vendor"],
+    )
+    assert blocked.exit_code == 0
+    assert "Blocked task" in blocked.output
+    assert "blocked" in blocked.output
+
+    unblocked = cli_runner.invoke(
+        main,
+        ["--config-dir", config_dir, "--db", db, "unblock", task_id, "--to", "approved"],
+    )
+    assert unblocked.exit_code == 0
+    assert "Unblocked task" in unblocked.output
+    assert "approved" in unblocked.output
+
+    events_result = cli_runner.invoke(
+        main, ["--config-dir", config_dir, "--db", db, "events", task_id]
+    )
+    assert events_result.exit_code == 0
+    assert "operator_blocked" in events_result.output
+    assert "operator_unblocked" in events_result.output
+
+
+def test_block_in_progress_rejected_cli(runner):
+    import asyncio
+
+    from cellos.db import CellosDatabase
+    from cellos.models import TaskStatus
+
+    cli_runner, tmp_path, db, config_dir = runner
+    cli_runner.invoke(main, ["--config-dir", config_dir, "--db", db, "init"])
+    r1 = cli_runner.invoke(
+        main, ["--config-dir", config_dir, "--db", db, "add-task", "Busy target"]
+    )
+    assert r1.exit_code == 0
+    task_id = r1.output.split("Created task ")[1].split(":")[0].strip()
+
+    async def _seed_in_progress():
+        database = CellosDatabase(db)
+        await database.connect()
+        try:
+            task = await database.get_task(task_id)
+            assert task is not None
+            await database.update_task(task.model_copy(update={"status": TaskStatus.IN_PROGRESS}))
+        finally:
+            await database.close()
+
+    asyncio.run(_seed_in_progress())
+
+    result = cli_runner.invoke(
+        main,
+        ["--config-dir", config_dir, "--db", db, "block", task_id, "--reason", "stop"],
+    )
+    assert result.exit_code == 1
+    assert "Cannot block task in status 'in_progress'" in result.output
+
+
+def test_unblock_non_blocked_rejected_cli(runner):
+    cli_runner, tmp_path, db, config_dir = runner
+
+    cli_runner.invoke(main, ["--config-dir", config_dir, "--db", db, "init"])
+    r1 = cli_runner.invoke(
+        main, ["--config-dir", config_dir, "--db", db, "add-task", "Free target"]
+    )
+    assert r1.exit_code == 0
+    task_id = r1.output.split("Created task ")[1].split(":")[0].strip()
+
+    result = cli_runner.invoke(
+        main,
+        ["--config-dir", config_dir, "--db", db, "unblock", task_id, "--to", "approved"],
+    )
+    assert result.exit_code == 1
+    assert "Cannot unblock task in status 'draft'" in result.output
+
+
 # ── update ──────────────────────────────────────────────────────────────
 
 def test_update_title(runner):
@@ -387,10 +1333,11 @@ class TestWorkerCommand:
         import json
         catalog_path = tmp_path / "agentcatalog.json"
         catalog = json.loads(catalog_path.read_text())
+        valid_plan = """## Success Criteria\n- ship the requested change\n## Constraints / Failure Criteria\n- do not break existing behavior\n## Dependencies\n- confirm prerequisite task state\n## Missing Context\n- note open questions explicitly\n## Decomposition\n1. architect — define the implementation slices\n## Review Points\n- human review before execution\n"""
         for agent in catalog.values():
             agent["connector"] = "fake_acp"
             agent.setdefault("options", {})["default_success"] = True
-            agent["options"]["default_summary"] = "Test agent completed."
+            agent["options"]["default_summary"] = valid_plan
         catalog_path.write_text(json.dumps(catalog, indent=2) + "\n")
 
         runner = CliRunner()

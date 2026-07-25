@@ -2,30 +2,25 @@
 
 from __future__ import annotations
 
-import datetime
-import json
 from pathlib import Path
 from typing import Optional
 
 import aiosqlite
 
 from cellos.models import (
-    AttentionMetadata,
     CommentAuthorType,
-    ConversationMessage,
-    ProcessingMetadata,
     Task,
     TaskAttempt,
     TaskComment,
     TaskDependency,
     TaskEvent,
-    TaskResult,
     TaskStatus,
 )
 
 from cellos.persistence.attempt_repository import (
     create_attempt as _create_attempt,
     list_attempts as _list_attempts,
+    list_failed_attempts as _list_failed_attempts,
     update_attempt as _update_attempt,
 )
 from cellos.persistence.comment_repository import (
@@ -42,7 +37,7 @@ from cellos.persistence.result_repository import (
     save_task_result as _save_task_result,
     wake_blocked_dependents as _wake_blocked,
 )
-from cellos.persistence.schema import DatabaseNotInitialized, ensure_initialized, init_db
+from cellos.persistence.schema import ensure_initialized
 from cellos.persistence.task_repository import (
     _replace_dependencies,
     create_task as _create_task,
@@ -300,6 +295,9 @@ class CellosDatabase:
 
     async def list_attempts(self, task_id: str) -> list[TaskAttempt]:
         return await _list_attempts(self.conn, task_id)
+
+    async def list_failed_attempts(self, limit: int = 10) -> list[TaskAttempt]:
+        return await _list_failed_attempts(self.conn, limit=limit)
 
 
 async def init_database(db_path: str | Path) -> None:

@@ -11,7 +11,6 @@ from __future__ import annotations
 import asyncio
 import datetime
 import logging
-from typing import Any
 
 from cellos.config import AgentCatalogEntry, CellosConfig
 from cellos.connectors.base import TaskConnector
@@ -116,6 +115,11 @@ async def run_task_worker(
             "updated_at": datetime.datetime.now(),
         })
         await db.update_task(updated_task)
+        await db.create_event(
+            task_id,
+            "worker_started",
+            f"Worker started in {mode} mode for role={task.role.value}",
+        )
         logger.info("Task %s transitioned to IN_PROGRESS", task_id)
 
         # 3. Resolve agent: task.agent_id → task.role → config default
@@ -152,11 +156,20 @@ async def run_task_worker(
             comments = await db.list_comments(task_id)
             comment_text_parts: list[str] = []
             for c in comments:
+                if c.author_type.value != "human":
+                    continue
                 label = f"[{c.author_type.value}] {c.content}"
                 comment_text_parts.append(label)
 
+            dependency_lines = []
+            for dep in task.dependencies:
+                dependency_lines.append(
+                    f"- {dep.task_id} ({'satisfied' if dep.status_satisfied else 'pending'})"
+                )
+
             task_dict = _task_to_prompt_dict(task, extra={
                 "comments": "\n".join(comment_text_parts) if comment_text_parts else None,
+                "dependencies": "\n".join(dependency_lines) if dependency_lines else None,
             })
         else:
             # Execution mode — no comments in prompt (plan is authoritative context)
@@ -220,6 +233,12 @@ async def run_task_worker(
                 )
 
         logger.info("Worker completed for task %s", task_id)
+        event_type = "worker_succeeded" if result.success else "worker_failed"
+        await db.create_event(
+            task_id,
+            event_type,
+            f"Worker completed in {mode} mode with connector success={result.success}",
+        )
         return final_task or updated_task
 
     except Exception as e:
@@ -239,11 +258,25 @@ async def run_task_worker(
             restore_status = (
                 TaskStatus.DRAFT if mode == "planning" else TaskStatus.APPROVED
             )
-            restored = current.model_copy(update={
+            restored = current.requires_attention(
+                AttentionReason.EXECUTION_FAILED,
+                detail=f"Worker failed in {mode} mode: {error_msg}",
+            ).model_copy(update={
                 "status": restore_status,
                 "updated_at": datetime.datetime.now(),
             })
             await db.update_task(restored)
+            await db.create_event(
+                task_id,
+                "task_recovered",
+                f"Task restored from in_progress to {restore_status.value} after worker failure",
+            )
+
+        await db.create_event(
+            task_id,
+            "worker_failed",
+            f"Worker failed in {mode} mode: {error_msg}",
+        )
 
         raise WorkerError(f"Worker failed for task {task_id} mode={mode}: {error_msg}") from e
 
@@ -258,6 +291,11 @@ def _task_to_prompt_dict(task: Task, extra: dict | None = None) -> dict[str, obj
     Returns:
         Dict with prompt_builder-compatible keys.
     """
+    dependency_lines = [
+        f"- {dep.task_id}" + (" (satisfied)" if dep.status_satisfied else "")
+        for dep in task.dependencies
+    ]
+
     result = {
         "role": str(task.role) if task.role else "",
         "title": task.title or "",
@@ -266,6 +304,7 @@ def _task_to_prompt_dict(task: Task, extra: dict | None = None) -> dict[str, obj
         "details": task.details or "",
         "success_criteria": task.success_criteria,
         "failure_criteria": task.failure_criteria,
+        "dependencies": "\n".join(dependency_lines) if dependency_lines else "",
     }
 
     # Remove empty values for cleaner prompt output

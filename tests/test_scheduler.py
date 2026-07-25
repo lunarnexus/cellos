@@ -12,7 +12,8 @@ Covers:
 from __future__ import annotations
 
 import asyncio
-import tempfile
+import contextlib
+import json
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -29,10 +30,23 @@ from cellos.db import CellosDatabase
 from cellos.models import (
     AttentionMetadata,
     Task,
+    TaskAttemptStatus,
+    TaskDependency,
     TaskStatus,
 )
 from cellos.persistence.schema import init_db
-from cellos.services.scheduler import DaemonService, SchedulerService, ScheduleResult
+from cellos.services.scheduler import DaemonService, SchedulerService
+
+
+async def _wait_until(predicate, timeout: float = 1.0) -> None:
+    """Poll until predicate() is truthy or raise TimeoutError."""
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + timeout
+    while loop.time() < deadline:
+        if predicate():
+            return
+        await asyncio.sleep(0.01)
+    raise TimeoutError("condition not met before timeout")
 
 
 # ── Fixtures ──────────────────────────────────────────────────────────────────
@@ -203,11 +217,25 @@ class TestDaemonService:
     @pytest.mark.asyncio
     async def test_notification_file_created(self, db: CellosDatabase, config: CellosConfig, tmp_path: Path):
         """Daemon should create the notification file directory on init."""
-        daemon = DaemonService(
+        DaemonService(
             db=db, config=config, config_dir=str(tmp_path), workdir=str(tmp_path)
         )
         notify_dir = tmp_path / ".cellos"
         assert notify_dir.exists()
+
+    @pytest.mark.asyncio
+    async def test_write_status_persists_snapshot(self, db: CellosDatabase, config: CellosConfig, tmp_path: Path):
+        daemon = DaemonService(
+            db=db, config=config, config_dir=str(tmp_path), workdir=str(tmp_path)
+        )
+
+        daemon._started_at = "2026-06-30T16:00:00+00:00"
+        daemon._write_status("idle")
+
+        payload = json.loads((tmp_path / ".cellos" / "daemon_status.json").read_text())
+        assert payload["state"] == "idle"
+        assert payload["concurrent_limit"] == config.scheduler.concurrent_tasks
+        assert payload["running_workers"] == []
 
     @pytest.mark.asyncio
     async def test_notify_wakes_event(self, db: CellosDatabase, config: CellosConfig, tmp_path: Path):
@@ -257,6 +285,8 @@ class TestDaemonService:
         )
         await daemon._run_cycle()
         assert not daemon._running_workers
+        payload = json.loads((tmp_path / ".cellos" / "daemon_status.json").read_text())
+        assert payload["state"] == "idle"
 
     @pytest.mark.asyncio
     async def test_concurrency_limit(self, db: CellosDatabase, config: CellosConfig, tmp_path: Path):
@@ -284,6 +314,111 @@ class TestDaemonService:
 
             # Should only spawn 1 worker (concurrent_tasks=1)
             assert mock_spawn.call_count <= 1
+
+    @pytest.mark.asyncio
+    async def test_worker_completion_wakes_daemon(self, db: CellosDatabase, config: CellosConfig, tmp_path: Path):
+        """Tracked worker completion should remove it and set the wake event."""
+        task = Task(
+            id="exec-worker",
+            title="Execution worker",
+            status=TaskStatus.APPROVED,
+        )
+        daemon = DaemonService(
+            db=db, config=config, config_dir=str(tmp_path), workdir=str(tmp_path)
+        )
+
+        class FakeProc:
+            pid = 1234
+            returncode = 0
+
+            def __init__(self):
+                self.poll_calls = 0
+
+            def poll(self):
+                self.poll_calls += 1
+                return None if self.poll_calls == 1 else 0
+
+        fake_proc = FakeProc()
+        original_sleep = asyncio.sleep
+
+        async def fast_sleep(_: float):
+            await original_sleep(0)
+
+        with patch.object(daemon.spawner, "spawn", return_value=fake_proc), patch(
+            "cellos.services.scheduler.asyncio.sleep", new=fast_sleep
+        ):
+            await daemon._spawn_worker(task, "execution")
+            assert task.id in daemon._running_workers
+            payload = json.loads((tmp_path / ".cellos" / "daemon_status.json").read_text())
+            assert payload["state"] == "running"
+            assert payload["running_workers"][0]["task_id"] == task.id
+
+            await _wait_until(lambda: daemon._wake_event.is_set())
+            await _wait_until(lambda: task.id not in daemon._running_workers)
+
+        assert daemon._wake_event.is_set()
+
+    @pytest.mark.asyncio
+    async def test_notification_file_watcher_wakes_on_touch(self, db: CellosDatabase, config: CellosConfig, tmp_path: Path):
+        """Watcher should wake the daemon when the notification file is touched externally."""
+        daemon = DaemonService(
+            db=db, config=config, config_dir=str(tmp_path), workdir=str(tmp_path)
+        )
+        original_sleep = asyncio.sleep
+
+        async def fast_sleep(_: float):
+            await original_sleep(0)
+
+        with patch("cellos.services.scheduler.asyncio.sleep", new=fast_sleep):
+            watcher = asyncio.create_task(daemon._watch_notification_file())
+            try:
+                await original_sleep(0)
+                daemon._notification_file.touch()
+                await _wait_until(lambda: daemon._wake_event.is_set())
+            finally:
+                daemon._shutdown = True
+                await asyncio.wait_for(watcher, timeout=1.0)
+
+        assert daemon._wake_event.is_set()
+
+    @pytest.mark.asyncio
+    async def test_dependency_completion_leaves_downstream_runnable_next_cycle(self, db: CellosDatabase, config: CellosConfig, tmp_path: Path):
+        """After a dependency completes and attention is cleared, the next cycle can execute downstream work."""
+        dependency = Task(
+            id="dep-done",
+            title="Dependency",
+            status=TaskStatus.DONE,
+        )
+        downstream = Task(
+            id="downstream-approved",
+            title="Downstream",
+            status=TaskStatus.APPROVED,
+            dependencies=[TaskDependency(task_id=dependency.id, status_satisfied=False)],
+        )
+        await db.create_task(dependency)
+        await db.create_task(downstream)
+
+        daemon = DaemonService(
+            db=db, config=config, config_dir=str(tmp_path), workdir=str(tmp_path)
+        )
+
+        first_cycle = await daemon.scheduler.pick_work()
+        assert all(task.id != downstream.id for task in first_cycle.execution_tasks)
+
+        affected = await db.save_task_result(
+            dependency.id, success=True, summary="Dependency completed"
+        )
+        assert downstream.id in affected
+
+        woken = await db.get_task(downstream.id)
+        assert woken is not None
+        assert woken.attention.required is True
+        assert all(dep.status_satisfied for dep in woken.dependencies)
+
+        await db.update_task(woken.clear_attention())
+
+        next_cycle = await daemon.scheduler.pick_work()
+        assert [task.id for task in next_cycle.execution_tasks] == [downstream.id]
 
 # ── Scheduler Auto-Sync Tests ───────────────────────────────────────
 
@@ -319,9 +454,6 @@ class TestSchedulerAutoSync:
             providers={"example": ProviderConfig(auto_sync_enabled=True, pull_interval_seconds=600)}
         )
 
-        daemon = DaemonService(
-            db=db, config=config, config_dir=str(tmp_path), workdir=str(tmp_path)
-        )
         assert config.integrations.example.pull_interval_seconds == 600
 
     @pytest.mark.asyncio
@@ -349,3 +481,108 @@ class TestSchedulerAutoSync:
             await daemon._provider_sync_pull_maybe()
             assert prov_mock.auto_push.called
             assert prov_mock.auto_pull_maybe.called
+
+
+class TestOrphanReconciliation:
+    @pytest.mark.asyncio
+    async def test_reconcile_orphaned_planning_task_restores_to_draft(self, db: CellosDatabase, config: CellosConfig, tmp_path: Path):
+        task = Task(id="plan-orphan", title="Plan orphan", status=TaskStatus.IN_PROGRESS)
+        await db.create_task(task)
+        await db.create_attempt(task.id, mode="planning", agent_id="engineer")
+
+        daemon = DaemonService(
+            db=db, config=config, config_dir=str(tmp_path), workdir=str(tmp_path)
+        )
+
+        await daemon._reconcile_orphaned_in_progress_tasks()
+
+        recovered = await db.get_task(task.id)
+        attempts = await db.list_attempts(task.id)
+        assert recovered is not None
+        assert recovered.status == TaskStatus.DRAFT
+        assert recovered.attention.required is True
+        assert attempts[0].status == TaskAttemptStatus.FAILED
+
+    @pytest.mark.asyncio
+    async def test_reconcile_orphaned_execution_task_restores_to_approved(self, db: CellosDatabase, config: CellosConfig, tmp_path: Path):
+        task = Task(id="exec-orphan", title="Exec orphan", status=TaskStatus.IN_PROGRESS)
+        await db.create_task(task)
+        await db.create_attempt(task.id, mode="execution", agent_id="engineer")
+
+        daemon = DaemonService(
+            db=db, config=config, config_dir=str(tmp_path), workdir=str(tmp_path)
+        )
+
+        await daemon._reconcile_orphaned_in_progress_tasks()
+
+        recovered = await db.get_task(task.id)
+        attempts = await db.list_attempts(task.id)
+        assert recovered is not None
+        assert recovered.status == TaskStatus.APPROVED
+        assert recovered.attention.required is True
+        assert attempts[0].status == TaskAttemptStatus.FAILED
+
+    @pytest.mark.asyncio
+    async def test_reconcile_skips_live_tracked_worker(self, db: CellosDatabase, config: CellosConfig, tmp_path: Path):
+        task = Task(id="live-worker", title="Live worker", status=TaskStatus.IN_PROGRESS)
+        await db.create_task(task)
+        await db.create_attempt(task.id, mode="execution", agent_id="engineer")
+
+        daemon = DaemonService(
+            db=db, config=config, config_dir=str(tmp_path), workdir=str(tmp_path)
+        )
+        daemon._running_workers[task.id] = asyncio.create_task(asyncio.sleep(60))
+
+        try:
+            await daemon._reconcile_orphaned_in_progress_tasks()
+        finally:
+            daemon._running_workers[task.id].cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await daemon._running_workers[task.id]
+            daemon._running_workers.pop(task.id, None)
+
+        current = await db.get_task(task.id)
+        attempts = await db.list_attempts(task.id)
+        assert current is not None
+        assert current.status == TaskStatus.IN_PROGRESS
+        assert attempts[0].status == TaskAttemptStatus.STARTED
+
+    @pytest.mark.asyncio
+    async def test_reconcile_in_progress_without_attempt_sets_attention(self, db: CellosDatabase, config: CellosConfig, tmp_path: Path):
+        task = Task(id="no-attempt", title="No attempt", status=TaskStatus.IN_PROGRESS)
+        await db.create_task(task)
+
+        daemon = DaemonService(
+            db=db, config=config, config_dir=str(tmp_path), workdir=str(tmp_path)
+        )
+
+        await daemon._reconcile_orphaned_in_progress_tasks()
+
+        recovered = await db.get_task(task.id)
+        events = await db.list_events(task.id)
+        assert recovered is not None
+        assert recovered.attention.required is True
+        assert recovered.status == TaskStatus.DRAFT
+        assert any(event.event_type == "worker_orphaned" for event in events)
+
+    @pytest.mark.asyncio
+    async def test_reconcile_terminal_failed_attempt_still_restores_task(self, db: CellosDatabase, config: CellosConfig, tmp_path: Path):
+        task = Task(id="failed-orphan", title="Failed orphan", status=TaskStatus.IN_PROGRESS)
+        await db.create_task(task)
+        attempt = await db.create_attempt(task.id, mode="execution", agent_id="engineer")
+        await db.update_attempt(attempt.id, TaskAttemptStatus.FAILED, error_message="boom")
+
+        daemon = DaemonService(
+            db=db, config=config, config_dir=str(tmp_path), workdir=str(tmp_path)
+        )
+
+        await daemon._reconcile_orphaned_in_progress_tasks()
+
+        recovered = await db.get_task(task.id)
+        attempts = await db.list_attempts(task.id)
+        events = await db.list_events(task.id)
+        assert recovered is not None
+        assert recovered.status == TaskStatus.APPROVED
+        assert recovered.attention.required is True
+        assert attempts[0].status == TaskAttemptStatus.FAILED
+        assert any(event.event_type == "worker_orphaned" for event in events)

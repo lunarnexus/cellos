@@ -2,9 +2,8 @@
 
 from __future__ import annotations
 
-import os
+import json
 import pathlib
-import shutil
 import tempfile
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -22,7 +21,6 @@ from cellos.models import (
     Task,
     TaskAttemptStatus,
     TaskStatus,
-    TaskType,
 )
 from cellos.persistence.schema import init_db
 
@@ -53,7 +51,10 @@ def config():
             ),
             "architect": AgentCatalogEntry(
                 connector="fake_acp",
-                options={"default_success": True, "default_summary": "Architecture plan generated with steps and dependencies."},
+                options={
+                    "default_success": True,
+                    "default_summary": "## Success Criteria\n- architecture defined\n## Constraints / Failure Criteria\n- no unsafe shortcuts\n## Dependencies\n- existing auth interfaces\n## Missing Context\n- unresolved rollout questions\n## Decomposition\n1. architect — produce design\n## Review Points\n- approve before implementation\nArchitecture plan generated with steps and dependencies.",
+                },
             ),
         },
         prompt_profiles=PromptProfilesConfig(
@@ -107,12 +108,38 @@ class TestRunTaskWorkerPlanning:
         task = _make_task(title="Plan auth module", role=AgentRole.ARCHITECT)
         await database.create_task(task)
 
-        result = await run_task_worker(database, task.id, "planning", config)
+        plan_fixture = """## Success Criteria\n- secure auth module design reviewed\n## Constraints / Failure Criteria\n- no plaintext secrets\n## Dependencies\n- user model schema\n## Missing Context\n- confirm token expiry requirement\n## Decomposition\n1. architect — map auth flows\n2. engineer — implement selected approach\n## Review Points\n- human approval before execution\n"""
+        planning_config = config.model_copy(deep=True)
+        planning_config.agent_catalog["architect"].options["default_summary"] = "ignored"
+        planning_config.agent_catalog["architect"].options["fixture_dir"] = db[2]
+        (pathlib.Path(db[2]) / "planning.json").write_text(
+            json.dumps({"success": True, "summary": "Plan ready", "output": plan_fixture}),
+            encoding="utf-8",
+        )
+
+        await run_task_worker(database, task.id, "planning", planning_config)
 
         final = await database.get_task(task.id)
         assert final is not None
         assert final.status == TaskStatus.NEEDS_APPROVAL
-        assert final.plan  # Plan text should be saved from fake_acp response
+        assert final.plan == plan_fixture
+
+    async def test_planning_invalid_result_stays_draft(self, db, config):
+        from cellos.services.worker_service import run_task_worker
+        database = db[0]
+
+        invalid_config = config.model_copy(deep=True)
+        invalid_config.agent_catalog["architect"].options["default_summary"] = "Missing sections"
+
+        task = _make_task(title="Thin plan", role=AgentRole.ARCHITECT)
+        await database.create_task(task)
+
+        await run_task_worker(database, task.id, "planning", invalid_config)
+
+        final = await database.get_task(task.id)
+        assert final is not None
+        assert final.status == TaskStatus.DRAFT
+        assert "Invalid planning result" in (final.attention.detail or "")
 
     async def test_planning_transitions_to_in_progress(self, db, config):
         """Verify task goes to IN_PROGRESS before connector runs."""
@@ -126,7 +153,7 @@ class TestRunTaskWorkerPlanning:
         pre = await database.get_task(task.id)
         assert pre.status == TaskStatus.DRAFT
 
-        result = await run_task_worker(database, task.id, "planning", config)
+        await run_task_worker(database, task.id, "planning", config)
 
     async def test_planning_with_comments(self, db, config):
         """Verify comments are included in planning prompt context."""
@@ -142,7 +169,7 @@ class TestRunTaskWorkerPlanning:
             task.id, CommentAuthorType.HUMAN, "Please focus on security aspects"
         )
 
-        result = await run_task_worker(database, task.id, "planning", config)
+        await run_task_worker(database, task.id, "planning", config)
 
 
 # ── Execution mode tests ────────────────
@@ -164,7 +191,7 @@ class TestRunTaskWorkerExecution:
         })
         await database.update_task(approved)
 
-        result = await run_task_worker(database, task.id, "execution", config)
+        await run_task_worker(database, task.id, "execution", config)
 
         final = await database.get_task(task.id)
         assert final is not None
@@ -182,7 +209,7 @@ class TestAttemptTracking:
         task = _make_task(title="Track attempt", role=AgentRole.ENGINEER)
         await database.create_task(task)
 
-        result = await run_task_worker(database, task.id, "planning", config)
+        await run_task_worker(database, task.id, "planning", config)
 
         attempts = await database.list_attempts(task.id)
         assert len(attempts) >= 1
@@ -315,7 +342,7 @@ class TestAgentResolution:
         task = _make_task(title="Plan auth module", role=AgentRole.ARCHITECT)
         await database.create_task(task)
 
-        result = await run_task_worker(database, task.id, "planning", config)
+        await run_task_worker(database, task.id, "planning", config)
 
         final = await database.get_task(task.id)
         assert final is not None
@@ -370,7 +397,7 @@ class TestFailedConnector:
         task = _make_task(title="Will fail", role=AgentRole.ENGINEER)
         await database.create_task(task)
 
-        result = await run_task_worker(database, task.id, "planning", failing_config)
+        await run_task_worker(database, task.id, "planning", failing_config)
 
         final = await database.get_task(task.id)
         assert final is not None
@@ -411,7 +438,7 @@ class TestFailedConnector:
         })
         await database.update_task(approved)
 
-        result = await run_task_worker(database, task.id, "execution", failing_config)
+        await run_task_worker(database, task.id, "execution", failing_config)
 
         final = await database.get_task(task.id)
         assert final is not None
@@ -449,3 +476,115 @@ class TestFailedConnector:
         attempts = await database.list_attempts(task.id)
         assert len(attempts) >= 1
         assert attempts[0].status == TaskAttemptStatus.FAILED
+
+    async def test_planning_failure_restores_draft_and_sets_attention(self, db, config):
+        """Planning exceptions should restore task to draft and require attention."""
+        from cellos.services.worker_service import run_task_worker
+
+        database = db[0]
+        task = _make_task(title="Plan recovery", role=AgentRole.ARCHITECT)
+        await database.create_task(task)
+
+        with patch("cellos.services.worker_service._build_connector") as mock_build:
+            failing_connector = MagicMock()
+            failing_connector.run_task = AsyncMock(side_effect=TimeoutError("planner hung"))
+            mock_build.return_value = failing_connector
+
+            with pytest.raises(Exception, match="planner hung"):
+                await run_task_worker(database, task.id, "planning", config)
+
+        final = await database.get_task(task.id)
+        assert final is not None
+        assert final.status == TaskStatus.DRAFT
+        assert final.attention.required is True
+        assert final.attention.reason.value == "execution_failed"
+        assert "planner hung" in (final.attention.detail or "")
+
+    async def test_execution_failure_restores_approved_and_sets_attention(self, db, config):
+        """Execution exceptions should restore task to approved and require attention."""
+        from cellos.services.worker_service import run_task_worker
+
+        database = db[0]
+        task = _make_task(title="Exec recovery", role=AgentRole.ENGINEER)
+        await database.create_task(task)
+
+        created = await database.get_task(task.id)
+        approved = created.model_copy(update={
+            "status": TaskStatus.APPROVED,
+            "plan": "Ship it.",
+        })
+        await database.update_task(approved)
+
+        with patch("cellos.services.worker_service._build_connector") as mock_build:
+            failing_connector = MagicMock()
+            failing_connector.run_task = AsyncMock(side_effect=RuntimeError("worker crashed"))
+            mock_build.return_value = failing_connector
+
+            with pytest.raises(Exception, match="worker crashed"):
+                await run_task_worker(database, task.id, "execution", config)
+
+        final = await database.get_task(task.id)
+        assert final is not None
+        assert final.status == TaskStatus.APPROVED
+        assert final.attention.required is True
+        assert final.attention.reason.value == "execution_failed"
+        assert "worker crashed" in (final.attention.detail or "")
+
+    async def test_worker_failure_creates_audit_events(self, db, config):
+        """Worker failures should leave an explicit audit trail."""
+        from cellos.services.worker_service import run_task_worker
+
+        database = db[0]
+        task = _make_task(title="Audit me", role=AgentRole.ARCHITECT)
+        await database.create_task(task)
+
+        with patch("cellos.services.worker_service._build_connector") as mock_build:
+            failing_connector = MagicMock()
+            failing_connector.run_task = AsyncMock(side_effect=RuntimeError("boom"))
+            mock_build.return_value = failing_connector
+
+            with pytest.raises(Exception, match="boom"):
+                await run_task_worker(database, task.id, "planning", config)
+
+        events = await database.list_events(task.id)
+        event_types = {event.event_type for event in events}
+        assert "worker_started" in event_types
+        assert "worker_failed" in event_types
+        assert "task_recovered" in event_types
+
+    async def test_connector_failure_records_worker_failed_not_worker_succeeded(self, db):
+        """Normal unsuccessful connector results should be audited as worker_failed."""
+        from cellos.services.worker_service import run_task_worker
+
+        database = db[0]
+        failing_config = CellosConfig(
+            agents={"default_agent_id": "engineer"},
+            worker={"timeout_seconds": 30},
+            approvals={"preapprove_research_tasks": False},
+            agent_catalog={
+                "engineer": AgentCatalogEntry(
+                    connector="fake_acp",
+                    options={"default_success": False, "default_summary": "Execution failed."},
+                ),
+            },
+            prompt_profiles=PromptProfilesConfig(
+                role_instructions={"engineer": "You are an engineer."},
+                modes={
+                    "planning": {"instructions": "Generate a plan.", "output_sections": ["Steps"]},
+                    "execution": {"instructions": "Execute the plan.", "output_sections": ["Results"]},
+                },
+            ),
+        )
+
+        task = _make_task(title="Audit failed result", role=AgentRole.ENGINEER)
+        await database.create_task(task)
+        created = await database.get_task(task.id)
+        approved = created.model_copy(update={"status": TaskStatus.APPROVED, "plan": "Ship it."})
+        await database.update_task(approved)
+
+        await run_task_worker(database, task.id, "execution", failing_config)
+
+        events = await database.list_events(task.id)
+        event_types = {event.event_type for event in events}
+        assert "worker_failed" in event_types
+        assert "worker_succeeded" not in event_types

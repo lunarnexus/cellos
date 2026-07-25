@@ -8,7 +8,7 @@ import pytest
 import pytest_asyncio
 
 from cellos.db import CellosDatabase
-from cellos.models import AgentRole, CommentAuthorType, Task, TaskStatus
+from cellos.models import AgentRole, AttentionReason, CommentAuthorType, Task, TaskStatus
 from cellos.persistence.schema import init_db
 
 
@@ -708,6 +708,55 @@ class TestVikunjaProvider:
         mapping = json.loads(rows[0][1])
         assert mapping["remote_task_id"] == 9001
         assert mapping["last_bucket_id"] == 2
+
+    @pytest.mark.asyncio
+    async def test_sync_pull_imported_approved_task_requires_attention(self, monkeypatch, db):
+        from cellos.config import CellosConfig, IntegrationsConfig, ProviderConfig
+        from cellos.integrations.registry import load_provider
+
+        monkeypatch.setenv("VIKUNJA_BASE_URL", "https://vikunja.example")
+        monkeypatch.setenv("VIKUNJA_API_TOKEN", "secret-token")
+
+        cfg = CellosConfig(
+            integrations=IntegrationsConfig(
+                providers={
+                    "vikunja": ProviderConfig(
+                        project_id="17",
+                        view_id="4",
+                        bucket_map={"to-do": "1", "doing": "2", "done": "3"},
+                    )
+                }
+            )
+        )
+        prov = load_provider("vikunja", config=cfg, _config_dir="/tmp")
+        prov._db = db
+
+        class FakeClient:
+            async def list_project_tasks(self, project_id: str, expand: list[str] | None = None):
+                return [
+                    {
+                        "id": 9004,
+                        "title": "Ready remote task",
+                        "description": "Needs review",
+                        "done": False,
+                        "buckets": [{"id": 1, "title": "To-Do", "project_view_id": 4}],
+                    }
+                ]
+
+            async def get_task_comments(self, task_id: str):
+                return []
+
+        monkeypatch.setattr(prov, "_build_client", lambda: FakeClient())
+
+        await prov.sync(push=False, pull=True)
+
+        imported = await db.get_task("vik9004")
+        events = await db.list_events("vik9004")
+        assert imported is not None
+        assert imported.status == TaskStatus.APPROVED
+        assert imported.attention.required is True
+        assert imported.attention.reason == "approved"
+        assert any(event.event_type == "provider_status_synced" for event in events)
 
     @pytest.mark.asyncio
     async def test_sync_pull_maps_remote_architect_label_to_architect_role(self, monkeypatch, db):
@@ -2017,3 +2066,156 @@ class TestVikunjaProvider:
         assert delta.items_updated == 1
         assert updated is not None
         assert updated.title == "Remote title before local comment export"
+
+    @pytest.mark.asyncio
+    async def test_auto_pull_maybe_skips_when_last_pull_is_within_interval(self, monkeypatch, db):
+        from cellos.config import CellosConfig, IntegrationsConfig, ProviderConfig
+        from cellos.integrations.registry import load_provider
+
+        monkeypatch.setenv("VIKUNJA_BASE_URL", "https://vikunja.example")
+        monkeypatch.setenv("VIKUNJA_API_TOKEN", "secret-token")
+
+        cfg = CellosConfig(
+            integrations=IntegrationsConfig(
+                providers={"vikunja": ProviderConfig(project_id="17", view_id="4")}
+            )
+        )
+        prov = load_provider("vikunja", config=cfg, _config_dir="/tmp")
+        prov._db = db
+
+        now = datetime.now(timezone.utc)
+        await db.conn.execute(
+            "INSERT INTO integration_sync(key, value) VALUES(?, ?) "
+            "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+            ("vikunja.meta.last_pull_ts", now.isoformat()),
+        )
+        await db.conn.commit()
+
+        class FakeClient:
+            async def list_project_tasks(self, project_id: str, expand: list[str] | None = None):
+                raise AssertionError("list_project_tasks should not run when pull interval has not elapsed")
+
+        monkeypatch.setattr(prov, "_build_client", lambda: FakeClient())
+
+        delta = await prov.auto_pull_maybe(600)
+
+        assert delta.items_created == 0
+        assert delta.items_updated == 0
+        assert delta.statuses_changed == 0
+        assert delta.comments_imported == 0
+
+    @pytest.mark.asyncio
+    async def test_auto_pull_maybe_pulls_when_no_last_pull_timestamp(self, monkeypatch, db):
+        from cellos.config import CellosConfig, IntegrationsConfig, ProviderConfig
+        from cellos.integrations.registry import load_provider
+
+        monkeypatch.setenv("VIKUNJA_BASE_URL", "https://vikunja.example")
+        monkeypatch.setenv("VIKUNJA_API_TOKEN", "secret-token")
+
+        cfg = CellosConfig(
+            integrations=IntegrationsConfig(
+                providers={
+                    "vikunja": ProviderConfig(
+                        project_id="17",
+                        view_id="4",
+                        bucket_map={"to-do": "1", "doing": "2", "done": "3"},
+                    )
+                }
+            )
+        )
+        prov = load_provider("vikunja", config=cfg, _config_dir="/tmp")
+        prov._db = db
+
+        class FakeClient:
+            async def list_project_tasks(self, project_id: str, expand: list[str] | None = None):
+                return [{
+                    "id": 9910,
+                    "title": "First auto-pull task",
+                    "description": "Imported on first auto-pull",
+                    "done": False,
+                    "buckets": [{"id": 2, "title": "Doing", "project_view_id": 4}],
+                }]
+
+            async def get_task_comments(self, task_id: str):
+                return []
+
+        monkeypatch.setattr(prov, "_build_client", lambda: FakeClient())
+
+        delta = await prov.auto_pull_maybe(600)
+
+        assert delta.items_created == 1
+        imported = await db.get_task("vik9910")
+        assert imported is not None
+        assert imported.status == TaskStatus.IN_PROGRESS
+
+    @pytest.mark.asyncio
+    async def test_sync_pull_remote_approval_requires_attention_and_audit_event(self, monkeypatch, db):
+        from cellos.config import CellosConfig, IntegrationsConfig, ProviderConfig
+        from cellos.integrations.registry import load_provider
+
+        monkeypatch.setenv("VIKUNJA_BASE_URL", "https://vikunja.example")
+        monkeypatch.setenv("VIKUNJA_API_TOKEN", "secret-token")
+
+        task = Task(
+            id="task-local-approved-via-pull",
+            title="Needs review before execution",
+            details="Remote can approve it",
+            role=AgentRole.ENGINEER,
+            status=TaskStatus.DRAFT,
+        )
+        await db.create_task(task)
+        await db.conn.execute(
+            "INSERT INTO integration_sync(key, value) VALUES(?, ?)",
+            (
+                "vikunja.task.task-local-approved-via-pull",
+                json.dumps({"remote_task_id": 9920, "last_synced_status": "draft", "last_bucket_id": 2}),
+            ),
+        )
+        await db.conn.commit()
+
+        cfg = CellosConfig(
+            integrations=IntegrationsConfig(
+                providers={
+                    "vikunja": ProviderConfig(
+                        project_id="17",
+                        view_id="4",
+                        bucket_map={"to-do": "1", "doing": "2", "done": "3"},
+                    )
+                }
+            )
+        )
+        prov = load_provider("vikunja", config=cfg, _config_dir="/tmp")
+        prov._db = db
+
+        class FakeClient:
+            async def list_project_tasks(self, project_id: str, expand: list[str] | None = None):
+                return [{
+                    "id": 9920,
+                    "title": "Needs review before execution",
+                    "description": "Remote can approve it",
+                    "done": False,
+                    "buckets": [{"id": 1, "title": "To-Do", "project_view_id": 4}],
+                }]
+
+            async def get_task_comments(self, task_id: str):
+                return []
+
+        monkeypatch.setattr(prov, "_build_client", lambda: FakeClient())
+
+        delta = await prov.sync(push=False, pull=True)
+
+        assert delta.items_updated == 1
+        assert delta.statuses_changed == 1
+        updated = await db.get_task("task-local-approved-via-pull")
+        assert updated is not None
+        assert updated.status == TaskStatus.APPROVED
+        assert updated.attention.required is True
+        assert updated.attention.reason == AttentionReason.APPROVED
+        assert "review before daemon execution" in (updated.attention.detail or "").lower()
+
+        events = await db.list_events("task-local-approved-via-pull")
+        assert any(
+            event.event_type == "provider_status_synced"
+            and "approved" in event.message.lower()
+            for event in events
+        )

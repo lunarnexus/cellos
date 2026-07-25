@@ -19,6 +19,21 @@ from cellos.models import TaskStatus
 from cellos.persistence.schema import init_db
 
 
+VALID_PLAN_TEXT = """## Success Criteria
+- ship the requested change
+## Constraints / Failure Criteria
+- do not break existing behavior
+## Dependencies
+- confirm prerequisite task state
+## Missing Context
+- note open questions explicitly
+## Decomposition
+1. architect — define the implementation slices
+## Review Points
+- human review before execution
+"""
+
+
 @pytest.fixture
 def project_dir(tmp_path: Path) -> Path:
     """Create a temp project directory with initialized config."""
@@ -32,7 +47,7 @@ def project_dir(tmp_path: Path) -> Path:
     for agent in catalog.values():
         agent["connector"] = "fake_acp"
         agent.setdefault("options", {})["default_success"] = True
-        agent["options"]["default_summary"] = "Test agent completed."
+        agent["options"]["default_summary"] = VALID_PLAN_TEXT
     catalog_path.write_text(json.dumps(catalog, indent=2) + "\n")
     return tmp_path
 
@@ -85,12 +100,12 @@ class TestFullLifecycle:
         # Save planning result (simulates agent planning)
         await save_planning_result(
             initialized_db, task.id,
-            plan_text="Plan: Step 1, Step 2, Step 3",
+            plan_text=VALID_PLAN_TEXT,
             success=True,
         )
         planned = await initialized_db.get_task(task.id)
         assert planned.status == TaskStatus.NEEDS_APPROVAL
-        assert planned.plan == "Plan: Step 1, Step 2, Step 3"
+        assert planned.plan == VALID_PLAN_TEXT
 
         # Approve
         approved = await service.approve_task(task.id)
@@ -252,6 +267,26 @@ class TestDependencyTracking:
         unblocked = await initialized_db.list_approved_unblocked_tasks()
         assert not any(t.id == parent.id for t in unblocked)
 
+    @pytest.mark.asyncio
+    async def test_create_child_task_sets_parent_and_blocks_parent(self, initialized_db: CellosDatabase):
+        from cellos.models import AgentRole
+        from cellos.services.task_service import TaskService
+
+        service = TaskService(initialized_db)
+        parent = await service.create_task(title="Parent task", role=AgentRole.ENGINEER)
+
+        child = await service.create_child_task(
+            parent_id=parent.id,
+            title="Child task",
+            role=AgentRole.ENGINEER,
+        )
+
+        assert child.parent_id == parent.id
+
+        updated_parent = await initialized_db.get_task(parent.id)
+        assert updated_parent is not None
+        assert child.id in [d.task_id for d in updated_parent.dependencies]
+
 
 class TestCommentsAndAttention:
     """Test comments and attention system."""
@@ -282,7 +317,7 @@ class TestCommentsAndAttention:
         task = await service.create_task(title="Test task", role="engineer")
 
         # Plan and approve
-        await save_planning_result(initialized_db, task.id, plan_text="Plan", success=True)
+        await save_planning_result(initialized_db, task.id, plan_text=VALID_PLAN_TEXT, success=True)
         await service.approve_task(task.id)
 
         # Comment on approved task
@@ -306,7 +341,7 @@ class TestEventLogging:
         service = TaskService(initialized_db)
         task = await service.create_task(title="Test task", role="engineer")
 
-        await save_planning_result(initialized_db, task.id, plan_text="Plan", success=True)
+        await save_planning_result(initialized_db, task.id, plan_text=VALID_PLAN_TEXT, success=True)
         await service.approve_task(task.id)
         await save_execution_result(initialized_db, task.id, result_text="Done", success=True)
 

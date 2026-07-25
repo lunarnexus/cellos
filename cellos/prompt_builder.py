@@ -2,10 +2,26 @@
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from cellos.config import PromptProfilesConfig
+
+
+PLANNING_QUALITY_GUIDANCE = """## Planning Requirements
+Produce a reviewable plan before this task can advance.
+- Restate the success criteria in concrete terms.
+- Identify failure criteria / constraints that must not be violated.
+- Analyze dependencies and how they affect sequencing.
+- Analyze missing context, assumptions, and what still needs confirmation.
+- Decompose the work into concrete steps with an owner for each step.
+- Call out review points where a human should inspect or approve progress.
+"""
+
 
 def build_task_prompt(
     task: dict[str, object],
-    profiles: "PromptProfilesConfig",
+    profiles: PromptProfilesConfig,
     mode: str = "planning",
     plan: str | None = None,
 ) -> str:
@@ -75,10 +91,19 @@ def build_task_prompt(
     if failure_criteria.strip():
         parts.append(f"\n## Constraints (must not do)\n{failure_criteria}\n")
 
-    # 6.5. Comments — planning mode only
+    # 6.5. Dependencies — planning mode only
+    dependencies = task.get("dependencies") or ""
+    if dependencies and str(dependencies).strip() and mode == "planning":
+        parts.append(f"\n## Dependencies\n{dependencies}\n")
+
+    # 6.6. Comments — planning mode only
     comments = task.get("comments")
     if comments and str(comments).strip() and mode == "planning":
-        parts.append(f"\n## Comments\n{comments}\n")
+        parts.append(f"\n## Recent Human Comments\n{comments}\n")
+
+    # 6.7. Robust planning expectations — planning mode only
+    if mode == "planning":
+        parts.append(f"\n{PLANNING_QUALITY_GUIDANCE}\n")
 
     # 7. Plan text — execution mode only
     if plan and plan.strip() and mode == "execution":

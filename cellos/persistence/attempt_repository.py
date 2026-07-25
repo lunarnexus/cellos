@@ -149,3 +149,30 @@ async def list_attempts(conn: Connection, task_id: str) -> list[TaskAttempt]:
         attempts.append(attempt)
 
     return attempts
+
+
+async def list_failed_attempts(conn: Connection, limit: int = 10) -> list[TaskAttempt]:
+    """Return recent failed attempts across all tasks, newest first."""
+    cursor = await conn.execute(
+        "SELECT id, task_id, status, mode, agent_id, result_summary, error_message, started_at, completed_at "
+        "FROM task_attempts WHERE status = ? ORDER BY started_at DESC LIMIT ?",
+        (TaskAttemptStatus.FAILED.value, limit),
+    )
+    rows = await cursor.fetchall()
+
+    attempts: list[TaskAttempt] = []
+    for row in rows:
+        attempt = TaskAttempt(
+            id=row[0],
+            task_id=row[1],
+            status=TaskAttemptStatus(row[2]),
+            mode=row[3] or None,
+            agent_id=row[4] or None,
+            result_summary=row[5] or None,
+            error_message=row[6] or None,
+            started_at=datetime.fromisoformat(row[7]) if row[7] else datetime.now(timezone.utc),
+            completed_at=datetime.fromisoformat(row[8]) if row[8] else None,
+        )
+        attempts.append(attempt)
+
+    return attempts

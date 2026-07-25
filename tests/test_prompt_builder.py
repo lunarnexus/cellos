@@ -83,6 +83,30 @@ class TestPlanningMode:
         prompt = build_task_prompt(_base_task(), sample_profiles, mode="planning")
         assert "structured JSON actions" in prompt
 
+    def test_includes_dependencies_and_recent_comments_guidance(self, sample_profiles):
+        from cellos.prompt_builder import build_task_prompt
+
+        task = _base_task(
+            dependencies="- task-1: database schema\n- task-2: auth API",
+            comments="[human] Please keep the rollout backwards-compatible.",
+        )
+
+        prompt = build_task_prompt(task, sample_profiles, mode="planning")
+
+        assert "## Dependencies" in prompt
+        assert "database schema" in prompt
+        assert "## Recent Human Comments" in prompt
+        assert "backwards-compatible" in prompt
+
+    def test_includes_robust_planning_expectations(self, sample_profiles):
+        from cellos.prompt_builder import build_task_prompt
+
+        prompt = build_task_prompt(_base_task(), sample_profiles, mode="planning")
+
+        assert "missing context" in prompt.lower()
+        assert "review point" in prompt.lower()
+        assert "owner" in prompt.lower()
+
 
 # ─── Task details and criteria tests ──────────────────────────────────────
 

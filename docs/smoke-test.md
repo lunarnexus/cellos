@@ -187,13 +187,25 @@ cellos status
 
 ---
 
-## Step 10: Cleanup
+## Step 10: Dependency Graph View
 
 ```bash
-rm -rf ~/.cellos
+PARENT_ID=$(cellos add-task \
+  "Graph test parent" \
+  -d "Parent task to verify graph output" | grep -oP 'Created task \K[^:\\s]+')
+
+cellos add-task \
+  "Graph test child" \
+  -d "Child task that depends on parent" \
+  --depends "$PARENT_ID" | grep -oP 'Created task \K[^:\\s]+'
+
+cellos graph "$PARENT_ID"
 ```
 
-**Expected:** local smoke-test files are removed.
+**Expected:**
+- child task is created with a dependency on the parent
+- `graph` renders the parent task with its child listed
+- graph shows parent/children/dependency information
 
 ---
 
