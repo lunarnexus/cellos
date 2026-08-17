@@ -2,6 +2,8 @@
 
 Human-governed AI orchestration system that decomposes project work into small, reviewable tasks routed to specialized worker agents. The human stays in control at every meaningful decision point.
 
+** This project is based on the ACP protocol, which seems to be dying a slow death.  In addition, the research and testing I've done on orchestration suggests there's not a lot to be gained by approaching AI tasks this way, other than human-in-the-loop, which can be accomplished in other easier ways.  It was a fun project, but he's dead Jim.  **
+
 ## Installation
 
 **Prerequisites:** Python 3.12+ and pipx installed.
